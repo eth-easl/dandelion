@@ -49,6 +49,8 @@ use prost::Message;
 use std::collections::HashMap;
 #[cfg(feature = "exactly-once")]
 use std::collections::HashSet;
+#[cfg(feature = "at-least-once")]
+use std::path::{Path, PathBuf};
 use std::{
     collections::{BTreeMap, VecDeque},
     convert::Infallible,
@@ -57,14 +59,14 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex, OnceLock},
 };
-#[cfg(feature = "at-least-once")]
-use std::{
-    fs::{self, File, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-};
 #[cfg(feature = "exactly-once")]
 use tokio::sync::watch;
+#[cfg(feature = "at-least-once")]
+use tokio::{
+    fs::{self, File, OpenOptions},
+    io::AsyncWriteExt,
+    sync::Mutex as AsyncMutex,
+};
 use tokio::{
     net::TcpListener,
     signal::unix::SignalKind,
@@ -565,10 +567,19 @@ pub fn is_durable_data_id(data_id: u64) -> bool {
     data_id >= DURABLE_DATA_ID_START
 }
 
-#[cfg(feature = "at-least-once")]
-fn sync_directory(directory: &Path) -> DandelionResult<()> {
+#[cfg(all(feature = "at-least-once", any(feature = "exactly-once", test)))]
+async fn sync_directory(directory: &Path) -> DandelionResult<()> {
     File::open(directory)
-        .and_then(|directory| directory.sync_all())
+        .await
+        .map_err(|err| {
+            export_registry_error(format!(
+                "Failed to open durable export directory {}: {}",
+                directory.display(),
+                err
+            ))
+        })?
+        .sync_all()
+        .await
         .map_err(|err| {
             export_registry_error(format!(
                 "Failed to sync durable export directory {}: {}",
@@ -578,8 +589,11 @@ fn sync_directory(directory: &Path) -> DandelionResult<()> {
         })
 }
 
-#[cfg(feature = "at-least-once")]
-fn write_atomic_file_without_directory_sync(path: &Path, contents: &[u8]) -> DandelionResult<()> {
+#[cfg(all(feature = "at-least-once", any(feature = "exactly-once", test)))]
+async fn write_atomic_file_without_directory_sync(
+    path: &Path,
+    contents: &[u8],
+) -> DandelionResult<()> {
     let temporary_path = path.with_extension(format!(
         "{}.tmp",
         path.extension()
@@ -591,6 +605,7 @@ fn write_atomic_file_without_directory_sync(path: &Path, contents: &[u8]) -> Dan
         .truncate(true)
         .write(true)
         .open(&temporary_path)
+        .await
         .map_err(|err| {
             export_registry_error(format!(
                 "Failed to create durable export file {}: {}",
@@ -598,21 +613,22 @@ fn write_atomic_file_without_directory_sync(path: &Path, contents: &[u8]) -> Dan
                 err
             ))
         })?;
-    file.write_all(contents).map_err(|err| {
+    file.write_all(contents).await.map_err(|err| {
         export_registry_error(format!(
             "Failed to write durable export file {}: {}",
             temporary_path.display(),
             err
         ))
     })?;
-    file.sync_all().map_err(|err| {
+    file.sync_all().await.map_err(|err| {
         export_registry_error(format!(
             "Failed to sync durable export file {}: {}",
             temporary_path.display(),
             err
         ))
     })?;
-    fs::rename(&temporary_path, path).map_err(|err| {
+    drop(file);
+    fs::rename(&temporary_path, path).await.map_err(|err| {
         export_registry_error(format!(
             "Failed to install durable export file {}: {}",
             path.display(),
@@ -622,8 +638,8 @@ fn write_atomic_file_without_directory_sync(path: &Path, contents: &[u8]) -> Dan
 }
 
 /// Atomically replaces a file without forcing it to stable storage.
-#[cfg(feature = "at-least-once")]
-fn write_atomic_file_buffered(path: &Path, contents: &[u8]) -> DandelionResult<()> {
+#[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
+async fn write_atomic_file_buffered(path: &Path, contents: &[u8]) -> DandelionResult<()> {
     let temporary_path = path.with_extension(format!(
         "{}.tmp",
         path.extension()
@@ -635,6 +651,7 @@ fn write_atomic_file_buffered(path: &Path, contents: &[u8]) -> DandelionResult<(
         .truncate(true)
         .write(true)
         .open(&temporary_path)
+        .await
         .map_err(|err| {
             export_registry_error(format!(
                 "Failed to create checkpoint export file {}: {}",
@@ -642,14 +659,22 @@ fn write_atomic_file_buffered(path: &Path, contents: &[u8]) -> DandelionResult<(
                 err
             ))
         })?;
-    file.write_all(contents).map_err(|err| {
+    file.write_all(contents).await.map_err(|err| {
         export_registry_error(format!(
             "Failed to write checkpoint export file {}: {}",
             temporary_path.display(),
             err
         ))
     })?;
-    fs::rename(&temporary_path, path).map_err(|err| {
+    file.flush().await.map_err(|err| {
+        export_registry_error(format!(
+            "Failed to flush checkpoint export file {}: {}",
+            temporary_path.display(),
+            err
+        ))
+    })?;
+    drop(file);
+    fs::rename(&temporary_path, path).await.map_err(|err| {
         export_registry_error(format!(
             "Failed to install checkpoint export file {}: {}",
             path.display(),
@@ -658,37 +683,41 @@ fn write_atomic_file_buffered(path: &Path, contents: &[u8]) -> DandelionResult<(
     })
 }
 
-#[cfg(feature = "at-least-once")]
-fn write_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
-    write_atomic_file_without_directory_sync(path, contents)?;
+#[cfg(feature = "exactly-once")]
+async fn write_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
+    write_atomic_file_without_directory_sync(path, contents).await?;
     sync_directory(
         path.parent()
             .expect("Durable export files always have a parent directory"),
     )
+    .await
 }
 
 #[cfg(feature = "exactly-once")]
-fn write_checkpoint_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
-    write_atomic_file(path, contents)
+async fn write_checkpoint_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
+    write_atomic_file(path, contents).await
 }
 
 #[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
-fn write_checkpoint_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
-    write_atomic_file_buffered(path, contents)
+async fn write_checkpoint_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
+    write_atomic_file_buffered(path, contents).await
 }
 
 #[cfg(feature = "exactly-once")]
-fn sync_checkpoint_directory(directory: &Path) -> DandelionResult<()> {
-    sync_directory(directory)
+async fn sync_checkpoint_directory(directory: &Path) -> DandelionResult<()> {
+    sync_directory(directory).await
 }
 
 #[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
-fn sync_checkpoint_directory(_directory: &Path) -> DandelionResult<()> {
+async fn sync_checkpoint_directory(_directory: &Path) -> DandelionResult<()> {
     Ok(())
 }
 
 #[cfg(feature = "at-least-once")]
-fn reserve_durable_data_id_block(directory: &Path, first_data_id: u64) -> DandelionResult<u64> {
+async fn reserve_durable_data_id_block(
+    directory: &Path,
+    first_data_id: u64,
+) -> DandelionResult<u64> {
     let reserved_until = first_data_id
         .checked_add(DURABLE_DATA_ID_BLOCK_SIZE)
         .unwrap_or(u64::MAX);
@@ -698,35 +727,36 @@ fn reserve_durable_data_id_block(directory: &Path, first_data_id: u64) -> Dandel
         ));
     }
     let next_data_id_path = directory.join(NEXT_DURABLE_DATA_ID_FILE);
-    write_checkpoint_atomic_file(&next_data_id_path, reserved_until.to_string().as_bytes())?;
+    write_checkpoint_atomic_file(&next_data_id_path, reserved_until.to_string().as_bytes()).await?;
     Ok(reserved_until)
 }
 
 #[cfg(feature = "at-least-once")]
-fn load_durable_exports(
+async fn load_durable_exports(
     directory: &Path,
 ) -> DandelionResult<(BTreeMap<u64, ExportedData>, u64, u64)> {
     let mut durable_data = BTreeMap::new();
     let mut next_data_id = fs::read_to_string(directory.join(NEXT_DURABLE_DATA_ID_FILE))
+        .await
         .ok()
         .and_then(|contents| contents.trim().parse::<u64>().ok())
         .filter(|data_id| *data_id >= DURABLE_DATA_ID_START)
         .unwrap_or(DURABLE_DATA_ID_START);
 
-    for entry in fs::read_dir(directory).map_err(|err| {
+    let mut entries = fs::read_dir(directory).await.map_err(|err| {
         export_registry_error(format!(
             "Failed to read durable export directory {}: {}",
             directory.display(),
             err
         ))
+    })?;
+    while let Some(entry) = entries.next_entry().await.map_err(|err| {
+        export_registry_error(format!(
+            "Failed to inspect durable export directory {}: {}",
+            directory.display(),
+            err
+        ))
     })? {
-        let entry = entry.map_err(|err| {
-            export_registry_error(format!(
-                "Failed to inspect durable export directory {}: {}",
-                directory.display(),
-                err
-            ))
-        })?;
         let path = entry.path();
         if path.extension().and_then(|extension| extension.to_str())
             != Some(DURABLE_DATA_FILE_EXTENSION)
@@ -742,7 +772,7 @@ fn load_durable_exports(
             warn!("Ignoring invalid durable export file {}", path.display());
             continue;
         };
-        let bytes = fs::read(&path).map_err(|err| {
+        let bytes = fs::read(&path).await.map_err(|err| {
             export_registry_error(format!(
                 "Failed to read durable export {}: {}",
                 path.display(),
@@ -765,14 +795,14 @@ fn load_durable_exports(
     }
 
     // reserve a new block of data ids
-    let reserved_until = reserve_durable_data_id_block(directory, next_data_id)?;
+    let reserved_until = reserve_durable_data_id_block(directory, next_data_id).await?;
     Ok((durable_data, next_data_id, reserved_until))
 }
 
 #[cfg(feature = "at-least-once")]
-fn load_io_completion_journal(directory: &Path) -> DandelionResult<Vec<IoCompletionRecord>> {
+async fn load_io_completion_journal(directory: &Path) -> DandelionResult<Vec<IoCompletionRecord>> {
     let journal_path = directory.join(IO_COMPLETION_JOURNAL_FILE);
-    let contents = match fs::read_to_string(&journal_path) {
+    let contents = match fs::read_to_string(&journal_path).await {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => {
@@ -825,12 +855,12 @@ struct CommittedDurableExport {
 }
 
 #[cfg(feature = "at-least-once")]
-fn cleanup_durable_export_files(directory: &Path, data_ids: &[u64]) -> DandelionResult<()> {
+async fn cleanup_durable_export_files(directory: &Path, data_ids: &[u64]) -> DandelionResult<()> {
     for data_id in data_ids {
         let path = durable_data_path(directory, *data_id);
         let temporary_path = path.with_extension(format!("{DURABLE_DATA_FILE_EXTENSION}.tmp"));
         for candidate in [&temporary_path, &path] {
-            match fs::remove_file(candidate) {
+            match fs::remove_file(candidate).await {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
@@ -843,11 +873,11 @@ fn cleanup_durable_export_files(directory: &Path, data_ids: &[u64]) -> Dandelion
             }
         }
     }
-    sync_checkpoint_directory(directory)
+    sync_checkpoint_directory(directory).await
 }
 
-#[cfg(feature = "at-least-once")]
-fn write_durable_export_batch(
+#[cfg(all(feature = "at-least-once", any(feature = "exactly-once", test)))]
+async fn write_durable_export_batch(
     directory: &Path,
     outputs: &[PreparedDurableOutput],
 ) -> DandelionResult<()> {
@@ -857,20 +887,20 @@ fn write_durable_export_batch(
         .collect::<Vec<_>>();
     for output in outputs {
         let path = durable_data_path(directory, output.data_id);
-        if let Err(error) = write_atomic_file_without_directory_sync(&path, &output.bytes) {
-            let _ = cleanup_durable_export_files(directory, &data_ids);
+        if let Err(error) = write_atomic_file_without_directory_sync(&path, &output.bytes).await {
+            let _ = cleanup_durable_export_files(directory, &data_ids).await;
             return Err(error);
         }
     }
-    if let Err(error) = sync_directory(directory) {
-        let _ = cleanup_durable_export_files(directory, &data_ids);
+    if let Err(error) = sync_directory(directory).await {
+        let _ = cleanup_durable_export_files(directory, &data_ids).await;
         return Err(error);
     }
     Ok(())
 }
 
-#[cfg(feature = "at-least-once")]
-fn write_buffered_export_batch(
+#[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
+async fn write_buffered_export_batch(
     directory: &Path,
     outputs: &[PreparedDurableOutput],
 ) -> DandelionResult<()> {
@@ -880,13 +910,13 @@ fn write_buffered_export_batch(
         .collect::<Vec<_>>();
     for output in outputs {
         let path = durable_data_path(directory, output.data_id);
-        if let Err(error) = write_atomic_file_buffered(&path, &output.bytes) {
+        if let Err(error) = write_atomic_file_buffered(&path, &output.bytes).await {
             for data_id in &data_ids {
                 let path = durable_data_path(directory, *data_id);
                 let temporary_path =
                     path.with_extension(format!("{DURABLE_DATA_FILE_EXTENSION}.tmp"));
-                let _ = fs::remove_file(temporary_path);
-                let _ = fs::remove_file(path);
+                let _ = fs::remove_file(temporary_path).await;
+                let _ = fs::remove_file(path).await;
             }
             return Err(error);
         }
@@ -895,19 +925,19 @@ fn write_buffered_export_batch(
 }
 
 #[cfg(feature = "exactly-once")]
-fn write_checkpoint_export_batch(
+async fn write_checkpoint_export_batch(
     directory: &Path,
     outputs: &[PreparedDurableOutput],
 ) -> DandelionResult<()> {
-    write_durable_export_batch(directory, outputs)
+    write_durable_export_batch(directory, outputs).await
 }
 
 #[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
-fn write_checkpoint_export_batch(
+async fn write_checkpoint_export_batch(
     directory: &Path,
     outputs: &[PreparedDurableOutput],
 ) -> DandelionResult<()> {
-    write_buffered_export_batch(directory, outputs)
+    write_buffered_export_batch(directory, outputs).await
 }
 
 struct ExportRegistryInner {
@@ -936,6 +966,8 @@ pub struct ExportRegistry {
     inner: Arc<Mutex<ExportRegistryInner>>,
     #[cfg(feature = "at-least-once")]
     pending_io_completions_changed: Arc<Notify>,
+    #[cfg(feature = "at-least-once")]
+    durable_io_lock: Arc<AsyncMutex<()>>,
 }
 
 impl ExportRegistry {
@@ -963,18 +995,20 @@ impl ExportRegistry {
             })),
             #[cfg(feature = "at-least-once")]
             pending_io_completions_changed: Arc::new(Notify::new()),
+            #[cfg(feature = "at-least-once")]
+            durable_io_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
     /// Opens a registry with a durable export tier rooted at `storage_root`.
     /// Each node gets its own directory so configured nodes can share a root.
     #[cfg(feature = "at-least-once")]
-    pub fn with_durable_storage(
+    pub async fn with_durable_storage(
         node_id: u64,
         storage_root: impl AsRef<Path>,
     ) -> DandelionResult<Self> {
         let directory = storage_root.as_ref().join(node_id.to_string());
-        fs::create_dir_all(&directory).map_err(|err| {
+        fs::create_dir_all(&directory).await.map_err(|err| {
             export_registry_error(format!(
                 "Failed to create durable export directory {}: {}",
                 directory.display(),
@@ -982,8 +1016,8 @@ impl ExportRegistry {
             ))
         })?;
 
-        let (durable_data, next_data_id, reserved_until) = load_durable_exports(&directory)?;
-        let pending_io_completions = load_io_completion_journal(&directory)?;
+        let (durable_data, next_data_id, reserved_until) = load_durable_exports(&directory).await?;
+        let pending_io_completions = load_io_completion_journal(&directory).await?;
         Ok(Self {
             node_id,
             empty_notifier: Arc::new(Notify::new()),
@@ -1006,6 +1040,7 @@ impl ExportRegistry {
                 }),
             })),
             pending_io_completions_changed: Arc::new(Notify::new()),
+            durable_io_lock: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -1295,7 +1330,7 @@ impl ExportRegistry {
     /// Durable references are not configured for delete-on-drop; they remain
     /// pinned until `delete_durable_exported_data` is called explicitly.
     #[cfg(feature = "at-least-once")]
-    pub fn insert_durable_function(
+    pub async fn insert_durable_function(
         &self,
         item: &DataItem,
         context: Arc<Context>,
@@ -1303,23 +1338,38 @@ impl ExportRegistry {
         let mut bytes = vec![0; item.data.size];
         context.read(item.data.offset, &mut bytes)?;
 
-        let mut inner = self.inner.lock().unwrap();
-        let store = inner.durable_store.as_mut().ok_or_else(|| {
-            export_registry_error(
-                "Cannot insert durable data into an in-memory-only export registry".to_string(),
-            )
-        })?;
-        let data_id = store.next_data_id;
-        if data_id >= store.reserved_until {
-            store.reserved_until =
-                reserve_durable_data_id_block(&store.directory, store.next_data_id)?;
-        }
+        let _io_guard = self.durable_io_lock.lock().await;
+        let (data_id, directory, reservation) = {
+            let inner = self.inner.lock().unwrap();
+            let store = inner.durable_store.as_ref().ok_or_else(|| {
+                export_registry_error(
+                    "Cannot insert durable data into an in-memory-only export registry".to_string(),
+                )
+            })?;
+            let reservation =
+                (store.next_data_id >= store.reserved_until).then_some(store.next_data_id);
+            (store.next_data_id, store.directory.clone(), reservation)
+        };
+        let new_reserved_until = match reservation {
+            Some(first_data_id) => {
+                Some(reserve_durable_data_id_block(&directory, first_data_id).await?)
+            }
+            None => None,
+        };
         let next_data_id = data_id
             .checked_add(1)
             .ok_or_else(|| export_registry_error("Durable export data id space exhausted"))?;
 
-        let data_path = durable_data_path(&store.directory, data_id);
-        write_checkpoint_atomic_file(&data_path, &bytes)?;
+        let data_path = durable_data_path(&directory, data_id);
+        write_checkpoint_atomic_file(&data_path, &bytes).await?;
+        let mut inner = self.inner.lock().unwrap();
+        let store = inner
+            .durable_store
+            .as_mut()
+            .expect("durable store disappeared");
+        if let Some(reserved_until) = new_reserved_until {
+            store.reserved_until = reserved_until;
+        }
         store.next_data_id = next_data_id;
 
         let size = bytes.len();
@@ -1337,7 +1387,7 @@ impl ExportRegistry {
     // Claim consecutive data ids under the mutex. files are written later without the lock
     // export registry items are only written once and then only read, or deleted
     #[cfg(feature = "at-least-once")]
-    fn reserve_durable_export_batch(
+    async fn reserve_durable_export_batch(
         &self,
         _invocation_id: dandelion_commons::InvocationId,
         output_count: usize,
@@ -1350,17 +1400,24 @@ impl ExportRegistry {
             ));
         }
 
-        let mut inner = self.inner.lock().unwrap();
-        let store = inner.durable_store.as_mut().ok_or_else(|| {
-            export_registry_error("Cannot reserve durable data without durable storage")
-        })?;
-        let first_data_id = store.next_data_id;
+        let _io_guard = self.durable_io_lock.lock().await;
+        let (first_data_id, current_reserved_until, directory) = {
+            let inner = self.inner.lock().unwrap();
+            let store = inner.durable_store.as_ref().ok_or_else(|| {
+                export_registry_error("Cannot reserve durable data without durable storage")
+            })?;
+            (
+                store.next_data_id,
+                store.reserved_until,
+                store.directory.clone(),
+            )
+        };
         let next_data_id = first_data_id
             .checked_add(output_count)
             .ok_or_else(|| export_registry_error("Durable export data id space exhausted"))?;
         // Persist a new range of ids so a crash cannot reuse these ids.
-        if next_data_id > store.reserved_until {
-            let mut reserved_until = store.reserved_until;
+        let new_reserved_until = if next_data_id > current_reserved_until {
+            let mut reserved_until = current_reserved_until;
             while reserved_until < next_data_id {
                 let expanded = reserved_until
                     .checked_add(DURABLE_DATA_ID_BLOCK_SIZE)
@@ -1372,15 +1429,22 @@ impl ExportRegistry {
                 }
                 reserved_until = expanded;
             }
-            let next_data_id_path = store.directory.join(NEXT_DURABLE_DATA_ID_FILE);
-            write_checkpoint_atomic_file(
-                &next_data_id_path,
-                reserved_until.to_string().as_bytes(),
-            )?;
+            let next_data_id_path = directory.join(NEXT_DURABLE_DATA_ID_FILE);
+            write_checkpoint_atomic_file(&next_data_id_path, reserved_until.to_string().as_bytes())
+                .await?;
+            Some(reserved_until)
+        } else {
+            None
+        };
+        let mut inner = self.inner.lock().unwrap();
+        let store = inner
+            .durable_store
+            .as_mut()
+            .expect("durable store disappeared");
+        if let Some(reserved_until) = new_reserved_until {
             store.reserved_until = reserved_until;
         }
         store.next_data_id = next_data_id;
-        let directory = store.directory.clone();
         let data_ids = (first_data_id..next_data_id).collect::<Vec<_>>();
         inner.pending_durable_exports.insert(
             first_data_id,
@@ -1502,8 +1566,9 @@ impl ExportRegistry {
         }
 
         // reserve a batch of data ids
-        let (batch_id, directory, data_ids) =
-            self.reserve_durable_export_batch(invocation_id, output_bytes.len())?;
+        let (batch_id, directory, data_ids) = self
+            .reserve_durable_export_batch(invocation_id, output_bytes.len())
+            .await?;
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoExportRegistryLockWaitEnd);
         }
@@ -1521,40 +1586,17 @@ impl ExportRegistry {
 
         let cleanup_directory = directory.clone();
         let cleanup_ids = data_ids.clone();
-        // Blocking disk I/O on a worker thread so the async runtime can keep serving.
         if let Some(recorder) = recorder.as_mut() {
-            recorder.record(dandelion_commons::records::RecordPoint::IoBlockingPoolWaitStart);
+            recorder.record(dandelion_commons::records::RecordPoint::IoFilePersistenceStart);
         }
-        let mut persistence_recorder = recorder.clone();
-        let persisted = tokio::task::spawn_blocking(move || {
-            if let Some(recorder) = persistence_recorder.as_mut() {
-                recorder.record(dandelion_commons::records::RecordPoint::IoBlockingPoolWaitEnd);
-                recorder.record(dandelion_commons::records::RecordPoint::IoFilePersistenceStart);
-            }
-            let write_result = write_checkpoint_export_batch(&directory, &prepared);
-            if let Some(recorder) = persistence_recorder.as_mut() {
-                recorder.record(dandelion_commons::records::RecordPoint::IoFilePersistenceEnd);
-            }
-            write_result?;
-            Ok::<_, dandelion_commons::DError>(prepared)
-        })
-        .await
-        .map_err(|error| {
-            export_registry_error(format!("Durable output persistence task failed: {error}"))
-        });
-
-        let prepared = match persisted {
-            Ok(Ok(prepared)) => prepared,
-            Ok(Err(error)) => {
-                self.discard_durable_export_batch(batch_id);
-                return Err(error);
-            }
+        let write_result = write_checkpoint_export_batch(&directory, &prepared).await;
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoFilePersistenceEnd);
+        }
+        let prepared = match write_result {
+            Ok(()) => prepared,
             Err(error) => {
                 self.discard_durable_export_batch(batch_id);
-                let _ = tokio::task::spawn_blocking(move || {
-                    cleanup_durable_export_files(&cleanup_directory, &cleanup_ids)
-                })
-                .await;
                 return Err(error);
             }
         };
@@ -1571,10 +1613,7 @@ impl ExportRegistry {
             Ok(references) => Ok(references),
             Err(error) => {
                 self.discard_durable_export_batch(batch_id);
-                let _ = tokio::task::spawn_blocking(move || {
-                    cleanup_durable_export_files(&cleanup_directory, &cleanup_ids)
-                })
-                .await;
+                let _ = cleanup_durable_export_files(&cleanup_directory, &cleanup_ids).await;
                 Err(error)
             }
         }
@@ -1583,43 +1622,47 @@ impl ExportRegistry {
     /// Records a completion so delivery can be retried after a worker or connection failure.
     /// Returns `true` when a new logical completion was appended and `false` for a duplicate.
     #[cfg(feature = "at-least-once")]
-    pub fn append_io_completion_record(
+    pub async fn append_io_completion_record(
         &self,
         record: &IoCompletionRecord,
         mut recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<bool> {
+        let _io_guard = self.durable_io_lock.lock().await;
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalLockWaitStart);
         }
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(recorder) = recorder.as_mut() {
-            recorder.record(dandelion_commons::records::RecordPoint::IoJournalLockWaitEnd);
-        }
-        let store = inner.durable_store.as_ref().ok_or_else(|| {
-            export_registry_error(
-                "Cannot journal an IO completion in an in-memory-only export registry",
-            )
-        })?;
-        let journal_path = store.directory.join(IO_COMPLETION_JOURNAL_FILE);
         let record_key = record.completion_key()?;
-        if let Some(recorder) = recorder.as_mut() {
-            recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanStart);
-        }
-        // Already queued for delivery; caller should drop duplicate exports.
-        for pending in &inner.pending_io_completions {
-            if pending.completion_key()? == record_key {
-                if let Some(recorder) = recorder.as_mut() {
-                    recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanEnd);
-                }
-                return Ok(false);
+        let (journal_path, pending_io_completions) = {
+            let inner = self.inner.lock().unwrap();
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoJournalLockWaitEnd);
             }
-        }
-        if let Some(recorder) = recorder.as_mut() {
-            recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanEnd);
-        }
-        // Rewrite the whole journal: append is not crash-safe without rewriting.
-        let mut pending_io_completions = inner.pending_io_completions.clone();
-        pending_io_completions.push(record.clone());
+            let store = inner.durable_store.as_ref().ok_or_else(|| {
+                export_registry_error(
+                    "Cannot journal an IO completion in an in-memory-only export registry",
+                )
+            })?;
+            let journal_path = store.directory.join(IO_COMPLETION_JOURNAL_FILE);
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanStart);
+            }
+            // Already queued for delivery; caller should drop duplicate exports.
+            for pending in &inner.pending_io_completions {
+                if pending.completion_key()? == record_key {
+                    if let Some(recorder) = recorder.as_mut() {
+                        recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanEnd);
+                    }
+                    return Ok(false);
+                }
+            }
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanEnd);
+            }
+            // Rewrite the whole journal: append is not crash-safe without rewriting.
+            let mut pending_io_completions = inner.pending_io_completions.clone();
+            pending_io_completions.push(record.clone());
+            (journal_path, pending_io_completions)
+        };
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeStart);
         }
@@ -1635,13 +1678,15 @@ impl ExportRegistry {
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteStart);
         }
-        let write_result = write_checkpoint_atomic_file(&journal_path, journal_contents.as_bytes());
+        let write_result =
+            write_checkpoint_atomic_file(&journal_path, journal_contents.as_bytes()).await;
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteEnd);
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
         }
         write_result?;
         // Only update memory after the replacement journal is installed.
+        let mut inner = self.inner.lock().unwrap();
         inner.pending_io_completions = pending_io_completions;
         #[cfg(feature = "timestamp")]
         if let Some(recorder) = recorder {
@@ -1681,34 +1726,39 @@ impl ExportRegistry {
     /// Removes a completion from the durable delivery journal after the owner has acknowledged
     /// persisting it. Durable output data remains available for subsequent `RemoteData` reads.
     #[cfg(feature = "at-least-once")]
-    pub fn acknowledge_io_completion(
+    pub async fn acknowledge_io_completion(
         &self,
         completion_key: &IoCompletionKey,
     ) -> DandelionResult<bool> {
-        let mut inner = self.inner.lock().unwrap();
-        let mut record_index = None;
-        for (index, record) in inner.pending_io_completions.iter().enumerate() {
-            if record.completion_key()? == *completion_key {
-                record_index = Some(index);
-                break;
+        let _io_guard = self.durable_io_lock.lock().await;
+        let (journal_path, pending_io_completions) = {
+            let inner = self.inner.lock().unwrap();
+            let mut record_index = None;
+            for (index, record) in inner.pending_io_completions.iter().enumerate() {
+                if record.completion_key()? == *completion_key {
+                    record_index = Some(index);
+                    break;
+                }
             }
-        }
-        let Some(record_index) = record_index else {
-            return Ok(false);
+            let Some(record_index) = record_index else {
+                return Ok(false);
+            };
+            let store = inner.durable_store.as_ref().ok_or_else(|| {
+                export_registry_error(
+                    "Cannot acknowledge an IO completion in an in-memory-only export registry",
+                )
+            })?;
+            let journal_path = store.directory.join(IO_COMPLETION_JOURNAL_FILE);
+            let mut pending_io_completions = inner.pending_io_completions.clone();
+            pending_io_completions.remove(record_index);
+            (journal_path, pending_io_completions)
         };
-        let store = inner.durable_store.as_ref().ok_or_else(|| {
-            export_registry_error(
-                "Cannot acknowledge an IO completion in an in-memory-only export registry",
-            )
-        })?;
-        let journal_path = store.directory.join(IO_COMPLETION_JOURNAL_FILE);
-        let mut pending_io_completions = inner.pending_io_completions.clone();
-        pending_io_completions.remove(record_index);
         let journal_contents = pending_io_completions
             .iter()
             .map(format_io_completion_line)
             .collect::<DandelionResult<String>>()?;
-        write_checkpoint_atomic_file(&journal_path, journal_contents.as_bytes())?;
+        write_checkpoint_atomic_file(&journal_path, journal_contents.as_bytes()).await?;
+        let mut inner = self.inner.lock().unwrap();
         inner.pending_io_completions = pending_io_completions;
         #[cfg(feature = "timestamp")]
         inner.pending_io_completion_recorders.remove(completion_key);
@@ -1716,7 +1766,7 @@ impl ExportRegistry {
     }
 
     #[cfg(feature = "at-least-once")]
-    pub fn apply_io_completion_ack(
+    pub async fn apply_io_completion_ack(
         &self,
         completion_key: &IoCompletionKey,
         disposition: IoCompletionDisposition,
@@ -1738,13 +1788,13 @@ impl ExportRegistry {
                 for output in record.outputs {
                     for item in output.items {
                         if let IoCompletionData::Remote { data_id, .. } = item.location {
-                            self.delete_durable_exported_data(data_id)?;
+                            self.delete_durable_exported_data(data_id).await?;
                         }
                     }
                 }
             }
         }
-        self.acknowledge_io_completion(completion_key)
+        self.acknowledge_io_completion(completion_key).await
     }
 
     fn get_exported_data(&self, data_id: u64) -> DandelionResult<ExportedData> {
@@ -1792,14 +1842,14 @@ impl ExportRegistry {
         Ok(result_data)
     }
 
-    pub fn delete_exported_data(&self, data_id: u64) -> DandelionResult<()> {
+    pub async fn delete_exported_data(&self, data_id: u64) -> DandelionResult<()> {
         debug!(
             "Deleting exported data: node_id={}, data_id={}",
             self.node_id, data_id
         );
         #[cfg(feature = "at-least-once")]
         if is_durable_data_id(data_id) {
-            return self.delete_durable_exported_data(data_id);
+            return self.delete_durable_exported_data(data_id).await;
         }
 
         let mut inner = self.inner.lock().unwrap();
@@ -1834,31 +1884,38 @@ impl ExportRegistry {
     /// Explicitly releases a durable export. Missing exports are treated as already deleted so
     /// delayed or duplicate reference-drop messages remain idempotent.
     #[cfg(feature = "at-least-once")]
-    pub fn delete_durable_exported_data(&self, data_id: u64) -> DandelionResult<()> {
+    pub async fn delete_durable_exported_data(&self, data_id: u64) -> DandelionResult<()> {
         debug!(
             "Deleting durable exported data: node_id={}, data_id={}",
             self.node_id, data_id
         );
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.durable_data.contains_key(&data_id) {
-            debug!(
-                "Durable exported data was already deleted: node_id={}, data_id={}",
-                self.node_id, data_id
-            );
-            return Ok(());
-        }
-        let store = inner.durable_store.as_ref().ok_or_else(|| {
-            export_registry_error("Durable export registry storage is unavailable".to_string())
-        })?;
-        let data_path = durable_data_path(&store.directory, data_id);
-        fs::remove_file(&data_path).map_err(|err| {
+        let _io_guard = self.durable_io_lock.lock().await;
+        let (data_path, directory) = {
+            let inner = self.inner.lock().unwrap();
+            if !inner.durable_data.contains_key(&data_id) {
+                debug!(
+                    "Durable exported data was already deleted: node_id={}, data_id={}",
+                    self.node_id, data_id
+                );
+                return Ok(());
+            }
+            let store = inner.durable_store.as_ref().ok_or_else(|| {
+                export_registry_error("Durable export registry storage is unavailable".to_string())
+            })?;
+            (
+                durable_data_path(&store.directory, data_id),
+                store.directory.clone(),
+            )
+        };
+        fs::remove_file(&data_path).await.map_err(|err| {
             export_registry_error(format!(
                 "Failed to delete durable export {}: {}",
                 data_path.display(),
                 err
             ))
         })?;
-        sync_checkpoint_directory(&store.directory)?;
+        sync_checkpoint_directory(&directory).await?;
+        let mut inner = self.inner.lock().unwrap();
         inner.durable_data.remove(&data_id);
         Ok(())
     }
@@ -2146,7 +2203,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
         );
         Box::pin(async move {
             if data.node_id == self.local_registry.node_id {
-                return self.local_registry.delete_exported_data(data.data_id);
+                return self.local_registry.delete_exported_data(data.data_id).await;
             }
 
             let mut url = self.remote_data_url(data.node_id)?;
@@ -2241,7 +2298,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         for output in &exported {
                             let _ = self
                                 .local_registry
-                                .delete_durable_exported_data(output.data_id);
+                                .delete_durable_exported_data(output.data_id)
+                                .await;
                         }
                         self.local_registry
                             .finish_durable_export_batch(export_batch_id);
@@ -2253,7 +2311,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 if disposition == IoCompletionDisposition::Delete {
                     for output in exported {
                         self.local_registry
-                            .delete_durable_exported_data(output.data_id)?;
+                            .delete_durable_exported_data(output.data_id)
+                            .await?;
                     }
                 }
                 return Ok(());
@@ -2261,14 +2320,16 @@ impl RemoteDataClient for HttpRemoteDataClient {
 
             let appended = self
                 .local_registry
-                .append_io_completion_record(&record, recorder.clone());
+                .append_io_completion_record(&record, recorder.clone())
+                .await;
             let appended = match appended {
                 Ok(appended) => appended,
                 Err(error) => {
                     for output in &exported {
                         let _ = self
                             .local_registry
-                            .delete_durable_exported_data(output.data_id);
+                            .delete_durable_exported_data(output.data_id)
+                            .await;
                     }
                     self.local_registry
                         .finish_durable_export_batch(export_batch_id);
@@ -2280,7 +2341,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
             if !appended {
                 for output in exported {
                     self.local_registry
-                        .delete_durable_exported_data(output.data_id)?;
+                        .delete_durable_exported_data(output.data_id)
+                        .await?;
                 }
                 return Ok(());
             }
@@ -2289,11 +2351,13 @@ impl RemoteDataClient for HttpRemoteDataClient {
             if completion.owner_node_id == self.local_registry.node_id {
                 let disposition = accept_delivered_io_completion_record(&record)?;
                 self.local_registry
-                    .acknowledge_io_completion(&record.completion_key()?)?;
+                    .acknowledge_io_completion(&record.completion_key()?)
+                    .await?;
                 if disposition == IoCompletionDisposition::Delete {
                     for output in exported {
                         self.local_registry
-                            .delete_durable_exported_data(output.data_id)?;
+                            .delete_durable_exported_data(output.data_id)
+                            .await?;
                     }
                 }
             }
@@ -2461,7 +2525,10 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     }
                     if let Err(error) = approval {
                         for data_id in &exported_data_ids {
-                            let _ = self.local_registry.delete_durable_exported_data(*data_id);
+                            let _ = self
+                                .local_registry
+                                .delete_durable_exported_data(*data_id)
+                                .await;
                         }
                         wire_outcome = Err(error.to_string());
                         completion_error = Some(error);
@@ -2475,7 +2542,10 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 }
                 if let Err(error) = publish {
                     for data_id in &exported_data_ids {
-                        let _ = self.local_registry.delete_durable_exported_data(*data_id);
+                        let _ = self
+                            .local_registry
+                            .delete_durable_exported_data(*data_id)
+                            .await;
                     }
                     return Err(error);
                 }
@@ -2493,6 +2563,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     match self
                         .local_registry
                         .append_io_completion_record(&record, recorder.clone())
+                        .await
                     {
                         Ok(_) => {
                             if let Some(batch_id) = export_batch_id.take() {
@@ -2502,7 +2573,10 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         }
                         Err(error) => {
                             for data_id in &exported_data_ids {
-                                let _ = self.local_registry.delete_durable_exported_data(*data_id);
+                                let _ = self
+                                    .local_registry
+                                    .delete_durable_exported_data(*data_id)
+                                    .await;
                             }
                             wire_outcome = Err(error.to_string());
                             completion_error = Some(error);
@@ -2555,7 +2629,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         .record(dandelion_commons::records::RecordPoint::IoAcknowledgementStart);
                 }
                 self.local_registry
-                    .acknowledge_io_completion(&record.completion_key()?)?;
+                    .acknowledge_io_completion(&record.completion_key()?)
+                    .await?;
                 if let Some(recorder) = recorder.as_mut() {
                     recorder.record(dandelion_commons::records::RecordPoint::IoAcknowledgementEnd);
                 }
@@ -2695,7 +2770,7 @@ async fn handle_exported_data(
         &Method::DELETE => match id_string.parse::<u64>() {
             Err(err) => return bad_request(format!("Invalid data id: {}", err)),
             Ok(data_id) => {
-                return match export_registry.delete_exported_data(data_id) {
+                return match export_registry.delete_exported_data(data_id).await {
                     Err(err) => bad_request(format!("Delete failed with: {}", err)),
                     Ok(()) => Ok(Response::new(ExportedBody {
                         inner: VecDeque::new(),
@@ -2849,7 +2924,7 @@ mod checkpoint_tests {
     use super::*;
     use dandelion_commons::InvocationId;
 
-    fn insert_test_export(registry: &ExportRegistry, value: u8) -> RemoteData {
+    async fn insert_test_export(registry: &ExportRegistry, value: u8) -> RemoteData {
         let bytes = vec![value];
         let item = DataItem {
             ident: "item".to_string(),
@@ -2864,6 +2939,7 @@ mod checkpoint_tests {
                 &item,
                 Arc::new(ReadOnlyContext::new(bytes.into_boxed_slice()).unwrap()),
             )
+            .await
             .unwrap()
     }
 
@@ -2882,18 +2958,19 @@ mod checkpoint_tests {
         }
     }
 
-    fn persisted_data_id_high_watermark(root: &Path, node_id: u64) -> u64 {
+    async fn persisted_data_id_high_watermark(root: &Path, node_id: u64) -> u64 {
         fs::read_to_string(
             root.join(node_id.to_string())
                 .join(NEXT_DURABLE_DATA_ID_FILE),
         )
+        .await
         .unwrap()
         .trim()
         .parse()
         .unwrap()
     }
 
-    fn pending_completion(registry: &ExportRegistry) -> (IoCompletionKey, u64) {
+    async fn pending_completion(registry: &ExportRegistry) -> (IoCompletionKey, u64) {
         let bytes = b"checkpoint".to_vec();
         let item = DataItem {
             ident: "item".to_string(),
@@ -2908,6 +2985,7 @@ mod checkpoint_tests {
                 &item,
                 Arc::new(ReadOnlyContext::new(bytes.into_boxed_slice()).unwrap()),
             )
+            .await
             .unwrap();
         let record = IoCompletionRecord {
             invocation_id: InvocationId::now_v7(),
@@ -2928,99 +3006,113 @@ mod checkpoint_tests {
             }],
         };
         let key = record.completion_key().unwrap();
-        registry.append_io_completion_record(&record, None).unwrap();
+        registry
+            .append_io_completion_record(&record, None)
+            .await
+            .unwrap();
         (key, remote.data_id)
     }
 
-    fn registry_for_test(name: &str) -> (PathBuf, ExportRegistry) {
+    async fn registry_for_test(name: &str) -> (PathBuf, ExportRegistry) {
         let root =
             std::env::temp_dir().join(format!("dandelion-{name}-{}", InvocationId::now_v7()));
-        let registry = ExportRegistry::with_durable_storage(7, &root).unwrap();
+        let registry = ExportRegistry::with_durable_storage(7, &root)
+            .await
+            .unwrap();
         (root, registry)
     }
 
-    #[test]
-    fn delete_ack_removes_losing_output_and_journal_entry() {
-        let (root, registry) = registry_for_test("alo-delete-ack");
-        let (key, data_id) = pending_completion(&registry);
+    #[tokio::test]
+    async fn delete_ack_removes_losing_output_and_journal_entry() {
+        let (root, registry) = registry_for_test("alo-delete-ack").await;
+        let (key, data_id) = pending_completion(&registry).await;
         assert!(registry
             .apply_io_completion_ack(&key, IoCompletionDisposition::Delete)
+            .await
             .unwrap());
         assert!(registry.pending_io_completion_records().is_empty());
         assert!(registry.fetch_context(data_id).is_err());
-        std::fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(root).await.unwrap();
     }
 
-    #[test]
-    fn retain_ack_keeps_winner_output() {
-        let (root, registry) = registry_for_test("alo-retain-ack");
-        let (key, data_id) = pending_completion(&registry);
+    #[tokio::test]
+    async fn retain_ack_keeps_winner_output() {
+        let (root, registry) = registry_for_test("alo-retain-ack").await;
+        let (key, data_id) = pending_completion(&registry).await;
         assert!(registry
             .apply_io_completion_ack(&key, IoCompletionDisposition::Retain)
+            .await
             .unwrap());
         assert!(registry.pending_io_completion_records().is_empty());
         assert!(registry.fetch_context(data_id).is_ok());
-        std::fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(root).await.unwrap();
     }
 
-    #[test]
-    fn durable_ids_are_allocated_without_rewriting_reserved_high_watermark() {
-        let (root, registry) = registry_for_test("durable-id-reservation");
-        let high_watermark = persisted_data_id_high_watermark(&root, 7);
+    #[tokio::test]
+    async fn durable_ids_are_allocated_without_rewriting_reserved_high_watermark() {
+        let (root, registry) = registry_for_test("durable-id-reservation").await;
+        let high_watermark = persisted_data_id_high_watermark(&root, 7).await;
 
-        let first = insert_test_export(&registry, 1);
-        let second = insert_test_export(&registry, 2);
+        let first = insert_test_export(&registry, 1).await;
+        let second = insert_test_export(&registry, 2).await;
 
         assert_eq!(second.data_id, first.data_id + 1);
-        assert_eq!(persisted_data_id_high_watermark(&root, 7), high_watermark);
-        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            persisted_data_id_high_watermark(&root, 7).await,
+            high_watermark
+        );
+        fs::remove_dir_all(root).await.unwrap();
     }
 
-    #[test]
-    fn restart_does_not_reuse_deleted_or_unused_reserved_ids() {
-        let (root, registry) = registry_for_test("durable-id-restart");
-        let first = insert_test_export(&registry, 1);
-        let first_high_watermark = persisted_data_id_high_watermark(&root, 7);
+    #[tokio::test]
+    async fn restart_does_not_reuse_deleted_or_unused_reserved_ids() {
+        let (root, registry) = registry_for_test("durable-id-restart").await;
+        let first = insert_test_export(&registry, 1).await;
+        let first_high_watermark = persisted_data_id_high_watermark(&root, 7).await;
         registry
             .delete_durable_exported_data(first.data_id)
+            .await
             .unwrap();
         drop(registry);
 
-        let restored = ExportRegistry::with_durable_storage(7, &root).unwrap();
-        let after_restart = insert_test_export(&restored, 2);
+        let restored = ExportRegistry::with_durable_storage(7, &root)
+            .await
+            .unwrap();
+        let after_restart = insert_test_export(&restored, 2).await;
 
         assert_eq!(after_restart.data_id, first_high_watermark);
         assert!(after_restart.data_id > first.data_id);
-        std::fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(root).await.unwrap();
     }
 
-    #[test]
-    fn exhausting_a_reserved_block_persists_the_next_block_before_allocation() {
-        let (root, registry) = registry_for_test("durable-id-boundary");
-        let first_high_watermark = persisted_data_id_high_watermark(&root, 7);
+    #[tokio::test]
+    async fn exhausting_a_reserved_block_persists_the_next_block_before_allocation() {
+        let (root, registry) = registry_for_test("durable-id-boundary").await;
+        let first_high_watermark = persisted_data_id_high_watermark(&root, 7).await;
         {
             let mut inner = registry.inner.lock().unwrap();
             let store = inner.durable_store.as_mut().unwrap();
             store.next_data_id = store.reserved_until;
         }
 
-        let first_in_next_block = insert_test_export(&registry, 1);
-        let second_high_watermark = persisted_data_id_high_watermark(&root, 7);
+        let first_in_next_block = insert_test_export(&registry, 1).await;
+        let second_high_watermark = persisted_data_id_high_watermark(&root, 7).await;
 
         assert_eq!(first_in_next_block.data_id, first_high_watermark);
         assert_eq!(
             second_high_watermark,
             first_high_watermark + DURABLE_DATA_ID_BLOCK_SIZE
         );
-        std::fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(root).await.unwrap();
     }
 
-    #[test]
-    fn persisted_batch_is_invisible_until_all_outputs_are_committed() {
-        let (root, registry) = registry_for_test("durable-batch-visibility");
+    #[tokio::test]
+    async fn persisted_batch_is_invisible_until_all_outputs_are_committed() {
+        let (root, registry) = registry_for_test("durable-batch-visibility").await;
         let invocation_id = InvocationId::now_v7();
         let (batch_id, directory, data_ids) = registry
             .reserve_durable_export_batch(invocation_id, 2)
+            .await
             .unwrap();
         let outputs = data_ids
             .iter()
@@ -3031,7 +3123,9 @@ mod checkpoint_tests {
                 bytes: vec![index as u8],
             })
             .collect::<Vec<_>>();
-        write_durable_export_batch(&directory, &outputs).unwrap();
+        write_durable_export_batch(&directory, &outputs)
+            .await
+            .unwrap();
 
         assert!(data_ids
             .iter()
@@ -3045,12 +3139,12 @@ mod checkpoint_tests {
             .iter()
             .all(|reference| registry.fetch_context(reference.data_id).is_ok()));
         registry.finish_durable_export_batch(committed.batch_id);
-        std::fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(root).await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_batches_receive_distinct_durable_outputs() {
-        let (root, registry) = registry_for_test("durable-batch-concurrency");
+        let (root, registry) = registry_for_test("durable-batch-concurrency").await;
         let first_registry = registry.clone();
         let second_registry = registry.clone();
         let (first, second) = tokio::join!(
@@ -3084,7 +3178,7 @@ mod checkpoint_tests {
             .all(|reference| registry.fetch_context(reference.data_id).is_ok()));
         registry.finish_durable_export_batch(first.batch_id);
         registry.finish_durable_export_batch(second.batch_id);
-        std::fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(root).await.unwrap();
     }
 }
 
@@ -3171,8 +3265,9 @@ mod tests {
             InvocationId::now_v7()
         ));
         let owner_registry = ExportRegistry::new(owner_node_id);
-        let winner_registry =
-            ExportRegistry::with_durable_storage(winner_node_id, &test_root).unwrap();
+        let winner_registry = ExportRegistry::with_durable_storage(winner_node_id, &test_root)
+            .await
+            .unwrap();
         let duplicate_registry = ExportRegistry::new(duplicate_node_id);
 
         let original_bytes = b"owner-local HTTP request".to_vec();
@@ -3287,7 +3382,7 @@ mod tests {
 
         owner_server.abort();
         winner_server.abort();
-        std::fs::remove_dir_all(test_root).unwrap();
+        fs::remove_dir_all(test_root).await.unwrap();
     }
 
     #[tokio::test]
@@ -3656,7 +3751,9 @@ mod tests {
             InvocationId::now_v7()
         ));
         let node_id = 7;
-        let registry = ExportRegistry::with_durable_storage(node_id, &test_root).unwrap();
+        let registry = ExportRegistry::with_durable_storage(node_id, &test_root)
+            .await
+            .unwrap();
         let client = HttpRemoteDataClient::new(BTreeMap::new(), registry.clone());
         let key = coordination_key();
         machine_interface::function_driver::system_driver::recovery_log::append_invocation_log_line(
@@ -3724,10 +3821,13 @@ mod tests {
         }
 
         assert!(registry.pending_io_completion_records().is_empty());
-        assert!(!test_root
-            .join(node_id.to_string())
-            .join(IO_COMPLETION_JOURNAL_FILE)
-            .exists());
+        assert!(!fs::try_exists(
+            test_root
+                .join(node_id.to_string())
+                .join(IO_COMPLETION_JOURNAL_FILE)
+        )
+        .await
+        .unwrap());
         let invocation_log =
             machine_interface::function_driver::system_driver::recovery_log::read_invocation_log(
                 key.invocation_id,
@@ -3743,10 +3843,12 @@ mod tests {
         drop(client);
         drop(registry);
 
-        let restored = ExportRegistry::with_durable_storage(node_id, &test_root).unwrap();
+        let restored = ExportRegistry::with_durable_storage(node_id, &test_root)
+            .await
+            .unwrap();
         let (context, position) = restored.fetch_context(remote.data_id).unwrap();
         assert_eq!(expected, context_bytes(context.as_ref(), position));
-        std::fs::remove_dir_all(test_root).unwrap();
+        fs::remove_dir_all(test_root).await.unwrap();
     }
 
     #[tokio::test]
@@ -3757,7 +3859,9 @@ mod tests {
             InvocationId::now_v7()
         ));
         let node_id = 8;
-        let registry = ExportRegistry::with_durable_storage(node_id, &test_root).unwrap();
+        let registry = ExportRegistry::with_durable_storage(node_id, &test_root)
+            .await
+            .unwrap();
         let client = HttpRemoteDataClient::new(BTreeMap::new(), registry.clone());
         let key = coordination_key();
         registry.begin_io_resolution(key.clone(), 0, None).unwrap();
@@ -3787,34 +3891,37 @@ mod tests {
             _ => panic!("completion should be stored"),
         };
         let path = durable_data_path(&test_root.join(node_id.to_string()), remote.data_id);
-        assert!(path.exists());
+        assert!(fs::try_exists(&path).await.unwrap());
 
         client
             .clear_io_coordination(key.invocation_id)
             .await
             .unwrap();
-        assert!(!path.exists());
+        assert!(!fs::try_exists(&path).await.unwrap());
         assert!(!registry
             .inner
             .lock()
             .unwrap()
             .io_resolutions
             .contains_key(&key));
-        std::fs::remove_dir_all(test_root).unwrap();
+        fs::remove_dir_all(test_root).await.unwrap();
     }
 
-    #[test]
-    fn cancelled_invocation_rejects_a_late_durable_batch() {
+    #[tokio::test]
+    async fn cancelled_invocation_rejects_a_late_durable_batch() {
         let test_root = std::env::temp_dir().join(format!(
             "dandelion-cancelled-batch-test-{}",
             InvocationId::now_v7()
         ));
         let node_id = 9;
-        let registry = ExportRegistry::with_durable_storage(node_id, &test_root).unwrap();
+        let registry = ExportRegistry::with_durable_storage(node_id, &test_root)
+            .await
+            .unwrap();
         let key = coordination_key();
         registry.begin_io_resolution(key.clone(), 0, None).unwrap();
         let (batch_id, directory, data_ids) = registry
             .reserve_durable_export_batch(key.invocation_id, 2)
+            .await
             .unwrap();
         let outputs = data_ids
             .iter()
@@ -3825,7 +3932,9 @@ mod tests {
                 bytes: vec![index as u8],
             })
             .collect::<Vec<_>>();
-        write_durable_export_batch(&directory, &outputs).unwrap();
+        write_durable_export_batch(&directory, &outputs)
+            .await
+            .unwrap();
 
         let cancelled_outputs = registry.cancel_io_coordination(key.invocation_id);
 
@@ -3833,18 +3942,20 @@ mod tests {
         assert!(registry
             .commit_durable_export_batch(batch_id, outputs)
             .is_err());
-        cleanup_durable_export_files(&directory, &data_ids).unwrap();
+        cleanup_durable_export_files(&directory, &data_ids)
+            .await
+            .unwrap();
         assert!(registry
             .publish_io_resolution_inner(key, Ok(Vec::new()))
             .is_err());
         assert!(data_ids
             .iter()
             .all(|data_id| registry.fetch_context(*data_id).is_err()));
-        std::fs::remove_dir_all(test_root).unwrap();
+        fs::remove_dir_all(test_root).await.unwrap();
     }
 
-    #[test]
-    fn durable_export_survives_registry_restart() {
+    #[tokio::test]
+    async fn durable_export_survives_registry_restart() {
         let test_root = std::env::temp_dir().join(format!(
             "dandelion-durable-export-test-{}",
             InvocationId::now_v7()
@@ -3860,23 +3971,30 @@ mod tests {
             },
         };
 
-        let registry = ExportRegistry::with_durable_storage(node_id, &test_root).unwrap();
+        let registry = ExportRegistry::with_durable_storage(node_id, &test_root)
+            .await
+            .unwrap();
         let context = Arc::new(ReadOnlyContext::new(expected.clone().into_boxed_slice()).unwrap());
-        let remote = registry.insert_durable_function(&item, context).unwrap();
+        let remote = registry
+            .insert_durable_function(&item, context)
+            .await
+            .unwrap();
         assert!(is_durable_data_id(remote.data_id));
         drop(registry);
 
-        let restored = ExportRegistry::with_durable_storage(node_id, &test_root).unwrap();
+        let restored = ExportRegistry::with_durable_storage(node_id, &test_root)
+            .await
+            .unwrap();
         let (context, position) = restored.fetch_context(remote.data_id).unwrap();
         let mut actual = vec![0; position.size];
         context.read(position.offset, &mut actual).unwrap();
         assert_eq!(expected, actual);
 
-        std::fs::remove_dir_all(&test_root).unwrap();
+        fs::remove_dir_all(&test_root).await.unwrap();
     }
 
-    #[test]
-    fn ordinary_delete_releases_durable_export_idempotently() {
+    #[tokio::test]
+    async fn ordinary_delete_releases_durable_export_idempotently() {
         let test_root = std::env::temp_dir().join(format!(
             "dandelion-durable-delete-test-{}",
             InvocationId::now_v7()
@@ -3892,16 +4010,21 @@ mod tests {
             },
         };
 
-        let registry = ExportRegistry::with_durable_storage(node_id, &test_root).unwrap();
+        let registry = ExportRegistry::with_durable_storage(node_id, &test_root)
+            .await
+            .unwrap();
         let context = Arc::new(ReadOnlyContext::new(expected.into_boxed_slice()).unwrap());
-        let remote = registry.insert_durable_function(&item, context).unwrap();
+        let remote = registry
+            .insert_durable_function(&item, context)
+            .await
+            .unwrap();
         let data_path = durable_data_path(&test_root.join(node_id.to_string()), remote.data_id);
-        assert!(data_path.exists());
+        assert!(fs::try_exists(&data_path).await.unwrap());
 
-        registry.delete_exported_data(remote.data_id).unwrap();
-        assert!(!data_path.exists());
-        registry.delete_exported_data(remote.data_id).unwrap();
+        registry.delete_exported_data(remote.data_id).await.unwrap();
+        assert!(!fs::try_exists(&data_path).await.unwrap());
+        registry.delete_exported_data(remote.data_id).await.unwrap();
 
-        std::fs::remove_dir_all(&test_root).unwrap();
+        fs::remove_dir_all(&test_root).await.unwrap();
     }
 }

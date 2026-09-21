@@ -1505,6 +1505,7 @@ async fn remote_queue_client_logic(
                             }
                             if let Err(err) = export_registry
                                 .apply_io_completion_ack(&completion_key, disposition)
+                                .await
                             {
                                 // Reconnect so the delivery loop retries the record instead of treating
                                 // an acknowledgement that was not persisted locally as complete.

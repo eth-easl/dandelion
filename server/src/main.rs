@@ -405,11 +405,12 @@ fn main() -> () {
     {
         let node_id = config.node_id;
         #[cfg(feature = "at-least-once")]
-        let export_registry = ExportRegistry::with_durable_storage(
-            node_id,
-            std::path::PathBuf::from(folder_path).join("durable_exports"),
-        )
-        .expect("Should be able to initialize durable export storage");
+        let export_registry = system_runtime
+            .block_on(ExportRegistry::with_durable_storage(
+                node_id,
+                std::path::PathBuf::from(folder_path).join("durable_exports"),
+            ))
+            .expect("Should be able to initialize durable export storage");
         #[cfg(not(feature = "at-least-once"))]
         let export_registry = ExportRegistry::new(node_id);
         let client_shutdown_option = if multinode_settings.queue_server.node_id == node_id {
@@ -472,11 +473,12 @@ fn main() -> () {
     // Recoverable I/O also needs durable exports on a standalone node.
     #[cfg(feature = "at-least-once")]
     if get_remote_data_client().is_err() {
-        let export_registry = ExportRegistry::with_durable_storage(
-            config.node_id,
-            std::path::PathBuf::from(folder_path).join("durable_exports"),
-        )
-        .expect("Should be able to initialize standalone durable export storage");
+        let export_registry = system_runtime
+            .block_on(ExportRegistry::with_durable_storage(
+                config.node_id,
+                std::path::PathBuf::from(folder_path).join("durable_exports"),
+            ))
+            .expect("Should be able to initialize standalone durable export storage");
         set_remote_data_client(Arc::new(multinode::data::HttpRemoteDataClient::new(
             BTreeMap::new(),
             export_registry,
