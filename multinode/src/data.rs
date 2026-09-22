@@ -49,8 +49,6 @@ use prost::Message;
 use std::collections::HashMap;
 #[cfg(feature = "exactly-once")]
 use std::collections::HashSet;
-#[cfg(feature = "at-least-once")]
-use std::path::{Path, PathBuf};
 use std::{
     collections::{BTreeMap, VecDeque},
     convert::Infallible,
@@ -59,14 +57,15 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex, OnceLock},
 };
+#[cfg(feature = "at-least-once")]
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 #[cfg(feature = "exactly-once")]
 use tokio::sync::watch;
 #[cfg(feature = "at-least-once")]
-use tokio::{
-    fs::{self, File, OpenOptions},
-    io::AsyncWriteExt,
-    sync::Mutex as AsyncMutex,
-};
+use tokio::{fs, sync::Mutex as AsyncMutex};
 use tokio::{
     net::TcpListener,
     signal::unix::SignalKind,
@@ -567,19 +566,22 @@ pub fn is_durable_data_id(data_id: u64) -> bool {
     data_id >= DURABLE_DATA_ID_START
 }
 
-#[cfg(all(feature = "at-least-once", any(feature = "exactly-once", test)))]
-async fn sync_directory(directory: &Path) -> DandelionResult<()> {
-    File::open(directory)
+#[cfg(feature = "at-least-once")]
+const SYNC_CHECKPOINT_FILES: bool = cfg!(feature = "exactly-once");
+
+#[cfg(feature = "at-least-once")]
+async fn run_blocking_file_io<T: Send + 'static>(
+    operation: impl FnOnce() -> DandelionResult<T> + Send + 'static,
+) -> DandelionResult<T> {
+    tokio::task::spawn_blocking(operation)
         .await
-        .map_err(|err| {
-            export_registry_error(format!(
-                "Failed to open durable export directory {}: {}",
-                directory.display(),
-                err
-            ))
-        })?
-        .sync_all()
-        .await
+        .map_err(|err| export_registry_error(format!("Durable export file task failed: {}", err)))?
+}
+
+#[cfg(feature = "at-least-once")]
+fn sync_directory_blocking(directory: &Path) -> DandelionResult<()> {
+    std::fs::File::open(directory)
+        .and_then(|directory_file| directory_file.sync_all())
         .map_err(|err| {
             export_registry_error(format!(
                 "Failed to sync durable export directory {}: {}",
@@ -589,23 +591,19 @@ async fn sync_directory(directory: &Path) -> DandelionResult<()> {
         })
 }
 
-#[cfg(all(feature = "at-least-once", any(feature = "exactly-once", test)))]
-async fn write_atomic_file_without_directory_sync(
-    path: &Path,
-    contents: &[u8],
-) -> DandelionResult<()> {
+#[cfg(feature = "at-least-once")]
+fn write_atomic_file_blocking(path: &Path, contents: &[u8], sync: bool) -> DandelionResult<()> {
     let temporary_path = path.with_extension(format!(
         "{}.tmp",
         path.extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or("file")
     ));
-    let mut file = OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
         .open(&temporary_path)
-        .await
         .map_err(|err| {
             export_registry_error(format!(
                 "Failed to create durable export file {}: {}",
@@ -613,22 +611,24 @@ async fn write_atomic_file_without_directory_sync(
                 err
             ))
         })?;
-    file.write_all(contents).await.map_err(|err| {
+    file.write_all(contents).map_err(|err| {
         export_registry_error(format!(
             "Failed to write durable export file {}: {}",
             temporary_path.display(),
             err
         ))
     })?;
-    file.sync_all().await.map_err(|err| {
-        export_registry_error(format!(
-            "Failed to sync durable export file {}: {}",
-            temporary_path.display(),
-            err
-        ))
-    })?;
+    if sync {
+        file.sync_all().map_err(|err| {
+            export_registry_error(format!(
+                "Failed to sync durable export file {}: {}",
+                temporary_path.display(),
+                err
+            ))
+        })?;
+    }
     drop(file);
-    fs::rename(&temporary_path, path).await.map_err(|err| {
+    std::fs::rename(&temporary_path, path).map_err(|err| {
         export_registry_error(format!(
             "Failed to install durable export file {}: {}",
             path.display(),
@@ -637,75 +637,26 @@ async fn write_atomic_file_without_directory_sync(
     })
 }
 
-/// Atomically replaces a file without forcing it to stable storage.
-#[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
-async fn write_atomic_file_buffered(path: &Path, contents: &[u8]) -> DandelionResult<()> {
-    let temporary_path = path.with_extension(format!(
-        "{}.tmp",
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("file")
-    ));
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temporary_path)
-        .await
-        .map_err(|err| {
-            export_registry_error(format!(
-                "Failed to create checkpoint export file {}: {}",
-                temporary_path.display(),
-                err
-            ))
-        })?;
-    file.write_all(contents).await.map_err(|err| {
-        export_registry_error(format!(
-            "Failed to write checkpoint export file {}: {}",
-            temporary_path.display(),
-            err
-        ))
-    })?;
-    file.flush().await.map_err(|err| {
-        export_registry_error(format!(
-            "Failed to flush checkpoint export file {}: {}",
-            temporary_path.display(),
-            err
-        ))
-    })?;
-    drop(file);
-    fs::rename(&temporary_path, path).await.map_err(|err| {
-        export_registry_error(format!(
-            "Failed to install checkpoint export file {}: {}",
-            path.display(),
-            err
-        ))
+#[cfg(feature = "at-least-once")]
+async fn write_checkpoint_atomic_file(path: &Path, contents: Vec<u8>) -> DandelionResult<Vec<u8>> {
+    let path = path.to_path_buf();
+    run_blocking_file_io(move || {
+        write_atomic_file_blocking(&path, &contents, SYNC_CHECKPOINT_FILES)?;
+        if SYNC_CHECKPOINT_FILES {
+            sync_directory_blocking(
+                path.parent()
+                    .expect("Durable export files always have a parent directory"),
+            )?;
+        }
+        Ok(contents)
     })
-}
-
-#[cfg(feature = "exactly-once")]
-async fn write_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
-    write_atomic_file_without_directory_sync(path, contents).await?;
-    sync_directory(
-        path.parent()
-            .expect("Durable export files always have a parent directory"),
-    )
     .await
 }
 
 #[cfg(feature = "exactly-once")]
-async fn write_checkpoint_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
-    write_atomic_file(path, contents).await
-}
-
-#[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
-async fn write_checkpoint_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
-    write_atomic_file_buffered(path, contents).await
-}
-
-#[cfg(feature = "exactly-once")]
 async fn sync_checkpoint_directory(directory: &Path) -> DandelionResult<()> {
-    sync_directory(directory).await
+    let directory = directory.to_path_buf();
+    run_blocking_file_io(move || sync_directory_blocking(&directory)).await
 }
 
 #[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
@@ -727,7 +678,8 @@ async fn reserve_durable_data_id_block(
         ));
     }
     let next_data_id_path = directory.join(NEXT_DURABLE_DATA_ID_FILE);
-    write_checkpoint_atomic_file(&next_data_id_path, reserved_until.to_string().as_bytes()).await?;
+    write_checkpoint_atomic_file(&next_data_id_path, reserved_until.to_string().into_bytes())
+        .await?;
     Ok(reserved_until)
 }
 
@@ -876,68 +828,58 @@ async fn cleanup_durable_export_files(directory: &Path, data_ids: &[u64]) -> Dan
     sync_checkpoint_directory(directory).await
 }
 
-#[cfg(all(feature = "at-least-once", any(feature = "exactly-once", test)))]
+#[cfg(feature = "at-least-once")]
+fn write_export_batch_blocking(
+    directory: &Path,
+    outputs: &[PreparedDurableOutput],
+    sync: bool,
+) -> DandelionResult<()> {
+    for output in outputs {
+        let path = durable_data_path(directory, output.data_id);
+        write_atomic_file_blocking(&path, &output.bytes, sync)?;
+    }
+    if sync {
+        sync_directory_blocking(directory)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "at-least-once")]
+async fn write_export_batch(
+    directory: &Path,
+    outputs: Vec<PreparedDurableOutput>,
+    sync: bool,
+) -> DandelionResult<Vec<PreparedDurableOutput>> {
+    let data_ids = outputs
+        .iter()
+        .map(|output| output.data_id)
+        .collect::<Vec<_>>();
+    let task_directory = directory.to_path_buf();
+    let result = run_blocking_file_io(move || {
+        write_export_batch_blocking(&task_directory, &outputs, sync)?;
+        Ok(outputs)
+    })
+    .await;
+    if result.is_err() {
+        let _ = cleanup_durable_export_files(directory, &data_ids).await;
+    }
+    result
+}
+
+#[cfg(all(feature = "at-least-once", test))]
 async fn write_durable_export_batch(
     directory: &Path,
-    outputs: &[PreparedDurableOutput],
-) -> DandelionResult<()> {
-    let data_ids = outputs
-        .iter()
-        .map(|output| output.data_id)
-        .collect::<Vec<_>>();
-    for output in outputs {
-        let path = durable_data_path(directory, output.data_id);
-        if let Err(error) = write_atomic_file_without_directory_sync(&path, &output.bytes).await {
-            let _ = cleanup_durable_export_files(directory, &data_ids).await;
-            return Err(error);
-        }
-    }
-    if let Err(error) = sync_directory(directory).await {
-        let _ = cleanup_durable_export_files(directory, &data_ids).await;
-        return Err(error);
-    }
-    Ok(())
+    outputs: Vec<PreparedDurableOutput>,
+) -> DandelionResult<Vec<PreparedDurableOutput>> {
+    write_export_batch(directory, outputs, true).await
 }
 
-#[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
-async fn write_buffered_export_batch(
-    directory: &Path,
-    outputs: &[PreparedDurableOutput],
-) -> DandelionResult<()> {
-    let data_ids = outputs
-        .iter()
-        .map(|output| output.data_id)
-        .collect::<Vec<_>>();
-    for output in outputs {
-        let path = durable_data_path(directory, output.data_id);
-        if let Err(error) = write_atomic_file_buffered(&path, &output.bytes).await {
-            for data_id in &data_ids {
-                let path = durable_data_path(directory, *data_id);
-                let temporary_path =
-                    path.with_extension(format!("{DURABLE_DATA_FILE_EXTENSION}.tmp"));
-                let _ = fs::remove_file(temporary_path).await;
-                let _ = fs::remove_file(path).await;
-            }
-            return Err(error);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(feature = "exactly-once")]
+#[cfg(feature = "at-least-once")]
 async fn write_checkpoint_export_batch(
     directory: &Path,
-    outputs: &[PreparedDurableOutput],
-) -> DandelionResult<()> {
-    write_durable_export_batch(directory, outputs).await
-}
-
-#[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
-async fn write_checkpoint_export_batch(
-    directory: &Path,
-    outputs: &[PreparedDurableOutput],
-) -> DandelionResult<()> {
-    write_buffered_export_batch(directory, outputs).await
+    outputs: Vec<PreparedDurableOutput>,
+) -> DandelionResult<Vec<PreparedDurableOutput>> {
+    write_export_batch(directory, outputs, SYNC_CHECKPOINT_FILES).await
 }
 
 struct ExportRegistryInner {
@@ -1354,7 +1296,7 @@ impl ExportRegistry {
             .ok_or_else(|| export_registry_error("Durable export data id space exhausted"))?;
 
         let data_path = durable_data_path(&directory, data_id);
-        write_checkpoint_atomic_file(&data_path, &bytes).await?;
+        let bytes = write_checkpoint_atomic_file(&data_path, bytes).await?;
         let mut inner = self.inner.lock().unwrap();
         let store = inner
             .durable_store
@@ -1423,8 +1365,11 @@ impl ExportRegistry {
                 reserved_until = expanded;
             }
             let next_data_id_path = directory.join(NEXT_DURABLE_DATA_ID_FILE);
-            write_checkpoint_atomic_file(&next_data_id_path, reserved_until.to_string().as_bytes())
-                .await?;
+            write_checkpoint_atomic_file(
+                &next_data_id_path,
+                reserved_until.to_string().into_bytes(),
+            )
+            .await?;
             Some(reserved_until)
         } else {
             None
@@ -1580,12 +1525,12 @@ impl ExportRegistry {
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoFilePersistenceStart);
         }
-        let write_result = write_checkpoint_export_batch(&directory, &prepared).await;
+        let write_result = write_checkpoint_export_batch(&directory, prepared).await;
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoFilePersistenceEnd);
         }
         let prepared = match write_result {
-            Ok(()) => prepared,
+            Ok(prepared) => prepared,
             Err(error) => {
                 self.discard_durable_export_batch(batch_id);
                 return Err(error);
@@ -1670,7 +1615,7 @@ impl ExportRegistry {
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteStart);
         }
         let write_result =
-            write_checkpoint_atomic_file(&journal_path, journal_contents.as_bytes()).await;
+            write_checkpoint_atomic_file(&journal_path, journal_contents.into_bytes()).await;
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteEnd);
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
@@ -1748,7 +1693,7 @@ impl ExportRegistry {
             .iter()
             .map(format_io_completion_line)
             .collect::<DandelionResult<String>>()?;
-        write_checkpoint_atomic_file(&journal_path, journal_contents.as_bytes()).await?;
+        write_checkpoint_atomic_file(&journal_path, journal_contents.into_bytes()).await?;
         let mut inner = self.inner.lock().unwrap();
         inner.pending_io_completions = pending_io_completions;
         #[cfg(feature = "timestamp")]
@@ -3105,7 +3050,7 @@ mod checkpoint_tests {
                 bytes: vec![index as u8],
             })
             .collect::<Vec<_>>();
-        write_durable_export_batch(&directory, &outputs)
+        let outputs = write_durable_export_batch(&directory, outputs)
             .await
             .unwrap();
 
@@ -3913,7 +3858,7 @@ mod tests {
                 bytes: vec![index as u8],
             })
             .collect::<Vec<_>>();
-        write_durable_export_batch(&directory, &outputs)
+        let outputs = write_durable_export_batch(&directory, outputs)
             .await
             .unwrap();
 
