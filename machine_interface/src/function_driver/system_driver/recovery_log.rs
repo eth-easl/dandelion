@@ -9,12 +9,13 @@ use std::collections::HashSet;
 use std::{
     collections::HashMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
+use tokio::sync::Mutex as AsyncMutex;
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 use tokio::sync::{mpsc, oneshot};
-use tokio::{io::AsyncWriteExt, sync::Mutex as AsyncMutex};
 
 #[cfg(feature = "at-least-once")]
 use crate::{
@@ -24,7 +25,8 @@ use crate::{
 
 const IO_LOG_DIR_NAME: &str = "io_logs";
 static RECOVERY_LOG_ROOT: OnceLock<PathBuf> = OnceLock::new();
-static RUN_LOG_LOCKS: OnceLock<Mutex<HashMap<RunId, Arc<AsyncMutex<()>>>>> = OnceLock::new();
+static RUN_LOG_LOCKS: OnceLock<Mutex<HashMap<RunId, Arc<AsyncMutex<RunLogState>>>>> =
+    OnceLock::new();
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 static LOCAL_COMPLETION_COMMITTER: OnceLock<mpsc::UnboundedSender<LocalCompletionCommitRequest>> =
     OnceLock::new();
@@ -227,15 +229,158 @@ pub fn run_log_path(run_id: RunId) -> DandelionResult<PathBuf> {
     Ok(io_log_dir(recovery_log_root()?).join(format!("{run_id}.log")))
 }
 
-fn run_log_lock(run_id: RunId) -> Arc<AsyncMutex<()>> {
+fn run_log_lock(run_id: RunId) -> Arc<AsyncMutex<RunLogState>> {
     let lock_map = RUN_LOG_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut lock_map_guard = lock_map
         .lock()
         .expect("IO recovery invocation lock map poisoned");
     lock_map_guard
         .entry(run_id)
-        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .or_insert_with(|| Arc::new(AsyncMutex::new(RunLogState::default())))
         .clone()
+}
+
+#[derive(Default)]
+struct RunLogState {
+    loaded: bool,
+    #[cfg(feature = "at-least-once")]
+    submitted: bool,
+    #[cfg(feature = "at-least-once")]
+    terminal: bool,
+    #[cfg(feature = "at-least-once")]
+    completions: HashMap<IoCompletionKey, String>,
+}
+
+impl RunLogState {
+    #[cfg(all(test, feature = "at-least-once"))]
+    fn from_log(content: &str) -> DandelionResult<Self> {
+        let mut state = Self::default();
+        state.apply(content)?;
+        state.loaded = true;
+        Ok(state)
+    }
+
+    #[cfg_attr(not(feature = "at-least-once"), allow(unused_variables))]
+    fn apply(&mut self, content: &str) -> DandelionResult<()> {
+        #[cfg(feature = "at-least-once")]
+        for line in complete_log_lines(content) {
+            match parse_log_fields(line).get("event").copied() {
+                Some("invocation_submitted") => {
+                    self.submitted = true;
+                    self.terminal = false;
+                }
+                Some("invocation_completed" | "invocation_failed") => {
+                    self.terminal = true;
+                    self.completions = HashMap::new();
+                }
+                Some("io_function_completed") if !self.terminal => {
+                    if let Some(record) = parse_io_completion_line(line)? {
+                        self.completions.insert(
+                            record.completion_key()?,
+                            encode_io_completion_payload(&record.outputs)?,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn run_log_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> DandelionResult<T> + Send + 'static,
+) -> DandelionResult<T> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|_| internal_error("Invocation log task failed"))?
+}
+
+fn load_run_log_blocking(log_path: &Path) -> DandelionResult<String> {
+    let mut content = match fs::read(log_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(_) => {
+            return Err(internal_error(format!(
+                "Failed to inspect invocation log {}",
+                log_path.display()
+            )))
+        }
+    };
+    if !content.is_empty() && content.last() != Some(&b'\n') {
+        let complete_length = content
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |position| position + 1);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(log_path)
+            .and_then(|file| file.set_len(complete_length as u64))
+            .map_err(|_| {
+                internal_error(format!(
+                    "Failed to discard incomplete invocation log record in {}",
+                    log_path.display()
+                ))
+            })?;
+        content.truncate(complete_length);
+    }
+    String::from_utf8(content).map_err(|_| {
+        internal_error(format!(
+            "Failed to read invocation log {}",
+            log_path.display()
+        ))
+    })
+}
+
+fn append_run_log_blocking(log_path: &Path, content: &str) -> DandelionResult<()> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|_| {
+            internal_error(format!(
+                "Failed to open invocation log {}",
+                log_path.display()
+            ))
+        })?;
+    file.write_all(content.as_bytes()).map_err(|_| {
+        internal_error(format!(
+            "Failed to append invocation log {}",
+            log_path.display()
+        ))
+    })?;
+    #[cfg(feature = "exactly-once")]
+    file.sync_data().map_err(|_| {
+        internal_error(format!(
+            "Failed to sync invocation log {}",
+            log_path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+async fn ensure_run_log_loaded(log_path: &Path, state: &mut RunLogState) -> DandelionResult<()> {
+    if state.loaded {
+        return Ok(());
+    }
+    let task_path = log_path.to_path_buf();
+    let content = run_log_blocking(move || load_run_log_blocking(&task_path)).await?;
+    *state = RunLogState::default();
+    state.apply(&content)?;
+    state.loaded = true;
+    Ok(())
+}
+
+async fn write_run_log_locked(
+    log_path: &Path,
+    state: &mut RunLogState,
+    content: String,
+) -> DandelionResult<()> {
+    let task_path = log_path.to_path_buf();
+    state.loaded = false;
+    run_log_blocking(move || append_run_log_blocking(&task_path, &content)).await?;
+    state.loaded = true;
+    Ok(())
 }
 
 #[cfg(feature = "at-least-once")]
@@ -264,8 +409,8 @@ pub fn deactivate_async_run_logging(run_id: RunId) {
 pub async fn append_run_log_line(run_id: RunId, line: &str) -> DandelionResult<()> {
     let log_path = run_log_path(run_id)?;
     let run_lock = run_log_lock(run_id);
-    let _run_lock_guard = run_lock.lock().await;
-    append_run_log_line_locked(&log_path, line).await
+    let mut state = run_lock.lock().await;
+    append_run_log_line_locked(&log_path, &mut state, line).await
 }
 
 /// Returns only fully written, newline-terminated recovery-log records.
@@ -275,60 +420,17 @@ pub fn complete_log_lines(content: &str) -> impl Iterator<Item = &str> {
         .filter_map(|line| line.strip_suffix('\n'))
 }
 
-async fn append_run_log_line_locked(log_path: &Path, line: &str) -> DandelionResult<()> {
-    let existing = match tokio::fs::read(log_path).await {
-        Ok(existing) => existing,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(_) => {
-            return Err(internal_error(format!(
-                "Failed to inspect invocation log {}",
-                log_path.display()
-            )))
-        }
-    };
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .await
-        .map_err(|_| {
-            internal_error(format!(
-                "Failed to open invocation log {}",
-                log_path.display()
-            ))
-        })?;
-    if !existing.is_empty() && existing.last() != Some(&b'\n') {
-        let complete_length = existing
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map_or(0, |position| position + 1);
-        file.set_len(complete_length as u64).await.map_err(|_| {
-            internal_error(format!(
-                "Failed to discard incomplete invocation log record in {}",
-                log_path.display()
-            ))
-        })?;
+async fn append_run_log_line_locked(
+    log_path: &Path,
+    state: &mut RunLogState,
+    line: &str,
+) -> DandelionResult<()> {
+    ensure_run_log_loaded(log_path, state).await?;
+    write_run_log_locked(log_path, state, line.to_string()).await?;
+    if let Err(error) = state.apply(line) {
+        state.loaded = false;
+        return Err(error);
     }
-    file.write_all(line.as_bytes()).await.map_err(|_| {
-        internal_error(format!(
-            "Failed to append invocation log {}",
-            log_path.display()
-        ))
-    })?;
-    #[cfg(not(feature = "exactly-once"))]
-    file.flush().await.map_err(|_| {
-        internal_error(format!(
-            "Failed to flush invocation log {}",
-            log_path.display()
-        ))
-    })?;
-    #[cfg(feature = "exactly-once")]
-    file.sync_data().await.map_err(|_| {
-        internal_error(format!(
-            "Failed to sync invocation log {}",
-            log_path.display()
-        ))
-    })?;
     Ok(())
 }
 
@@ -443,7 +545,25 @@ fn recovery_exports_released_in(content: &str) -> bool {
 /// because durable export deletion is idempotent.
 pub async fn mark_recovery_exports_released(run_id: RunId) -> DandelionResult<()> {
     let line = format!("event=recovery_exports_released run_id={}\n", run_id);
-    append_run_log_line(run_id, &line).await
+    append_run_log_line(run_id, &line).await?;
+    forget_run_log_state(run_id);
+    Ok(())
+}
+
+#[cfg(feature = "at-least-once")]
+fn forget_run_log_state(run_id: RunId) {
+    let Some(lock_map) = RUN_LOG_LOCKS.get() else {
+        return;
+    };
+    let mut lock_map_guard = lock_map
+        .lock()
+        .expect("IO recovery invocation lock map poisoned");
+    if lock_map_guard
+        .get(&run_id)
+        .is_some_and(|run_lock| Arc::strong_count(run_lock) == 1)
+    {
+        lock_map_guard.remove(&run_id);
+    }
 }
 
 #[cfg(all(test, feature = "at-least-once"))]
@@ -549,7 +669,8 @@ mod cleanup_tests {
         ));
         fs::write(&log_path, b"event=first\nevent=incomplete").unwrap();
 
-        append_run_log_line_locked(&log_path, "event=second\n")
+        let mut state = RunLogState::default();
+        append_run_log_line_locked(&log_path, &mut state, "event=second\n")
             .await
             .unwrap();
 
@@ -557,6 +678,46 @@ mod cleanup_tests {
             fs::read_to_string(&log_path).unwrap(),
             "event=first\nevent=second\n"
         );
+        fs::remove_file(log_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn appended_records_update_the_cached_state() {
+        let run_id = RunId::from_u128(13);
+        let log_path = std::env::temp_dir().join(format!(
+            "dandelion-recovery-state-test-{}.log",
+            RunId::now_v7()
+        ));
+        let winner = completion(run_id, 100);
+        let mut state = RunLogState::default();
+        append_run_log_line_locked(
+            &log_path,
+            &mut state,
+            &format!(
+                "event=invocation_submitted run_id={} request_len=0 request_b64= is_cold=false\n",
+                run_id
+            ),
+        )
+        .await
+        .unwrap();
+        append_run_log_line_locked(
+            &log_path,
+            &mut state,
+            &format_io_completion_line(&winner).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            delivered_io_completion_disposition(&state, &winner).unwrap(),
+            Some(IoCompletionDisposition::Retain)
+        );
+        assert_eq!(
+            delivered_io_completion_disposition(&state, &completion(run_id, 101)).unwrap(),
+            Some(IoCompletionDisposition::Delete)
+        );
+        let reloaded = RunLogState::from_log(&fs::read_to_string(&log_path).unwrap()).unwrap();
+        assert_eq!(reloaded.completions, state.completions);
         fs::remove_file(log_path).unwrap();
     }
 
@@ -569,7 +730,11 @@ mod cleanup_tests {
             run_id
         );
         assert_eq!(
-            delivered_io_completion_disposition(&submitted, &winner).unwrap(),
+            delivered_io_completion_disposition(
+                &RunLogState::from_log(&submitted).unwrap(),
+                &winner
+            )
+            .unwrap(),
             None
         );
 
@@ -579,11 +744,16 @@ mod cleanup_tests {
             format_io_completion_line(&winner).unwrap()
         );
         assert_eq!(
-            delivered_io_completion_disposition(&log, &winner).unwrap(),
+            delivered_io_completion_disposition(&RunLogState::from_log(&log).unwrap(), &winner)
+                .unwrap(),
             Some(IoCompletionDisposition::Retain)
         );
         assert_eq!(
-            delivered_io_completion_disposition(&log, &completion(run_id, 101)).unwrap(),
+            delivered_io_completion_disposition(
+                &RunLogState::from_log(&log).unwrap(),
+                &completion(run_id, 101)
+            )
+            .unwrap(),
             Some(IoCompletionDisposition::Delete)
         );
     }
@@ -593,7 +763,8 @@ mod cleanup_tests {
         let run_id = RunId::from_u128(12);
         let record = completion(run_id, 100);
         assert_eq!(
-            delivered_io_completion_disposition("", &record).unwrap(),
+            delivered_io_completion_disposition(&RunLogState::from_log("").unwrap(), &record)
+                .unwrap(),
             Some(IoCompletionDisposition::Delete)
         );
         let terminal = format!(
@@ -602,7 +773,11 @@ mod cleanup_tests {
             run_id, run_id
         );
         assert_eq!(
-            delivered_io_completion_disposition(&terminal, &record).unwrap(),
+            delivered_io_completion_disposition(
+                &RunLogState::from_log(&terminal).unwrap(),
+                &record
+            )
+            .unwrap(),
             Some(IoCompletionDisposition::Delete)
         );
 
@@ -613,8 +788,10 @@ mod cleanup_tests {
             format_io_completion_line(&record).unwrap(),
             run_id
         );
+        let terminal_state = RunLogState::from_log(&terminal_after_winner).unwrap();
+        assert!(terminal_state.completions.is_empty());
         assert_eq!(
-            delivered_io_completion_disposition(&terminal_after_winner, &record).unwrap(),
+            delivered_io_completion_disposition(&terminal_state, &record).unwrap(),
             Some(IoCompletionDisposition::Delete)
         );
     }
@@ -923,10 +1100,15 @@ pub fn decode_io_completion_payload(
 #[cfg(feature = "at-least-once")]
 pub fn format_io_completion_line(record: &IoCompletionRecord) -> DandelionResult<String> {
     let payload_b64 = encode_io_completion_payload(&record.outputs)?;
-    Ok(format!(
+    Ok(io_completion_line(record, &payload_b64))
+}
+
+#[cfg(feature = "at-least-once")]
+fn io_completion_line(record: &IoCompletionRecord, payload_b64: &str) -> String {
+    format!(
         "event=io_function_completed run_id={} composition_set_id={} function={} payload_b64={}\n",
         record.run_id, record.composition_set_id, record.function, payload_b64
-    ))
+    )
 }
 
 #[cfg(feature = "at-least-once")]
@@ -941,8 +1123,8 @@ pub async fn append_io_completion_record(record: &IoCompletionRecord) -> Dandeli
     let line = format_io_completion_line(record)?;
     let log_path = run_log_path(record.run_id)?;
     let run_lock = run_log_lock(record.run_id);
-    let _run_lock_guard = run_lock.lock().await;
-    append_run_log_line_locked(&log_path, &line).await
+    let mut state = run_lock.lock().await;
+    append_run_log_line_locked(&log_path, &mut state, &line).await
 }
 
 /// Accepts the first successful completion for a logical I/O key. Redelivery of that exact winner
@@ -953,22 +1135,16 @@ pub async fn accept_delivered_io_completion_record(
 ) -> DandelionResult<IoCompletionDisposition> {
     let log_path = run_log_path(record.run_id)?;
     let run_lock = run_log_lock(record.run_id);
-    let _run_lock_guard = run_lock.lock().await;
-    let existing_log = match tokio::fs::read_to_string(&log_path).await {
-        Ok(existing_log) => existing_log,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(_) => {
-            return Err(internal_error(format!(
-                "Failed to read invocation log {}",
-                log_path.display()
-            )))
-        }
-    };
-    if let Some(disposition) = delivered_io_completion_disposition(&existing_log, record)? {
+    let mut state = run_lock.lock().await;
+    ensure_run_log_loaded(&log_path, &mut state).await?;
+    if let Some(disposition) = delivered_io_completion_disposition(&state, record)? {
         return Ok(disposition);
     }
-    let line = format_io_completion_line(record)?;
-    append_run_log_line_locked(&log_path, &line).await?;
+    let record_key = record.completion_key()?;
+    let payload_b64 = encode_io_completion_payload(&record.outputs)?;
+    let line = io_completion_line(record, &payload_b64);
+    write_run_log_locked(&log_path, &mut state, line).await?;
+    state.completions.insert(record_key, payload_b64);
     Ok(IoCompletionDisposition::Retain)
 }
 
@@ -1063,7 +1239,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
             &requests,
             dandelion_commons::records::RecordPoint::IoJournalLockWaitStart,
         );
-        let _run_lock_guard = run_lock.lock().await;
+        let mut state = run_lock.lock().await;
         record_completion_requests(
             &requests,
             dandelion_commons::records::RecordPoint::IoJournalLockWaitEnd,
@@ -1072,22 +1248,14 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
             &requests,
             dandelion_commons::records::RecordPoint::IoJournalReadStart,
         );
-        let mut existing_log = match tokio::fs::read_to_string(&log_path).await {
-            Ok(existing_log) => existing_log,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(_) => {
-                return Err(internal_error(format!(
-                    "Failed to read invocation log {}",
-                    log_path.display()
-                )))
-            }
-        };
+        ensure_run_log_loaded(&log_path, &mut state).await?;
         record_completion_requests(
             &requests,
             dandelion_commons::records::RecordPoint::IoJournalReadEnd,
         );
 
         let mut appended = String::new();
+        let mut appended_completions: HashMap<IoCompletionKey, String> = HashMap::new();
         let mut journal_recorders = Vec::new();
         let mut dispositions = Vec::with_capacity(requests.len());
         record_completion_requests(
@@ -1096,25 +1264,34 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
         );
         for request in &requests {
             // check if the completion record is already in the log
-            match delivered_io_completion_disposition(&existing_log, &request.record)? {
-                Some(disposition) => dispositions.push(disposition),
-                None => {
-                    let mut recorder = request.recorder.clone();
-                    if let Some(recorder) = recorder.as_mut() {
-                        recorder
-                            .record(dandelion_commons::records::RecordPoint::IoPayloadEncodeStart);
-                    }
-                    let line = format_io_completion_line(&request.record)?;
-                    if let Some(recorder) = recorder.as_mut() {
-                        recorder
-                            .record(dandelion_commons::records::RecordPoint::IoPayloadEncodeEnd);
-                        journal_recorders.push(recorder.clone());
-                    }
-                    existing_log.push_str(&line);
-                    appended.push_str(&line);
-                    dispositions.push(IoCompletionDisposition::Retain);
-                }
+            if let Some(disposition) = delivered_io_completion_disposition(&state, &request.record)?
+            {
+                dispositions.push(disposition);
+                continue;
             }
+            let record_key = request.record.completion_key()?;
+            let mut recorder = request.recorder.clone();
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeStart);
+            }
+            let payload_b64 = encode_io_completion_payload(&request.record.outputs)?;
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeEnd);
+            }
+            if let Some(winner) = appended_completions.get(&record_key) {
+                dispositions.push(if *winner == payload_b64 {
+                    IoCompletionDisposition::Retain
+                } else {
+                    IoCompletionDisposition::Delete
+                });
+                continue;
+            }
+            if let Some(recorder) = recorder {
+                journal_recorders.push(recorder);
+            }
+            appended.push_str(&io_completion_line(&request.record, &payload_b64));
+            appended_completions.insert(record_key, payload_b64);
+            dispositions.push(IoCompletionDisposition::Retain);
         }
         record_completion_requests(
             &requests,
@@ -1126,7 +1303,8 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteStart);
             }
-            append_run_log_line_locked(&log_path, &appended).await?;
+            write_run_log_locked(&log_path, &mut state, appended).await?;
+            state.completions.extend(appended_completions);
             for recorder in &mut journal_recorders {
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteEnd);
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
@@ -1155,38 +1333,23 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
 
 #[cfg(feature = "at-least-once")]
 fn delivered_io_completion_disposition(
-    existing_log: &str,
+    state: &RunLogState,
     record: &IoCompletionRecord,
 ) -> DandelionResult<Option<IoCompletionDisposition>> {
     let record_key = record.completion_key()?;
-    let mut submitted = false;
-    let mut terminal = false;
-    let mut matching_completion = None;
-    for line in complete_log_lines(&existing_log) {
-        match parse_log_fields(line).get("event").copied() {
-            Some("invocation_submitted") => {
-                submitted = true;
-                terminal = false;
-            }
-            Some("invocation_completed" | "invocation_failed") => terminal = true,
-            _ => {}
-        }
-        if let Some(existing) = parse_io_completion_line(line)? {
-            if existing.completion_key()? == record_key {
-                let same_outputs = encode_io_completion_payload(&existing.outputs)?
-                    == encode_io_completion_payload(&record.outputs)?;
-                matching_completion = Some(if same_outputs {
-                    IoCompletionDisposition::Retain
-                } else {
-                    IoCompletionDisposition::Delete
-                });
-            }
-        }
-    }
-    if !submitted || terminal {
+    if !state.submitted || state.terminal {
         return Ok(Some(IoCompletionDisposition::Delete));
     }
-    Ok(matching_completion)
+    let Some(winner) = state.completions.get(&record_key) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        if *winner == encode_io_completion_payload(&record.outputs)? {
+            IoCompletionDisposition::Retain
+        } else {
+            IoCompletionDisposition::Delete
+        },
+    ))
 }
 
 /// Compatibility wrapper for exactly-once call sites that already elected a single winner.
