@@ -9,24 +9,47 @@ use machine_interface::function_driver::system_driver::recovery_log::{
 };
 use std::{
     collections::HashMap,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 use tokio::sync::watch;
 
-static TERMINAL_NOTIFIERS: OnceLock<Mutex<HashMap<RunId, watch::Sender<bool>>>> = OnceLock::new();
+#[derive(Clone, Debug)]
+enum TerminalNotification {
+    Pending,
+    #[cfg(not(feature = "exactly-once"))]
+    LiveResult(Arc<Vec<u8>>),
+    Durable,
+}
 
-fn terminal_notifiers() -> &'static Mutex<HashMap<RunId, watch::Sender<bool>>> {
+static TERMINAL_NOTIFIERS: OnceLock<Mutex<HashMap<RunId, watch::Sender<TerminalNotification>>>> =
+    OnceLock::new();
+
+fn terminal_notifiers() -> &'static Mutex<HashMap<RunId, watch::Sender<TerminalNotification>>> {
     TERMINAL_NOTIFIERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn terminal_receiver(run_id: RunId) -> watch::Receiver<bool> {
+fn terminal_receiver(run_id: RunId) -> watch::Receiver<TerminalNotification> {
     let mut notifiers = terminal_notifiers()
         .lock()
         .expect("Async invocation notifier lock poisoned");
     notifiers
         .entry(run_id)
-        .or_insert_with(|| watch::channel(false).0)
+        .or_insert_with(|| watch::channel(TerminalNotification::Pending).0)
         .subscribe()
+}
+
+/// Make a completed result available to live waiters before durable persistence finishes.
+/// The sender remains registered until the corresponding terminal record is durable, so a
+/// waiter arriving in the persistence window can still consume the in-memory result.
+#[cfg(not(feature = "exactly-once"))]
+pub fn publish_live_result(run_id: RunId, result: Arc<Vec<u8>>) {
+    let mut notifiers = terminal_notifiers()
+        .lock()
+        .expect("Async invocation notifier lock poisoned");
+    let sender = notifiers
+        .entry(run_id)
+        .or_insert_with(|| watch::channel(TerminalNotification::Pending).0);
+    sender.send_replace(TerminalNotification::LiveResult(result));
 }
 
 fn notify_terminal(run_id: RunId) {
@@ -35,7 +58,7 @@ fn notify_terminal(run_id: RunId) {
         .expect("Async invocation notifier lock poisoned")
         .remove(&run_id);
     if let Some(sender) = sender {
-        sender.send_replace(true);
+        sender.send_replace(TerminalNotification::Durable);
     }
 }
 
@@ -181,16 +204,25 @@ pub fn persist_submitted(
     )
 }
 
-pub fn persist_completed(run_id: RunId, result_bytes: &[u8]) -> DandelionResult<()> {
-    append_event(
-        run_id,
-        &format!(
-            "event=invocation_completed run_id={} result_len={} result_b64={}\n",
+pub async fn persist_completed(run_id: RunId, result_bytes: Arc<Vec<u8>>) -> DandelionResult<()> {
+    tokio::task::spawn_blocking(move || {
+        append_event(
             run_id,
-            result_bytes.len(),
-            encode_base64(result_bytes)
-        ),
-    )?;
+            &format!(
+                "event=invocation_completed run_id={} result_len={} result_b64={}\n",
+                run_id,
+                result_bytes.len(),
+                encode_base64(result_bytes.as_slice())
+            ),
+        )
+    })
+    .await
+    .map_err(|error| {
+        internal_error(format!(
+            "Async invocation completion persistence task failed: {}",
+            error
+        ))
+    })??;
     info!("Async invocation {} entered completed state", run_id);
     notify_terminal(run_id);
     Ok(())
@@ -277,13 +309,22 @@ where
         return Ok(Some(result));
     }
 
-    let _ = terminal.wait_for(|is_terminal| *is_terminal).await;
+    let _ = terminal
+        .wait_for(|notification| !matches!(notification, TerminalNotification::Pending))
+        .await;
     info!("Async invocation {} result waiter notified", run_id);
-    load()
+    let notification = terminal.borrow().clone();
+    match notification {
+        #[cfg(not(feature = "exactly-once"))]
+        TerminalNotification::LiveResult(result) => Ok(Some(result.as_ref().clone())),
+        TerminalNotification::Durable => load(),
+        TerminalNotification::Pending => load(),
+    }
 }
 
-/// Wait for an invocation to reach durable terminal state. The caller controls
-/// cancellation by dropping the future, for example when its HTTP connection closes.
+/// Wait for an invocation result. At-least-once modes may return a live result while its
+/// terminal record is still being persisted. The caller controls cancellation by dropping the
+/// future, for example when its HTTP connection closes.
 pub async fn wait_for_result(run_id: RunId) -> DandelionResult<Option<Vec<u8>>> {
     wait_for_result_with(run_id, || load_result(run_id)).await
 }
@@ -326,10 +367,7 @@ pub fn list_recoverable_invocations() -> DandelionResult<Vec<RecoverableInvocati
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    };
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     const SUBMISSION: &str =
@@ -398,6 +436,34 @@ mod tests {
         notify_terminal(run_id);
 
         assert_eq!(waiter.await.unwrap(), Some(b"completed".to_vec()));
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "exactly-once"))]
+    async fn live_result_wakes_a_waiter_without_durable_result() {
+        let run_id = RunId::from_u128(1004);
+        let mut waiter =
+            tokio::spawn(async move { wait_for_result_with(run_id, || Ok(None)).await.unwrap() });
+
+        assert!(tokio::time::timeout(Duration::from_millis(5), &mut waiter)
+            .await
+            .is_err());
+        publish_live_result(run_id, Arc::new(b"live".to_vec()));
+
+        assert_eq!(waiter.await.unwrap(), Some(b"live".to_vec()));
+        notify_terminal(run_id);
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "exactly-once"))]
+    async fn waiter_arriving_after_live_result_receives_it_without_loading_disk() {
+        let run_id = RunId::from_u128(1005);
+        publish_live_result(run_id, Arc::new(b"live".to_vec()));
+
+        let result = wait_for_result_with(run_id, || Ok(None)).await.unwrap();
+
+        assert_eq!(result, Some(b"live".to_vec()));
+        notify_terminal(run_id);
     }
 
     #[tokio::test]

@@ -507,9 +507,12 @@ fn spawn_async_invocation(
         let terminal_persisted = match dispatch_result {
             Ok((function_output, recorder)) => {
                 info!("Async invocation {} dispatch completed", run_id);
-                let response_bytes =
-                    dandelion_server::DandelionBody::new(function_output, &recorder).into_bytes();
-                match crate::async_invocation::persist_completed(run_id, &response_bytes) {
+                let response_bytes = Arc::new(
+                    dandelion_server::DandelionBody::new(function_output, &recorder).into_bytes(),
+                );
+                #[cfg(not(feature = "exactly-once"))]
+                crate::async_invocation::publish_live_result(run_id, response_bytes.clone());
+                match crate::async_invocation::persist_completed(run_id, response_bytes).await {
                     Ok(()) => true,
                     Err(err) => {
                         error!(
