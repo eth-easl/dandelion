@@ -594,7 +594,7 @@ async fn remote_queue_server_logic(
                                     continue;
                                 }
                             };
-                            let disposition = match machine_interface::function_driver::system_driver::recovery_log::accept_delivered_io_completion_record(&record) {
+                            let disposition = match machine_interface::function_driver::system_driver::recovery_log::accept_delivered_io_completion_record(&record).await {
                                 Ok(disposition) => disposition,
                                 Err(err) => {
                                     error!("Failed to persist worker IO completion: {}", err);

@@ -2332,7 +2332,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
 
             // A standalone owner has no queue connection to deliver through, so accept locally.
             if completion.owner_node_id == self.local_registry.node_id {
-                let disposition = accept_delivered_io_completion_record(&record)?;
+                let disposition = accept_delivered_io_completion_record(&record).await?;
                 self.local_registry
                     .acknowledge_io_completion(&record.completion_key()?)
                     .await?;
@@ -2727,7 +2727,7 @@ async fn handle_io_resolved(
     // Durable log first so a restart can recover Completed instead of re-electing.
     if let Ok(outputs) = &request.outputs {
         if let Err(error) =
-            append_delivered_io_completion_record(&completion_record(&request.key, outputs))
+            append_delivered_io_completion_record(&completion_record(&request.key, outputs)).await
         {
             return bad_request(format!("Failed to persist I/O completion: {}", error));
         }
@@ -3745,6 +3745,7 @@ mod tests {
                 key.run_id
             ),
         )
+        .await
         .unwrap();
         assert!(matches!(
             registry.begin_io_resolution(key.clone(), 0, None).unwrap(),
@@ -3814,6 +3815,7 @@ mod tests {
             machine_interface::function_driver::system_driver::recovery_log::read_run_log(
                 key.run_id,
             )
+            .await
             .unwrap();
         assert!(run_log.contains("event=io_function_completed "));
 

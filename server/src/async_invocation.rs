@@ -9,6 +9,7 @@ use machine_interface::function_driver::system_driver::recovery_log::{
 };
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex, OnceLock},
 };
 use tokio::sync::watch;
@@ -81,8 +82,8 @@ fn decode_base64(data: &str, field_name: &str) -> DandelionResult<Vec<u8>> {
     })
 }
 
-fn append_event(run_id: RunId, event: &str) -> DandelionResult<()> {
-    append_run_log_line(run_id, event)
+async fn append_event(run_id: RunId, event: &str) -> DandelionResult<()> {
+    append_run_log_line(run_id, event).await
 }
 
 fn parse_log_fields(line: &str) -> HashMap<&str, &str> {
@@ -187,7 +188,7 @@ pub struct RecoverableInvocation {
     pub is_cold: bool,
 }
 
-pub fn persist_submitted(
+pub async fn persist_submitted(
     run_id: RunId,
     request_bytes: &[u8],
     is_cold: bool,
@@ -202,33 +203,26 @@ pub fn persist_submitted(
             is_cold,
         ),
     )
+    .await
 }
 
 pub async fn persist_completed(run_id: RunId, result_bytes: Arc<Vec<u8>>) -> DandelionResult<()> {
-    tokio::task::spawn_blocking(move || {
-        append_event(
+    append_event(
+        run_id,
+        &format!(
+            "event=invocation_completed run_id={} result_len={} result_b64={}\n",
             run_id,
-            &format!(
-                "event=invocation_completed run_id={} result_len={} result_b64={}\n",
-                run_id,
-                result_bytes.len(),
-                encode_base64(result_bytes.as_slice())
-            ),
-        )
-    })
-    .await
-    .map_err(|error| {
-        internal_error(format!(
-            "Async invocation completion persistence task failed: {}",
-            error
-        ))
-    })??;
+            result_bytes.len(),
+            encode_base64(result_bytes.as_slice())
+        ),
+    )
+    .await?;
     info!("Async invocation {} entered completed state", run_id);
     notify_terminal(run_id);
     Ok(())
 }
 
-pub fn persist_failed(run_id: RunId, error: String) -> DandelionResult<()> {
+pub async fn persist_failed(run_id: RunId, error: String) -> DandelionResult<()> {
     append_event(
         run_id,
         &format!(
@@ -237,14 +231,15 @@ pub fn persist_failed(run_id: RunId, error: String) -> DandelionResult<()> {
             error.len(),
             encode_base64(error.as_bytes())
         ),
-    )?;
+    )
+    .await?;
     info!("Async invocation {} entered failed state", run_id);
     notify_terminal(run_id);
     Ok(())
 }
 
-pub fn load_status(run_id: RunId) -> DandelionResult<AsyncInvocationStatusResponse> {
-    let content = read_run_log(run_id)?;
+pub async fn load_status(run_id: RunId) -> DandelionResult<AsyncInvocationStatusResponse> {
+    let content = read_run_log(run_id).await?;
     let parsed = parse_run_log(&content);
     let state = parsed
         .state
@@ -262,8 +257,8 @@ pub fn load_status(run_id: RunId) -> DandelionResult<AsyncInvocationStatusRespon
     })
 }
 
-pub fn load_result(run_id: RunId) -> DandelionResult<Option<Vec<u8>>> {
-    let content = read_run_log(run_id)?;
+pub async fn load_result(run_id: RunId) -> DandelionResult<Option<Vec<u8>>> {
+    let content = read_run_log(run_id).await?;
     let parsed = parse_run_log(&content);
     match parsed
         .state
@@ -285,12 +280,16 @@ pub fn load_result(run_id: RunId) -> DandelionResult<Option<Vec<u8>>> {
     }
 }
 
-async fn wait_for_result_with<F>(run_id: RunId, mut load: F) -> DandelionResult<Option<Vec<u8>>>
+async fn wait_for_result_with<F, Fut>(
+    run_id: RunId,
+    mut load: F,
+) -> DandelionResult<Option<Vec<u8>>>
 where
-    F: FnMut() -> DandelionResult<Option<Vec<u8>>>,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = DandelionResult<Option<Vec<u8>>>>,
 {
     info!("Async invocation {} result wait requested", run_id);
-    if let Some(result) = load()? {
+    if let Some(result) = load().await? {
         info!("Async invocation {} result was already available", run_id);
         notify_terminal(run_id);
         return Ok(Some(result));
@@ -301,7 +300,7 @@ where
     // value wakes us; no completion notification can fall into the gap.
     let mut terminal = terminal_receiver(run_id);
     info!("Async invocation {} result waiter registered", run_id);
-    if let Some(result) = load()? {
+    if let Some(result) = load().await? {
         // Completion may have happened just before registration, when there was
         // no sender to notify. Remove the newly-created entry and wake any other
         // waiter that joined it in the meantime.
@@ -317,8 +316,8 @@ where
     match notification {
         #[cfg(not(feature = "exactly-once"))]
         TerminalNotification::LiveResult(result) => Ok(Some(result.as_ref().clone())),
-        TerminalNotification::Durable => load(),
-        TerminalNotification::Pending => load(),
+        TerminalNotification::Durable => load().await,
+        TerminalNotification::Pending => load().await,
     }
 }
 
@@ -329,10 +328,10 @@ pub async fn wait_for_result(run_id: RunId) -> DandelionResult<Option<Vec<u8>>> 
     wait_for_result_with(run_id, || load_result(run_id)).await
 }
 
-pub fn list_recoverable_invocations() -> DandelionResult<Vec<RecoverableInvocation>> {
+pub async fn list_recoverable_invocations() -> DandelionResult<Vec<RecoverableInvocation>> {
     let mut recoverable = Vec::new();
-    for run_id in list_run_log_ids()? {
-        let content = read_run_log(run_id)?;
+    for run_id in list_run_log_ids().await? {
+        let content = read_run_log(run_id).await?;
         let parsed = parse_run_log(&content);
         if parsed.state != Some(AsyncInvocationState::Running) {
             continue;
@@ -409,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn wait_returns_an_already_available_result_immediately() {
         let run_id = RunId::from_u128(1001);
-        let result = wait_for_result_with(run_id, || Ok(Some(b"ready".to_vec())))
+        let result = wait_for_result_with(run_id, || async { Ok(Some(b"ready".to_vec())) })
             .await
             .unwrap();
 
@@ -423,9 +422,12 @@ mod tests {
         let waiter_state = completed.clone();
         let waiter = tokio::spawn(async move {
             wait_for_result_with(run_id, || {
-                Ok(waiter_state
-                    .load(Ordering::Acquire)
-                    .then(|| b"completed".to_vec()))
+                let waiter_state = waiter_state.clone();
+                async move {
+                    Ok(waiter_state
+                        .load(Ordering::Acquire)
+                        .then(|| b"completed".to_vec()))
+                }
             })
             .await
             .unwrap()
@@ -442,8 +444,11 @@ mod tests {
     #[cfg(not(feature = "exactly-once"))]
     async fn live_result_wakes_a_waiter_without_durable_result() {
         let run_id = RunId::from_u128(1004);
-        let mut waiter =
-            tokio::spawn(async move { wait_for_result_with(run_id, || Ok(None)).await.unwrap() });
+        let mut waiter = tokio::spawn(async move {
+            wait_for_result_with(run_id, || async { Ok(None) })
+                .await
+                .unwrap()
+        });
 
         assert!(tokio::time::timeout(Duration::from_millis(5), &mut waiter)
             .await
@@ -460,7 +465,9 @@ mod tests {
         let run_id = RunId::from_u128(1005);
         publish_live_result(run_id, Arc::new(b"live".to_vec()));
 
-        let result = wait_for_result_with(run_id, || Ok(None)).await.unwrap();
+        let result = wait_for_result_with(run_id, || async { Ok(None) })
+            .await
+            .unwrap();
 
         assert_eq!(result, Some(b"live".to_vec()));
         notify_terminal(run_id);
@@ -473,9 +480,12 @@ mod tests {
         let waiter_state = completed.clone();
         let mut waiter = tokio::spawn(async move {
             wait_for_result_with(run_id, || {
-                Ok(waiter_state
-                    .load(Ordering::Acquire)
-                    .then(|| b"completed".to_vec()))
+                let waiter_state = waiter_state.clone();
+                async move {
+                    Ok(waiter_state
+                        .load(Ordering::Acquire)
+                        .then(|| b"completed".to_vec()))
+                }
             })
             .await
             .unwrap()

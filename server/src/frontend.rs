@@ -400,7 +400,8 @@ async fn handle_async_request(
 
     #[cfg(feature = "at-least-once")]
     {
-        crate::async_invocation::persist_submitted(run_id, &parsed.raw_request_bytes, is_cold)?;
+        crate::async_invocation::persist_submitted(run_id, &parsed.raw_request_bytes, is_cold)
+            .await?;
         info!("Async invocation {} accepted and persisted", run_id);
     }
     spawn_async_invocation(dispatcher, is_cold, parsed);
@@ -425,7 +426,7 @@ fn parse_run_id(path: &str) -> DandelionResult<dandelion_commons::RunId> {
 #[cfg(feature = "at-least-once")]
 async fn handle_async_status(path: &str) -> DandelionResult<DandelionBody> {
     let run_id = parse_run_id(path)?;
-    let status = crate::async_invocation::load_status(run_id)?;
+    let status = crate::async_invocation::load_status(run_id).await?;
     Ok(DandelionBody::from_vec(serialize_bson_response(&status)))
 }
 
@@ -453,12 +454,12 @@ async fn handle_async_result(
     let result = if wait {
         crate::async_invocation::wait_for_result(run_id).await?
     } else {
-        crate::async_invocation::load_result(run_id)?
+        crate::async_invocation::load_result(run_id).await?
     };
     match result {
         Some(result) => Ok((StatusCode::OK, DandelionBody::from_vec(result))),
         None => {
-            let status = crate::async_invocation::load_status(run_id)?;
+            let status = crate::async_invocation::load_status(run_id).await?;
             Ok((
                 StatusCode::ACCEPTED,
                 DandelionBody::from_vec(serialize_bson_response(&status)),
@@ -522,7 +523,9 @@ fn spawn_async_invocation(
                         match crate::async_invocation::persist_failed(
                             run_id,
                             format!("Failed to persist async result: {}", err),
-                        ) {
+                        )
+                        .await
+                        {
                             Ok(()) => true,
                             Err(persist_err) => {
                                 error!(
@@ -537,7 +540,7 @@ fn spawn_async_invocation(
             }
             Err(err) => {
                 warn!("Async invocation {} dispatch failed: {}", run_id, err);
-                match crate::async_invocation::persist_failed(run_id, format!("{}", err)) {
+                match crate::async_invocation::persist_failed(run_id, format!("{}", err)).await {
                     Ok(()) => true,
                     Err(persist_err) => {
                         error!(
@@ -582,11 +585,11 @@ fn spawn_async_invocation(
 async fn release_invocation_io_exports(run_id: RunId) -> DandelionResult<()> {
     use machine_interface::function_driver::system_driver::recovery_log;
 
-    if recovery_log::recovery_exports_released(run_id)? {
+    if recovery_log::recovery_exports_released(run_id).await? {
         return Ok(());
     }
 
-    let exports = recovery_log::remote_io_exports(run_id)?;
+    let exports = recovery_log::remote_io_exports(run_id).await?;
     let client = get_remote_data_client()?;
     if !exports.is_empty() {
         let cleanup = async {
@@ -611,7 +614,7 @@ async fn release_invocation_io_exports(run_id: RunId) -> DandelionResult<()> {
 
     #[cfg(feature = "exactly-once")]
     client.clear_io_coordination(run_id).await?;
-    recovery_log::mark_recovery_exports_released(run_id)
+    recovery_log::mark_recovery_exports_released(run_id).await
 }
 
 /// Best-effort startup sweep for an owner that crashed after persisting a terminal invocation but
@@ -621,8 +624,8 @@ async fn release_invocation_io_exports(run_id: RunId) -> DandelionResult<()> {
 pub async fn release_terminal_invocation_exports() -> DandelionResult<()> {
     use machine_interface::function_driver::system_driver::recovery_log;
 
-    for run_id in recovery_log::list_run_log_ids()? {
-        let status = match crate::async_invocation::load_status(run_id) {
+    for run_id in recovery_log::list_run_log_ids().await? {
+        let status = match crate::async_invocation::load_status(run_id).await {
             Ok(status) => status,
             Err(err) => {
                 warn!(
@@ -654,13 +657,13 @@ pub async fn release_terminal_invocation_exports() -> DandelionResult<()> {
 pub async fn resume_recoverable_invocations(
     dispatcher: &'static Dispatcher,
 ) -> DandelionResult<()> {
-    for recoverable in crate::async_invocation::list_recoverable_invocations()? {
+    for recoverable in crate::async_invocation::list_recoverable_invocations().await? {
         let run_id = recoverable.run_id;
         info!("Async invocation {} recovery started", run_id);
         let parsed =
             parse_persisted_async_invocation_request_bytes(recoverable.request_bytes, run_id)
                 .await?;
-        let recovered_io = machine_interface::function_driver::system_driver::recovery_log::load_io_completion_records(run_id)?;
+        let recovered_io = machine_interface::function_driver::system_driver::recovery_log::load_io_completion_records(run_id).await?;
         machine_interface::function_driver::system_driver::recovery_log::install_recovered_io_records(
             run_id,
             recovered_io,
