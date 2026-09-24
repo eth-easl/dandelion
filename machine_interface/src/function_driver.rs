@@ -1,6 +1,5 @@
-use crate::function_driver::system_driver::RemoteData;
 use crate::machine_config::EngineType;
-use memory::context::MemoryDomain;
+use memory::{context::MemoryDomain, DataItem, RemoteData};
 extern crate alloc;
 use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionResult};
@@ -40,15 +39,15 @@ pub enum WorkToDo {
 }
 
 pub enum WorkDone {
-    CompositionSet(Vec<Option<DataSet>>),
+    DataItems(Vec<Vec<DataItem>>),
     Resources(Vec<ComputeResource>),
     RemoteDeleted,
 }
 
 impl WorkDone {
-    pub fn get_composition(self) -> Vec<Option<DataSet>> {
+    pub fn get_data_items(self) -> Vec<Vec<DataItem>> {
         return match self {
-            WorkDone::CompositionSet(sets) => sets,
+            WorkDone::DataItems(sets) => sets,
             _ => panic!("WorkDone is not context when context was expected"),
         };
     }

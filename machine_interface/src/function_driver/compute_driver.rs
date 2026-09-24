@@ -7,5 +7,5 @@ pub mod mmu;
 #[cfg(feature = "kvm")]
 pub mod kvm;
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "kvm")))]
 mod compute_driver_tests;

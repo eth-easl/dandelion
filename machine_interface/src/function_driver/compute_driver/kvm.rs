@@ -16,8 +16,9 @@ use kvm_bindings::{
 };
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
-use memory::context::{
-    Context, ContextDataItem, ContextDataSet, ContextTrait, ContextType, MemoryDomain,
+use memory::{
+    context::{Context, ContextDataItem, ContextDataSet, ContextTrait, ContextType, MemoryDomain},
+    DataItem, DataSet, ItemData, LocalData,
 };
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
 use std::{num::NonZeroUsize, sync::Arc};
@@ -101,13 +102,19 @@ impl EngineLoop for KvmLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
+        input_sets: &Vec<(String, Option<DataSet>)>,
         output_sets: &Vec<String>,
-    ) -> DandelionResult<Context> {
+    ) -> DandelionResult<(i32, Vec<Vec<DataItem>>)> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return err_dandelion!(DandelionError::ConfigMissmatch),
         };
-        setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
+        setup_input_structs::<u64, u64>(
+            &mut context,
+            elf_config.system_data_offset,
+            input_sets,
+            output_sets,
+        )?;
         let min_stack_start = context.get_last_item_end();
         let kvm_context = match &mut context.context {
             ContextType::Kvm(kvm_context) => kvm_context,
@@ -314,14 +321,13 @@ impl EngineLoop for KvmLoop {
             kvm_context.insert_into_overlay(start, end, None);
         }
 
-        read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
+        let (exit_code, items) =
+            read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
         // go through the content and only keep overlay segments that are still used
         let mut overlay_keep = Vec::new();
-        for set in context.content.iter().filter_map(|set| set.as_ref()) {
-            for item in &set.items {
-                let Position { offset, size } = item.data;
-                overlay_keep.push((offset, (offset + size).saturating_sub(1)));
-            }
+        for item in items.iter().flatten() {
+            let Position { offset, size } = item.2;
+            overlay_keep.push((offset, (offset + size).saturating_sub(1)));
         }
         overlay_keep.sort_unstable_by_key(|(start, _)| *start);
 
@@ -348,7 +354,24 @@ impl EngineLoop for KvmLoop {
                 false
             });
 
-        return Ok(context);
+        let context_arc = Arc::new(context);
+        let mut set_vec = Vec::with_capacity(items.len());
+        for set in items {
+            set_vec.push(
+                set.into_iter()
+                    .map(|(ident, key, pos)| DataItem {
+                        ident,
+                        key,
+                        data: ItemData::Local(LocalData {
+                            ctx: context_arc.clone(),
+                            pos,
+                        }),
+                    })
+                    .collect(),
+            );
+        }
+
+        Ok((exit_code, set_vec))
     }
 }
 
@@ -406,11 +429,8 @@ impl Driver for KvmDriver {
 
         let mut context = static_domain.acquire_context(size)?;
         // copy all
-        let mut new_content = ContextDataSet {
-            items: vec![],
-            total_size: 0,
-        };
-        let buffers = &mut new_content.items;
+        let mut total_size = 0;
+        let mut items = Vec::with_capacity(static_requirements.len());
         for (required_position, source_position) in
             static_requirements.iter().zip(source_layout.iter())
         {
@@ -424,7 +444,8 @@ impl Driver for KvmDriver {
                 let zeros = vec![0u8; required_position.size - source_position.size];
                 context.write(required_position.offset + source_position.size, &zeros)?
             }
-            buffers.push(ContextDataItem {
+            total_size += required_position.size;
+            items.push(ContextDataItem {
                 ident: String::from(""),
                 data: Position {
                     offset: required_position.offset,
@@ -433,7 +454,7 @@ impl Driver for KvmDriver {
                 key: 0,
             });
         }
-        context.content = vec![Some(new_content)];
+        context.content = vec![Some(ContextDataSet { items, total_size })];
 
         let requirements = DataRequirementList {
             input_requirements: Vec::<DataRequirement>::new(),

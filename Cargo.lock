@@ -1335,10 +1335,10 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "cmake",
+ "composition",
  "core_affinity",
  "criterion",
  "dandelion_commons",
- "dparser",
  "futures",
  "http",
  "itertools 0.11.0",
@@ -1398,7 +1398,9 @@ dependencies = [
  "libc",
  "log",
  "nix",
+ "serde",
  "test-log",
+ "tokio",
 ]
 
 [[package]]

@@ -1,24 +1,32 @@
-use std::fmt::Debug;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{fmt::Debug, ops::Deref, sync::Arc};
 
 use crate::context::{Context, ContextDataSet};
 use dandelion_commons::{DandelionResult, FunctionId};
+use log::error;
+use tokio::sync::{mpsc, OnceCell};
 
-//---------------------------------------------------
-// ItemData
-//---------------------------------------------------
-
-pub type ResolvedItemData = Pin<Box<dyn Future<Output = DandelionResult<LocalItemData>> + Send>>;
-pub trait ItemData: Debug + Send + Sync {
-    fn size(&self) -> usize;
-    fn is_local(&self) -> bool;
-    fn resolve(self: Arc<Self>) -> ResolvedItemData;
-    fn data(&self) -> DandelionResult<(Arc<Context>, Position)>;
+#[derive(Debug, Clone)]
+pub enum ItemData {
+    Local(LocalData),
+    Remote(RemoteData),
+    Io(IoData),
 }
 
-#[derive(Clone, Copy, Debug)]
+impl ItemData {
+    fn size(&self) -> usize {
+        if let ItemData::Local(LocalData { pos, .. }) = self {
+            pos.size
+        } else {
+            // TODO for remote items this could be known, add this information
+            0
+        }
+    }
+    fn is_local(&self) -> bool {
+        matches!(self, ItemData::Local(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub offset: usize,
     pub size: usize,
@@ -26,35 +34,91 @@ pub struct Position {
 
 /// Data that is available locally on the node to use for computation.
 #[derive(Clone, Debug)]
-pub struct LocalItemData {
+pub struct LocalData {
     pub ctx: Arc<Context>,
     pub pos: Position,
 }
 
-impl ItemData for LocalItemData {
-    fn size(&self) -> usize {
-        self.pos.size
+/// A reference to data that lives on another node.
+#[derive(Clone, Debug)]
+pub struct RemoteData {
+    inner: Arc<RemoteDataInner>,
+}
+
+/// TODO: for the ones we create locally we are going through the sender too,
+/// think if it would be easier to have an enum in the delete sender to perform local drop directly.
+/// TODO: should have the size, this is known and should be recorded here
+#[derive(Debug)]
+pub struct RemoteDataInner {
+    pub node_id: u64,
+    pub data_id: u64,
+    delete_sender: Option<mpsc::UnboundedSender<(u64, u64)>>,
+}
+
+impl RemoteData {
+    pub fn new(node_id: u64, data_id: u64) -> Self {
+        Self {
+            inner: Arc::new(RemoteDataInner {
+                node_id,
+                data_id,
+                delete_sender: None,
+            }),
+        }
     }
-    fn is_local(&self) -> bool {
-        true
-    }
-    fn resolve(self: Arc<Self>) -> ResolvedItemData {
-        Box::pin(async move { Ok((*self).clone()) })
-    }
-    fn data(&self) -> DandelionResult<(Arc<Context>, Position)> {
-        Ok((self.ctx.clone(), self.pos))
+
+    pub fn delete_on_drop(
+        node_id: u64,
+        data_id: u64,
+        delete_sender: mpsc::UnboundedSender<(u64, u64)>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(RemoteDataInner {
+                node_id,
+                data_id,
+                delete_sender: Some(delete_sender),
+            }),
+        }
     }
 }
 
-//---------------------------------------------------
-// DataItem
-//---------------------------------------------------
+impl Deref for RemoteData {
+    type Target = RemoteDataInner;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref()
+    }
+}
+
+impl Drop for RemoteDataInner {
+    fn drop(&mut self) {
+        if let Some(delete_sender) = &self.delete_sender {
+            if let Err(err) = delete_sender.send((self.node_id, self.data_id)) {
+                error!(
+                    "Failed to send remote data deletion message for node_id {}, data_id {}: {}",
+                    self.node_id, self.data_id, err
+                );
+            }
+        }
+    }
+}
+
+/// Data that needs to be fetched using an IO function.
+#[derive(Debug, Clone)]
+pub struct IoData {
+    pub original_data: Box<ItemData>,
+    // A vec with the resolved outputs for this IO request
+    // one entry for each output set of the function.
+    // The output item starts at 0 in the context and goes until the end of the context.
+    pub resolved: Arc<OnceCell<DandelionResult<Vec<Arc<Context>>>>>,
+    pub function: dandelion_commons::SystemFunction,
+    pub set_index: usize,
+}
 
 #[derive(Clone, Debug)]
 pub struct DataItem {
     pub ident: String,
     pub key: u32,
-    pub data: Arc<dyn ItemData>,
+    pub data: ItemData,
 }
 
 impl DataItem {
@@ -62,18 +126,26 @@ impl DataItem {
         DataItem {
             ident,
             key,
-            data: Arc::new(LocalItemData { ctx, pos }),
+            data: ItemData::Local(LocalData { ctx, pos }),
         }
+    }
+
+    pub fn size(&self) -> usize {
+        self.data.size()
     }
 
     pub fn is_local(&self) -> bool {
         self.data.is_local()
     }
+    pub fn local_ref(&self) -> DandelionResult<&LocalData> {
+        if let ItemData::Local(local) = &self.data {
+            Ok(local)
+        } else {
+            // TODO make specific error to make it easer to recognize
+            dandelion_commons::err_dandelion!(dandelion_commons::DandelionError::InvalidRead)
+        }
+    }
 }
-
-//---------------------------------------------------
-// DataSet
-//---------------------------------------------------
 
 #[derive(Clone, Debug, Default)]
 pub struct DataSet {
@@ -85,6 +157,8 @@ pub struct DataSet {
 }
 
 impl DataSet {
+    // TODO this does construct an unsorted data set, meaning we cannot rely on datasets always being sorted.
+    // Should check if we need this or it would make sense to only construct datasets that are sorted (or never sorted, and leave that to the composition sets?)
     pub fn from_items(items: Arc<Vec<Arc<DataItem>>>) -> DataSet {
         let mut num_unresolved = 0;
         let mut total_size = 0;
@@ -174,10 +248,6 @@ impl<'origin> IntoIterator for &'origin DataSet {
     }
 }
 
-//---------------------------------------------------
-// DataSetAccumulator
-//---------------------------------------------------
-
 #[derive(Debug)]
 pub struct DataSetAccumulator {
     items: Vec<Arc<DataItem>>,
@@ -240,10 +310,6 @@ impl DataSetAccumulator {
 }
 
 // TODO: move to better file?
-//---------------------------------------------------
-// Invocation
-//---------------------------------------------------
-
 #[derive(Debug)]
 pub struct Invocation {
     pub function_id: FunctionId,

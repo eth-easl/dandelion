@@ -1,4 +1,3 @@
-use memory::context::{Context, ContextTrait, ContextType, MemoryDomain};
 use crate::{
     function_driver::{
         functions::{ElfConfig, Function, FunctionConfig},
@@ -13,6 +12,7 @@ use crate::{
 use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::size_t;
+use memory::context::{Context, ContextTrait, ContextType, MemoryDomain};
 use std::sync::Arc;
 
 #[link(name = "cheri_lib")]
@@ -41,13 +41,19 @@ impl EngineLoop for CheriLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
+        input_sets: &Vec<(String, Option<DataSet>)>,
         output_sets: &Vec<String>,
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return err_dandelion!((DandelionError::ConfigMissmatch)),
         };
-        setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
+        setup_input_structs::<u64, u64>(
+            &mut context,
+            elf_config.system_data_offset,
+            input_sets,
+            output_sets,
+        )?;
         let cheri_context = match &context.context {
             ContextType::Cheri(cheri_context) => cheri_context,
             _ => return err_dandelion!((DandelionError::ContextMissmatch)),
@@ -126,34 +132,30 @@ impl Driver for CheriDriver {
             static_requirements: static_requirements,
         };
         // sum up all sizes
-        let mut total_size = 0;
+        let mut context_size = 0;
         for position in source_layout.iter() {
-            total_size += position.size;
+            context_size += position.size;
         }
-        let mut context = static_domain.acquire_context(total_size)?;
+        let mut context = static_domain.acquire_context(context_size)?;
         // copy all
-        let mut write_counter = 0;
-        let mut new_content = DataSet {
-            ident: String::from("static"),
-            buffers: vec![],
-        };
-        let buffers = &mut new_content.buffers;
+        let mut total_size = 0;
+        let mut items = Vec::with_capacity(static_requirements.len());
         for position in source_layout.iter() {
             context.write(
-                write_counter,
+                total_size,
                 &function[position.offset..position.offset + position.size],
             )?;
-            buffers.push(DataItem {
+            items.push(ContextDataItem {
                 ident: String::from(""),
                 data: Position {
-                    offset: write_counter,
+                    offset: total_size,
                     size: position.size,
                 },
                 key: 0,
             });
-            write_counter += position.size;
+            total_size += position.size;
         }
-        context.content = vec![Some(new_content)];
+        context.content = vec![Some(ContextDataSet { items, total_size })];
         return Ok(Function {
             requirements,
             context: Arc::new(context),

@@ -110,7 +110,7 @@ impl JoinIterator for SetEachIterator {
         debug_assert!(self.item_idx < self.items.len());
         let item = self.items[self.item_idx].clone();
         let num_unresolved = if item.is_local() { 0 } else { 1 };
-        let total_size = item.data.size();
+        let total_size = item.size();
         to_fill[self.write_idx] = DataSet {
             items: Arc::new(vec![item]),
             num_unresolved,
@@ -323,7 +323,7 @@ impl JoinIterator for SetKeyIterator {
                 if !item.is_local() {
                     num_unresolved += 1;
                 }
-                total_size += item.data.size();
+                total_size += item.size();
             }
             to_fill[self.write_idx] = DataSet {
                 items: Arc::new(item_list),

@@ -1,10 +1,8 @@
-use memory::context::{Context, MemoryDomain};
 use crate::{
-    function_driver::load_utils::load_static,
-    machine_config::EngineType,
-    DataRequirementList,
+    function_driver::load_utils::load_static, machine_config::EngineType, DataRequirementList,
 };
 use dandelion_commons::{records::Recorder, DandelionResult};
+use memory::context::{Context, MemoryDomain};
 use std::{
     fmt::Debug,
     sync::{Arc, RwLock},
@@ -22,41 +20,10 @@ pub struct ElfConfig {
     pub(super) protection_flags: Arc<Vec<(u32, crate::Position)>>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum SystemFunction {
-    HTTP,
-    MEMCACHED,
-}
-
-impl From<&str> for SystemFunction {
-    fn from(value: &str) -> Self {
-        match value {
-            "HTTP" => Self::HTTP,
-            "MEMCACHED" => Self::MEMCACHED,
-            _ => panic!("trying to convert non existent system function"),
-        }
-    }
-}
-
-impl Into<&str> for &SystemFunction {
-    fn into(self) -> &'static str {
-        match self {
-            SystemFunction::HTTP => "HTTP",
-            SystemFunction::MEMCACHED => "MEMCACHED",
-        }
-    }
-}
-
-impl core::fmt::Display for SystemFunction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", Into::<&str>::into(self))
-    }
-}
-
 #[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
-    SysConfig(SystemFunction),
+    SysConfig(dandelion_commons::SystemFunction),
 }
 
 pub struct Function {

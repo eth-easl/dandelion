@@ -17,17 +17,17 @@ use itertools::Itertools;
 #[cfg(feature = "log_function_stdio")]
 use log::warn;
 use log::{debug, trace};
-#[cfg(feature = "log_function_stdio")]
-use memory::context::ContextTrait;
 use machine_interface::{
     composition::{
         get_sharding, AnyShardingMode, Composition, CompositionSet, InputSetDescriptor,
         JoinStrategy, LocalCompositionSet, ShardingMode,
     },
+    context::{MemoryDomain, MemoryResource},
     function_driver::{Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
-    context::{MemoryDomain, MemoryResource},
 };
+#[cfg(feature = "log_function_stdio")]
+use memory::context::ContextTrait;
 use std::{
     collections::BTreeMap,
     sync::{atomic::AtomicUsize, Arc},
@@ -145,7 +145,7 @@ impl Dispatcher {
                     composition_id,
                 )
                 .await?
-                .get_composition()
+                .get_data_items()
         } else {
             results
         };
@@ -214,7 +214,7 @@ impl Dispatcher {
                     composition_id,
                 )
                 .await?
-                .get_composition()
+                .get_data_items()
         } else {
             results
         };
@@ -544,7 +544,7 @@ impl Dispatcher {
                     let mut composition_set_vecs = Vec::with_capacity(output_mapping.len());
                     composition_set_vecs.resize(output_mapping.len(), Vec::new());
                     for done_work in done_vec.into_iter() {
-                        let sets = done_work.get_composition();
+                        let sets = done_work.get_data_items();
                         #[cfg(feature = "log_function_stdio")]
                         log_io_sets(&sets, &function_id)?;
 
@@ -582,7 +582,7 @@ impl Dispatcher {
                         .work_queue
                         .do_work(args, composition_id)
                         .await?
-                        .get_composition();
+                        .get_data_items();
                     new_recorder.record(RecordPoint::FutureReturn);
 
                     #[cfg(feature = "log_function_stdio")]
@@ -676,7 +676,7 @@ impl Dispatcher {
                     .work_queue
                     .do_work(args, composition_id)
                     .await?
-                    .get_composition();
+                    .get_data_items();
                 recorder.record(RecordPoint::FutureReturn);
 
                 #[cfg(feature = "log_function_stdio")]

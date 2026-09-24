@@ -14,6 +14,7 @@ use crate::data::Position;
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use std::sync::Arc;
 
+// TODO: check if we can get rid of these, since occupation is managed separateyl and data items are also separate now
 #[derive(Clone, Debug)]
 pub struct ContextDataItem {
     pub ident: String,
@@ -103,17 +104,11 @@ impl ContextTrait for ContextType {
 }
 
 #[derive(Debug)]
-pub enum ContextState {
-    InPreparation,
-    Run(i32),
-}
-
-#[derive(Debug)]
 pub struct Context {
     pub context: ContextType,
+    // TODO: this has become unnecessary, inputs are passed to engines as sets, don't need to store them in context
     pub content: Vec<Option<ContextDataSet>>,
     pub size: usize,
-    pub state: ContextState,
     occupation: Vec<Position>,
 }
 
@@ -140,7 +135,6 @@ impl Context {
             context: con,
             content: vec![],
             size: size,
-            state: ContextState::InPreparation,
             occupation: vec![
                 Position { offset: 0, size: 0 },
                 Position {

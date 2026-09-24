@@ -1,23 +1,18 @@
 pub mod reqwest;
 
-use crate::{
-    function_driver::{functions::SystemFunction, system_driver::reqwest::resolve_io_item},
-    ContextDataSet,
-};
-use ::reqwest::Client as HttpClient;
+use crate::ContextDataSet;
 use dandelion_commons::{
     err_dandelion, try_with_capacity, DandelionError, DandelionResult, MultinodeError,
+    SystemFunction,
 };
-use log::error;
-use memory::data::{DataItem, DataSet, ItemData, LocalItemData, Position, ResolvedItemData};
+use memory::data::{DataItem, DataSet, IoData, ItemData, Position, RemoteData};
 use memory::Context;
 use std::{
     future::Future,
-    ops::Deref,
     pin::Pin,
     sync::{Arc, OnceLock},
 };
-use tokio::sync::{mpsc, OnceCell};
+use tokio::sync::OnceCell;
 
 /// HTTP function currently expects one set with requests formated by HTTP standard (in text).
 /// This means one line with the reqest method, a space, request url, another space and the protocol version
@@ -66,61 +61,10 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
 
 pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 
-//------------------------------------------------------------------------------
-// IoData
-//------------------------------------------------------------------------------
-
-/// Data that needs to be fetched using an IO function.
-#[derive(Debug, Clone)]
-pub struct IoData {
-    pub original_data: Arc<dyn ItemData>,
-    // A vec with the resolved outputs for this IO request
-    // one entry for each output set of the function.
-    // The output item starts at 0 in the context and goes until the end of the context.
-    pub resolved: Arc<OnceCell<DandelionResult<Vec<Arc<Context>>>>>,
-    pub function: SystemFunction,
-    pub set_index: usize,
-    pub client: HttpClient,
-}
-
-impl ItemData for IoData {
-    fn size(&self) -> usize {
-        if let Some(res) = self.resolved.get() {
-            res.as_ref()
-                .map_or(0, |data_vec| data_vec[self.set_index].size())
-        } else {
-            0
-        }
-    }
-    fn is_local(&self) -> bool {
-        self.resolved.get().is_some()
-    }
-    fn resolve(self: Arc<Self>) -> ResolvedItemData {
-        Box::pin(resolve_io_item(self))
-    }
-    fn data(&self) -> DandelionResult<(Arc<Context>, Position)> {
-        match self.resolved.get() {
-            Some(resolved_vec) => {
-                let ctx = match resolved_vec.as_ref() {
-                    Ok(v) => v[self.set_index].clone(),
-                    Err(err) => return Err(err.clone()),
-                };
-                let pos = Position {
-                    offset: 0,
-                    size: ctx.size(),
-                };
-                Ok((ctx, pos))
-            }
-            None => err_dandelion!(DandelionError::InvalidRead),
-        }
-    }
-}
-
 /// Currently assumes the HTTP_INPUT_SETS and HTTP_OUTPUT_SETS
 pub fn convert_to_references(
     function: SystemFunction,
     mut inputs: Vec<Option<DataSet>>,
-    client: HttpClient,
 ) -> DandelionResult<Vec<Option<DataSet>>> {
     // check that the function id contains string correcpsonding to system function
     debug_assert_eq!(
@@ -141,23 +85,21 @@ pub fn convert_to_references(
             let header_item = DataItem {
                 ident: item.ident.clone(),
                 key: item.key,
-                data: Arc::new(IoData {
-                    original_data: item.data.clone(),
+                data: ItemData::Io(IoData {
+                    original_data: Box::new(item.data.clone()),
                     resolved: set_once.clone(),
                     function,
                     set_index: 0,
-                    client: client.clone(),
                 }),
             };
             let body_item = DataItem {
                 ident: item.ident.clone(),
                 key: item.key,
-                data: Arc::new(IoData {
-                    original_data: item.data.clone(),
+                data: ItemData::Io(IoData {
+                    original_data: Box::new(item.data.clone()),
                     resolved: set_once,
                     function,
                     set_index: 1,
-                    client: client.clone(),
                 }),
             };
             out_0_list.push(Arc::new(header_item));
@@ -168,92 +110,6 @@ pub fn convert_to_references(
         output_vec[1] = Some(DataSet::from_items(Arc::new(out_1_list)));
     }
     Ok(output_vec)
-}
-
-//------------------------------------------------------------------------------
-// RemoteData
-//------------------------------------------------------------------------------
-
-/// A reference to data that lives on another node.
-#[derive(Clone, Debug)]
-pub struct RemoteData {
-    inner: Arc<RemoteDataInner>,
-}
-
-/// TODO: for the ones we create locally we are going through the sender too,
-/// think if it would be easier to have an enum in the delete sender to perform local drop directly.
-#[derive(Debug)]
-pub struct RemoteDataInner {
-    pub node_id: u64,
-    pub data_id: u64,
-    delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
-}
-
-impl RemoteData {
-    pub fn new(node_id: u64, data_id: u64) -> Self {
-        Self {
-            inner: Arc::new(RemoteDataInner {
-                node_id,
-                data_id,
-                delete_sender: None,
-            }),
-        }
-    }
-
-    pub fn delete_on_drop(
-        node_id: u64,
-        data_id: u64,
-        delete_sender: mpsc::UnboundedSender<RemoteData>,
-    ) -> Self {
-        Self {
-            inner: Arc::new(RemoteDataInner {
-                node_id,
-                data_id,
-                delete_sender: Some(delete_sender),
-            }),
-        }
-    }
-}
-
-impl Deref for RemoteData {
-    type Target = RemoteDataInner;
-
-    fn deref(&self) -> &Self::Target {
-        self.inner.as_ref()
-    }
-}
-
-impl Drop for RemoteDataInner {
-    fn drop(&mut self) {
-        if let Some(delete_sender) = &self.delete_sender {
-            if let Err(err) = delete_sender.send(RemoteData::new(self.node_id, self.data_id)) {
-                error!(
-                    "Failed to send remote data deletion message for node_id {}, data_id {}: {}",
-                    self.node_id, self.data_id, err
-                );
-            }
-        }
-    }
-}
-
-impl ItemData for RemoteData {
-    fn size(&self) -> usize {
-        0 // TODO: the size is only known once the item has been fetched
-    }
-    fn is_local(&self) -> bool {
-        false
-    }
-    fn resolve(self: Arc<Self>) -> ResolvedItemData {
-        Box::pin(async move {
-            let client = get_remote_data_client()?;
-            let (ctx, pos) = client.resolve_remote_data((*self).clone()).await?;
-            Ok(LocalItemData { ctx, pos })
-        })
-    }
-    fn data(&self) -> DandelionResult<(Arc<Context>, Position)> {
-        // remote data has to go through `resolve` first, which yields a `LocalItemData`
-        err_dandelion!(DandelionError::InvalidRead)
-    }
 }
 
 pub trait RemoteDataClient: Send + Sync {
@@ -267,11 +123,9 @@ pub trait RemoteDataClient: Send + Sync {
     /// their position metadata accordingly
     fn resolve_multiple_data<'meta>(
         &'meta self,
-        // Metadata needs to be updated, since the offsets are not correctly set yet
-        metadata: &'meta mut Vec<(usize, DataItem)>,
-        // Since this assumes ownership should be careful not to drop until we have the data
-        data: Vec<RemoteData>,
-    ) -> Pin<Box<dyn Future<Output = DandelionResult<Arc<Context>>> + Send + 'meta>>;
+        // Metadata for data that needs to be fetched
+        metadata: &'meta Vec<(usize, Arc<DataItem>)>,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<Vec<(usize, DataItem)>>> + Send + 'meta>>;
 
     fn delete_remote_data(
         &self,

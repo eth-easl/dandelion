@@ -10,7 +10,7 @@ use dandelion_commons::{
 };
 use memory::{
     context::{self, Context},
-    DataSet,
+    DataItem, DataSet,
 };
 use std::thread::spawn;
 
@@ -22,8 +22,9 @@ pub trait EngineLoop {
         &mut self,
         config: FunctionConfig,
         context: Context,
+        input_sets: &Vec<(String, Option<DataSet>)>,
         output_sets: &Vec<String>,
-    ) -> DandelionResult<Context>;
+    ) -> DandelionResult<(i32, Vec<Vec<DataItem>>)>;
     fn get_engine_type(&self) -> EngineType;
 }
 
@@ -213,7 +214,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                             total_size: 0,
                         }));
                         for source_item in transfer_set.items.iter() {
-                            let (src_ctx, src_pos) = match source_item.data.data() {
+                            let local_item = match source_item.local_ref() {
                                 Ok(data) => data,
                                 Err(err) => {
                                     drop(recorder);
@@ -224,11 +225,11 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                             let local_source_item = crate::ContextDataItem {
                                 ident: source_item.ident.clone(),
                                 key: source_item.key,
-                                data: src_pos,
+                                data: local_item.pos,
                             };
                             let transfer_result = context::transfer_data_item(
                                 &mut function_context,
-                                &src_ctx,
+                                &local_item.ctx,
                                 set_index,
                                 128,
                                 &local_source_item,
@@ -254,19 +255,18 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 let result = engine_state.run(
                     function.config.clone(),
                     function_context,
+                    &metadata.input_sets,
                     &metadata.output_sets,
                 );
 
-                if let Ok(ref context) = result {
-                    log::debug!("content: {:?}, state: {:?}", context.content, context.state);
+                if let Ok((exit_code, items)) = &result {
+                    log::debug!("content: {}, state: {:?}", *exit_code, items);
                 }
 
                 recorder.record(RecordPoint::EngineEnd);
                 drop(recorder);
 
-                let results = result.and_then(|context| {
-                    Ok(WorkDone::CompositionSet(DataSet::from_context(context)))
-                });
+                let results = result.and_then(|(_, items)| Ok(WorkDone::DataItems(items)));
                 debt.fulfill(results);
             }
             WorkToDo::SetsToResolve { .. } => {

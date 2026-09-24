@@ -1,4 +1,3 @@
-use memory::context::{Context, ContextTrait, ContextType, MemoryDomain};
 use crate::{
     function_driver::{
         functions::{ElfConfig, Function, FunctionConfig},
@@ -8,11 +7,15 @@ use crate::{
     },
     interface::{read_output_structs, setup_input_structs},
     util::elf_parser,
-    DataItem, DataRequirement, DataRequirementList, DataSet, Position,
+    DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core_affinity;
 use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
 use log::{debug, warn};
+use memory::{
+    context::{Context, ContextDataItem, ContextDataSet, ContextTrait, ContextType, MemoryDomain},
+    DataItem, ItemData, LocalData,
+};
 use nix::{
     sys::{
         signal::Signal,
@@ -196,8 +199,9 @@ impl EngineLoop for MmuLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
+        input_sets: &Vec<(String, Option<DataSet>)>,
         output_sets: &Vec<String>,
-    ) -> DandelionResult<Context> {
+    ) -> DandelionResult<(i32, Vec<Vec<DataItem>>)> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return err_dandelion!(DandelionError::ConfigMissmatch),
@@ -206,7 +210,8 @@ impl EngineLoop for MmuLoop {
         setup_input_structs::<usize, usize>(
             &mut context,
             elf_config.system_data_offset,
-            &output_sets,
+            input_sets,
+            output_sets,
         )?;
 
         let mmu_context = match &context.context {
@@ -225,9 +230,25 @@ impl EngineLoop for MmuLoop {
             elf_config.entry_point,
         )?;
 
-        read_output_structs::<usize, usize>(&mut context, elf_config.system_data_offset)?;
-
-        return Ok(context);
+        let (exit_code, proto_items) =
+            read_output_structs::<usize, usize>(&mut context, elf_config.system_data_offset)?;
+        let context_arc = Arc::new(context);
+        let mut set_vec = Vec::with_capacity(proto_items.len());
+        for set in proto_items {
+            set_vec.push(
+                set.into_iter()
+                    .map(|(ident, key, pos)| DataItem {
+                        ident,
+                        key,
+                        data: ItemData::Local(LocalData {
+                            ctx: context_arc.clone(),
+                            pos,
+                        }),
+                    })
+                    .collect(),
+            );
+        }
+        Ok((exit_code, set_vec))
     }
 }
 
@@ -291,28 +312,24 @@ impl Driver for MmuDriver {
         }
         let mut context = Box::new(static_domain.acquire_context(total_size)?);
         // copy all
-        let mut write_counter = 0;
-        let mut new_content = DataSet {
-            ident: String::from("static"),
-            buffers: vec![],
-        };
-        let buffers = &mut new_content.buffers;
+        let mut total_size = 0;
+        let mut items = Vec::with_capacity(source_layout.len());
         for position in source_layout.iter() {
             context.write(
-                write_counter,
+                total_size,
                 &function[position.offset..position.offset + position.size],
             )?;
-            buffers.push(DataItem {
+            items.push(ContextDataItem {
                 ident: String::from(""),
                 data: Position {
-                    offset: write_counter,
+                    offset: total_size,
                     size: position.size,
                 },
                 key: 0,
             });
-            write_counter += position.size;
+            total_size += position.size;
         }
-        context.content = vec![Some(new_content)];
+        context.content = vec![Some(ContextDataSet { items, total_size })];
         return Ok(Function {
             requirements,
             context: Arc::from(context),

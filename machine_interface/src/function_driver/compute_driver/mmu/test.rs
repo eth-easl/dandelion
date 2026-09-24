@@ -1,4 +1,3 @@
-use memory::context::{mmu::MmuMemoryDomain, MemoryDomain};
 use crate::{
     function_driver::{
         compute_driver::mmu::MmuDriver,
@@ -7,6 +6,7 @@ use crate::{
     },
     Position,
 };
+use memory::context::{mmu::MmuMemoryDomain, MemoryDomain};
 
 #[test_log::test]
 fn test_loader_basic() {
@@ -98,7 +98,7 @@ fn test_loader_basic() {
     let layout = &context.content[0]
         .as_ref()
         .expect("Set should be present")
-        .buffers;
+        .items;
     for (index, item) in layout.into_iter().enumerate() {
         assert_eq!(
             expected_offset, item.data.offset,
