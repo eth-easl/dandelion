@@ -1,7 +1,7 @@
 use crate::{
     composition::CompositionSet,
     function_driver::{
-        system_driver::{convert_to_references, SystemFunction},
+        system_driver::{convert_to_references, SystemFunction, UncoordinatedIo},
         test_queue::TestQueue,
         ComputeResource, WorkToDo,
     },
@@ -9,7 +9,16 @@ use crate::{
     memory_domain::{read_only::ReadOnlyContext, ContextTrait},
     DataItem, DataSet, Position,
 };
-use std::process::{Child, Command};
+use dandelion_commons::{records::Recorder, RunId};
+use std::{
+    process::{Child, Command},
+    sync::Arc,
+    time::Instant,
+};
+
+fn test_recorder() -> Recorder {
+    Recorder::new(RunId::nil(), Arc::new("HTTP".to_string()), Instant::now())
+}
 
 struct HttpServer {
     proc_child: Child,
@@ -83,10 +92,11 @@ fn get_http(
     let input_sets = convert_to_references(
         SystemFunction::HTTP,
         CompositionSet::from_context(input_context),
+        UncoordinatedIo,
+        0,
+        test_recorder(),
     )
     .unwrap();
-
-    // let recorder = Recorder::new(zero_id(), Instant::now());
 
     let promise = queue.enqueu(WorkToDo::SetsToResolve { input_sets });
     let mut result_sets = tokio::runtime::Builder::new_current_thread()
@@ -154,10 +164,11 @@ dolore magna aliquyam erat, sed diam voluptua."#,
     let input_sets = convert_to_references(
         SystemFunction::HTTP,
         CompositionSet::from_context(input_context),
+        UncoordinatedIo,
+        0,
+        test_recorder(),
     )
     .unwrap();
-
-    // let recorder = Recorder::new(zero_id(), Instant::now());
 
     let promise = queue.enqueu(WorkToDo::SetsToResolve { input_sets });
     let mut result_sets = tokio::runtime::Builder::new_current_thread()

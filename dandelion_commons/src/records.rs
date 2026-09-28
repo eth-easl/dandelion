@@ -1,4 +1,4 @@
-use crate::FunctionId;
+use crate::{FunctionId, RunId};
 use core::fmt;
 use std::time::Instant;
 
@@ -8,7 +8,8 @@ use core::cell::{OnceCell, UnsafeCell};
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 23;
+const LAST_EXISTING_RECORD_POINT: usize = 23;
+const LAST_RECORD_POINT: usize = 69;
 /// The first timestamp that should come from the engine running the function
 const FIRST_ENGINE_POINT: usize = 15;
 const LAST_ENGINE_POINT: usize = 22;
@@ -59,7 +60,76 @@ pub enum RecordPoint {
     /// End execution of the function on the engine (sync)
     EngineEnd = LAST_ENGINE_POINT,
     /// Return from execution engine (async)
-    FutureReturn = LAST_RECORD_POINT,
+    FutureReturn = LAST_EXISTING_RECORD_POINT,
+    /// Start resolving the coordination owner for one logical I/O.
+    IoResolveStart,
+    IoResolveEnd,
+    /// Time spent waiting for the winning caller's result.
+    IoDuplicateWaitStart,
+    IoDuplicateWaitEnd,
+    /// External I/O performed by the caller elected as owner.
+    IoExternalStart,
+    IoExternalEnd,
+    /// Exporting the owner result before it is made durable.
+    IoOutputExportStart,
+    IoOutputExportEnd,
+    /// Encoding the exported payload, including Base64.
+    IoPayloadEncodeStart,
+    IoPayloadEncodeEnd,
+    /// Writing and syncing the local durable completion journal.
+    IoJournalStart,
+    IoJournalEnd,
+    /// Delivering the resolved result to the coordination owner, including retries.
+    IoResolvedDeliveryStart,
+    IoResolvedDeliveryEnd,
+    /// Owner-side decoding and durable acceptance of the result.
+    IoOwnerApprovalStart,
+    IoOwnerApprovalEnd,
+    /// Removing the worker's pending durable-journal entry after approval.
+    IoAcknowledgementStart,
+    IoAcknowledgementEnd,
+    /// Resolving or fetching the input consumed by one logical I/O.
+    IoInputResolveStart,
+    IoInputResolveEnd,
+    /// Entire wait on the shared external-I/O result, including execution by the winner.
+    IoExternalWaitStart,
+    IoExternalWaitEnd,
+    /// Foreground work needed to construct and enqueue a background checkpoint.
+    IoCheckpointEnqueueStart,
+    IoCheckpointEnqueueEnd,
+    /// Start and end of a background checkpoint task.
+    IoCheckpointTaskStart,
+    IoCheckpointTaskEnd,
+    /// Copying output contexts into owned buffers for persistence.
+    IoOutputCopyStart,
+    IoOutputCopyEnd,
+    /// Waiting for the export registry while reserving durable identifiers.
+    IoExportRegistryLockWaitStart,
+    IoExportRegistryLockWaitEnd,
+    /// Waiting for a Tokio blocking worker before file persistence begins.
+    IoBlockingPoolWaitStart,
+    IoBlockingPoolWaitEnd,
+    /// File persistence, including any durability operations required by the mode.
+    IoFilePersistenceStart,
+    IoFilePersistenceEnd,
+    /// Publishing persisted output references in the in-memory registry.
+    IoRegistryCommitStart,
+    IoRegistryCommitEnd,
+    /// Waiting in the local completion-committer channel.
+    IoCommitQueueWaitStart,
+    IoCommitQueueWaitEnd,
+    /// Waiting to acquire the per-invocation journal lock.
+    IoJournalLockWaitStart,
+    IoJournalLockWaitEnd,
+    /// Reading the existing invocation journal.
+    IoJournalReadStart,
+    IoJournalReadEnd,
+    /// Scanning existing journal entries for a duplicate completion.
+    IoJournalScanStart,
+    IoJournalScanEnd,
+    /// Writing journal bytes, including durability operations required by the mode.
+    IoJournalWriteStart,
+    IoJournalWriteEnd = LAST_RECORD_POINT,
 }
 
 #[cfg(feature = "timestamp")]
@@ -152,6 +222,7 @@ unsafe impl Sync for InnerRecorder {}
 /// All time is relative to the given global start time of the request
 #[derive(Clone)]
 pub struct Recorder {
+    run_id: RunId,
     #[cfg(feature = "timestamp")]
     inner: std::sync::Arc<InnerRecorder>,
 }
@@ -166,8 +237,9 @@ impl Drop for Recorder {
 }
 
 impl Recorder {
-    pub fn new(_function_id: FunctionId, _start: Instant) -> Self {
+    pub fn new(run_id: RunId, _function_id: FunctionId, _start: Instant) -> Self {
         Self {
+            run_id,
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -182,6 +254,7 @@ impl Recorder {
 
     pub fn new_from_parent(_function_id: FunctionId, _parent: &Self) -> Self {
         Self {
+            run_id: _parent.run_id,
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -192,6 +265,10 @@ impl Recorder {
                 input_size: UnsafeCell::new(0),
             }),
         }
+    }
+
+    pub fn run_id(&self) -> RunId {
+        self.run_id
     }
 
     pub fn record(&mut self, _current_point: RecordPoint) {
