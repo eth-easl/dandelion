@@ -8,7 +8,7 @@ use crate::{
     DataItem, DataSet, Position,
 };
 use core::panic;
-use dandelion_commons::{records::Recorder, DandelionError, FunctionId};
+use dandelion_commons::{records::Recorder, DandelionError, FunctionId, RunId};
 use std::{sync::Arc, time::Instant};
 
 const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
@@ -69,7 +69,7 @@ fn engine_minimal<Dom: MemoryDomain>(
         min_set_bytes: vec![],
     });
 
-    let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
+    let recorder = Recorder::new(RunId::nil(), Arc::new(0.to_string()), Instant::now());
     let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
         engine_type,
         DEFAULT_CONTEXT_SIZE,
@@ -111,7 +111,7 @@ fn engine_caching<Dom: MemoryDomain>(
         min_set_bytes: vec![],
     });
 
-    let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
+    let recorder = Recorder::new(RunId::nil(), Arc::new(0.to_string()), Instant::now());
     let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
         engine_type,
         DEFAULT_CONTEXT_SIZE,
@@ -163,7 +163,7 @@ fn engine_matmul_single<Dom: MemoryDomain>(
         min_set_bytes: vec![],
     });
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(RunId::nil(), zero_id(), Instant::now());
     let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
         engine_type,
         DEFAULT_CONTEXT_SIZE,
@@ -253,7 +253,7 @@ fn engine_matmul_size_sweep<Dom: MemoryDomain>(
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(zero_id(), Instant::now());
+        let recorder = Recorder::new(RunId::nil(), zero_id(), Instant::now());
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -359,7 +359,7 @@ fn engine_stdio<Dom: MemoryDomain>(
         min_set_bytes: vec![],
     });
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(RunId::nil(), zero_id(), Instant::now());
     let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
         engine_type,
         DEFAULT_CONTEXT_SIZE,
@@ -514,7 +514,7 @@ fn engine_fileio<Dom: MemoryDomain>(
         min_set_bytes: vec![],
     });
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(RunId::nil(), zero_id(), Instant::now());
     let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
         engine_type,
         DEFAULT_CONTEXT_SIZE,

@@ -10,3 +10,4 @@ workspace = true
 timestamp = []
 
 [dependencies]
+uuid = { version = "1", features = ["serde", "v7"] }

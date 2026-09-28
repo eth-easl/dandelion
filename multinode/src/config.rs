@@ -11,6 +11,8 @@ pub struct MultinodeConfig {
 pub struct NodeUrl {
     pub node_id: u64,
     pub url: String,
+    #[serde(default)]
+    pub frontend_url: Option<String>,
 }
 
 impl MultinodeConfig {
