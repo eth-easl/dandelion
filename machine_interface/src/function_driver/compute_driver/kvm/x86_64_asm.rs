@@ -33,52 +33,56 @@ global_asm!("
 // TODO: once attributes on asm stabilize,
 // add in avx-512 versions
 asm_start:
-default_handler:
-   mov eax, [rsp]
-   out 31, eax
-divide_error_exception_handler:
-   mov eax, [rsp]
-   out 0, eax
-debug_interrupt_handler:
+   add eax, eax
    mov eax, [rsp]
    out 1, eax
+default_handler:
+   out 31, eax
+   mov eax, [rsp]
+divide_error_exception_handler:
+   out 0, eax
+   mov eax, [rsp]
+debug_interrupt_handler:
+   out 1, eax
+   mov eax, [rsp]
 nmi_interrupt_handler:
-   mov eax, [rsp]
    out 2, eax
+   mov eax, [rsp]
 breakpoint_exception_handler:
-   mov eax, [rsp]
    out 3, eax
+   mov eax, [rsp]
 overflow_exception_handler:
-   mov eax, [rsp]
    out 4, eax
+   mov eax, [rsp]
 bound_range_excepion_handler:
-   mov eax, [rsp]
    out 5, eax
+   mov eax, [rsp]
 invalid_opcode_exception_handler:
-   mov eax, [rsp]
    out 6, eax
+   mov eax, [rsp]
 device_not_available_exception_handler:
-   mov eax, [rsp]
    out 7, eax
+   mov eax, [rsp]
 double_fault_exception_handler:
-   mov eax, [rsp]
    out 8, eax
+   mov eax, [rsp]
 coprocessor_segment_overrun_handler:
-   mov eax, [rsp]
    out 9, eax
+   mov eax, [rsp]
 invalid_tss_exception_handler:
-   mov eax, [rsp]
    out 10, eax
+   mov eax, [rsp]
 segment_not_present_handler:
-   mov eax, [rsp]
    out 11, eax
-stack_fault_exception_handler:
    mov eax, [rsp]
+stack_fault_exception_handler:
    out 12, eax
+   mov eax, [rsp]
 general_protection_exception_handler:
-   mov rax, [rsp]
    out 13, eax
+   mov rax, [rsp]
 page_fault_exception_handler:
+   out 14, eax
    # ensure the reentry flag is set to 0 after returning
    mov [rsp - 8], rax
    mov rax, [rsp + 16]
@@ -286,23 +290,23 @@ page_fault_exception_handler:
    add rsp, 8 # pop the interrupt handler argument (needs to be done manually, as not all handlers have one)
    rex64 iretq
 floating_point_error_handler:
-   mov eax, [rsp]
    out 16, eax
+   mov eax, [rsp]
 alignment_check_exception_handler:
-   mov eax, [rsp]
    out 17, eax
+   mov eax, [rsp]
 machine_check_exception_handler:
-   mov eax, [rsp]
    out 18, eax
+   mov eax, [rsp]
 simd_fp_exception_handler:
-   mov eax, [rsp]
    out 19, eax
-virtualization_exception_handler:
    mov eax, [rsp]
+virtualization_exception_handler:
    out 20, eax
+   mov eax, [rsp]
 control_protection_exception:
-   mov rax, [rsp]
    out 21, eax
+   mov rax, [rsp]
 user_exit_handler:
    out 32, eax
 fault_handlers_end:

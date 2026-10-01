@@ -1,7 +1,7 @@
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use kvm_bindings::{kvm_fpu, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs, Msrs};
 use kvm_ioctls::{VcpuFd, VmFd};
-use log::{debug, trace};
+use log::{debug, info, trace};
 use std::{os::raw::c_void, slice};
 
 // CR0 bits
@@ -163,13 +163,17 @@ impl ResetState {
         initialized_pages: Vec<(usize, usize, Option<usize>)>,
         mut stack_pointer: usize,
         last_address: usize,
+        mapping_offset: usize,
     ) -> DandelionResult<PageFaultMetadata> {
         let mut sregs = self.sregs;
         let xregs = self.xregs;
         let interrupt_end = stack_pointer;
-        set_interrupt_table(&mut sregs, guest_mem, &mut stack_pointer);
+        let code_start = (entry_point as usize).next_multiple_of(PAGE_SIZE) - PAGE_SIZE;
+        info!("Entry point: {}, code start {}", entry_point, code_start);
+        set_interrupt_table(&mut sregs, guest_mem, &mut stack_pointer, mapping_offset);
         let interrupt_start = stack_pointer;
         let page_fault_metadata;
+        // set_debug_asm(guest_mem, code_start, mapping_offset);
         (stack_pointer, page_fault_metadata) = set_page_table(
             &mut sregs,
             guest_mem,
@@ -177,12 +181,14 @@ impl ResetState {
             stack_pointer,
             (interrupt_start, interrupt_end),
             last_address,
+            mapping_offset,
         )?;
 
         vcpu.set_sregs(&sregs).unwrap();
         vcpu.set_xcrs(&xregs).unwrap();
         vcpu.set_regs(&kvm_regs {
             rip: entry_point,
+            // rip: code_start as u64,
             rsp: stack_pointer as u64 - 32,
             rbp: stack_pointer as u64 - 32,
             rflags: 2,
@@ -264,7 +270,12 @@ fn setup_interrupt_gate(mem_location: &mut [u8], selector: u16, address: u64) {
 /// - Address of the IDT is held in the IDTR which holds both a 32-bit base address as well as a 16-bit limit,
 ///   the limit should always be one less than an integral multiple of eight (adding it to the base address,
 ///   should give the address of the last valid byte in the IDT so, it should be 8N -1, with N entries)
-fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8], stack_start: &mut usize) {
+fn set_interrupt_table(
+    sregs: &mut kvm_sregs,
+    guest_mem: &mut [u8],
+    stack_start: &mut usize,
+    mapping_offset: usize,
+) {
     // constants given by the manuals or how we set it up
     const GDT_SIZE: u16 = 80;
     const TSS_SIZE: u16 = 104;
@@ -272,9 +283,10 @@ fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8], stack_start:
     // setup memory space
     *stack_start -= PAGE_SIZE;
     let interrupt_handler = *stack_start;
-    guest_mem[interrupt_handler..interrupt_handler + PAGE_SIZE].fill(0);
+    guest_mem[mapping_offset + interrupt_handler..mapping_offset + interrupt_handler + PAGE_SIZE]
+        .fill(0);
     let handler_length = (fault_handlers_end as *const c_void).addr()
-        - (asm_start as *const () as *const c_void).addr();
+        - (default_handler as *const () as *const c_void).addr();
 
     let rounded_handler = handler_length.next_multiple_of(8);
     let gdt = if rounded_handler + ((GDT_SIZE + TSS_SIZE) as usize) < PAGE_SIZE {
@@ -323,19 +335,21 @@ fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8], stack_start:
     // set the revevant parts of the TSS, i.e. the stack address
     // since it is a stack, neeeds to be set to top end of page
     // set the interrupt stack address
-    let tss = &mut guest_mem[tss_start..tss_end];
+    let tss = &mut guest_mem[mapping_offset + tss_start..mapping_offset + tss_end];
     tss[36..44].copy_from_slice(&(*stack_start).to_le_bytes());
     *stack_start -= PAGE_SIZE;
-    guest_mem[*stack_start..*stack_start + PAGE_SIZE].fill(0);
+    guest_mem[mapping_offset + *stack_start..mapping_offset + *stack_start + PAGE_SIZE].fill(0);
 
     // setup interupt handler table
     let destination = unsafe {
         slice::from_raw_parts_mut(
-            guest_mem.as_mut_ptr().add(interrupt_handler),
+            guest_mem
+                .as_mut_ptr()
+                .add(mapping_offset + interrupt_handler),
             handler_length,
         )
     };
-    let source = unsafe { slice::from_raw_parts(asm_start as *const u8, handler_length) };
+    let source = unsafe { slice::from_raw_parts(default_handler as *const u8, handler_length) };
     destination.copy_from_slice(source);
 
     // set the general protection handler (also fall back for when others are not initialized)
@@ -377,10 +391,12 @@ fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8], stack_start:
         } as *const u8)
             .addr();
         let handler_offset = (interrupt_handler + handler_address
-            - (asm_start as *const () as *const c_void).addr()) as u64;
+            - (default_handler as *const () as *const c_void).addr())
+            as u64;
 
         setup_interrupt_gate(
-            &mut guest_mem[idt_base + i * 16..idt_base + (i + 1) * 16],
+            &mut guest_mem
+                [mapping_offset + idt_base + i * 16..mapping_offset + idt_base + (i + 1) * 16],
             segment_selector,
             handler_offset,
         );
@@ -392,6 +408,16 @@ fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8], stack_start:
         limit: 33 * 16 - 1,
         ..Default::default()
     };
+}
+
+pub fn set_debug_asm(guest_mem: &mut [u8], code_start: usize, mapping_offset: usize) {
+    let code_size = (default_handler as *const ()).addr() - (asm_start as *const ()).addr();
+    // setup interupt handler table
+    let destination =
+        &mut guest_mem[mapping_offset + code_start..mapping_offset + code_start + code_size];
+    let source = unsafe { slice::from_raw_parts(asm_start as *const u8, code_size) };
+    debug!("ASM SOURCE: {:?}", source.to_vec());
+    destination.copy_from_slice(source);
 }
 
 pub struct PageFaultMetadata {
@@ -497,6 +523,7 @@ fn set_page_table(
     mut stack_start: usize,
     interrupt_range: (usize, usize),
     last_address: usize,
+    mapping_offset: usize,
 ) -> DandelionResult<(usize, PageFaultMetadata)> {
     // allocate top level table containing 512 entries for 512 GB ranges, total of 256 TB
     // naming:
@@ -512,6 +539,7 @@ fn set_page_table(
     // always only need 1 p4 table, since it is top level
     stack_start -= PAGE_SIZE;
     let p4_address = stack_start;
+    info!("P4 address: {}", p4_address);
     // always only allocate a single p3 table, since we do not expect functions to have more than 512GB of memory
     stack_start -= PAGE_SIZE;
     let p3_address = stack_start;
@@ -527,21 +555,21 @@ fn set_page_table(
     // since we can just offset from the p2, which is always present
 
     // set up all the tables for easy access
-    let (guest_mem, p4_raw) = guest_mem.split_at_mut(p4_address);
+    let (guest_mem, p4_raw) = guest_mem.split_at_mut(mapping_offset + p4_address);
     let p4_table = u8_slice_to_u64_slice(&mut p4_raw[0..PAGE_SIZE]);
     p4_table.fill(0);
-    let (guest_mem, p3_raw) = guest_mem.split_at_mut(p3_address);
+    let (guest_mem, p3_raw) = guest_mem.split_at_mut(mapping_offset + p3_address);
     let p3_table = u8_slice_to_u64_slice(&mut p3_raw[0..PAGE_SIZE]);
-    let (guest_mem, table_raw) = guest_mem.split_at_mut(table_base);
+    let (guest_mem, table_raw) = guest_mem.split_at_mut(mapping_offset + table_base);
     let table_array =
         u8_slice_to_u64_slice(&mut table_raw[0..(p2_table_number + p1_table_number) << PAGE_SHIFT]);
 
     // set up the p4 table, which only has 1 entry at the start, the single p3 table
-    p4_table[0] = PDE64_ALL_ALLOWED | p3_address as u64;
+    p4_table[0] = PDE64_ALL_ALLOWED | (mapping_offset + p3_address) as u64;
 
     // point the p3 table to all p2 tables
     {
-        let mut p2_address = table_base;
+        let mut p2_address = mapping_offset + table_base;
         for (p3_index, p3_entry) in p3_table[0..p2_table_number].iter_mut().enumerate() {
             *p3_entry = PDE64_ALL_ALLOWED | (p2_address) as u64;
             let start_index = p3_index * (TABLE_SIZE + 1) * TABLE_SIZE;
@@ -566,6 +594,7 @@ fn set_page_table(
     for (guest_virtual_start, guest_virtual_end, origin_option) in present_pages {
         let (protection_flags, base_physical) = if let Some(guest_physical) = origin_option {
             // map to page at differnt space in guest, that is there and needs to be copy on write
+            panic!("Should not have things that need remapping");
             (PDE64_PRESENT | PDE64_USER, guest_physical)
         } else {
             // map directly, since content is already there
@@ -578,11 +607,11 @@ fn set_page_table(
         );
         previous_past_last_page = set_range(
             table_array,
-            table_base,
+            mapping_offset + table_base,
             guest_virtual_start,
             guest_virtual_end + 1,
             protection_flags,
-            base_physical,
+            mapping_offset + base_physical,
             previous_past_last_page,
         );
     }
@@ -592,44 +621,44 @@ fn set_page_table(
     guest_mem[stack_page_start..stack_start].fill(0);
     previous_past_last_page = set_range(
         table_array,
-        table_base,
+        mapping_offset + table_base,
         stack_page_start,
         stack_start,
         PDE64_ALL_ALLOWED,
-        stack_page_start,
+        mapping_offset + stack_page_start,
         previous_past_last_page,
     );
 
     // the page tables also need to be accessable to root mode
     previous_past_last_page = set_range(
         table_array,
-        table_base,
+        mapping_offset + table_base,
         table_base,
         p4_address + PAGE_SIZE,
         PDE64_PRESENT | PDE64_RW,
-        table_base,
+        mapping_offset + table_base,
         previous_past_last_page,
     );
 
     // need to make the page table handler accessable to root mode
     previous_past_last_page = set_range(
         table_array,
-        table_base,
+        mapping_offset + table_base,
         interrupt_range.0,
         interrupt_range.1,
         PDE64_PRESENT | PDE64_RW,
-        interrupt_range.0,
+        mapping_offset + interrupt_range.0,
         previous_past_last_page,
     );
 
     // make the read only mappings also avaliable at their physical locations for root mode
     set_range(
         table_array,
-        table_base,
+        mapping_offset + table_base,
         interrupt_range.1,
         last_address,
         PDE64_PRESENT,
-        interrupt_range.1,
+        mapping_offset + interrupt_range.1,
         previous_past_last_page,
     );
 
@@ -659,7 +688,12 @@ fn set_page_table(
             );
 
             let (p3_address_local, p3_flags) = get_address_and_flags(p4_table[p4_entry]);
-            assert_eq!(p3_address, p3_address_local, "{}", debug_info);
+            assert_eq!(
+                mapping_offset + p3_address,
+                p3_address_local,
+                "{}",
+                debug_info
+            );
             assert_eq!(
                 PDE64_PRESENT | PDE64_RW | PDE64_USER,
                 p3_flags,
@@ -668,7 +702,8 @@ fn set_page_table(
             );
 
             let (p2_address_local, p2_flags) = get_address_and_flags(p3_table[p3_entry]);
-            let expected_address = table_base + (p3_entry * (TABLE_SIZE + 1)) * PAGE_SIZE;
+            let expected_address =
+                mapping_offset + table_base + (p3_entry * (TABLE_SIZE + 1)) * PAGE_SIZE;
             assert_eq!(expected_address, p2_address_local, "{}", debug_info);
             assert_eq!(
                 PDE64_PRESENT | PDE64_RW | PDE64_USER,
@@ -702,7 +737,8 @@ fn set_page_table(
                         assert!(p1_address_local > stack_start, "{}", debug_info);
                     } else {
                         // directly mapped large page
-                        let large_page_address = page_address & !(LARGE_PAGE - 1);
+                        let large_page_address =
+                            (mapping_offset + page_address) & !(LARGE_PAGE - 1);
                         assert_eq!(large_page_address, p1_address_local, "{}", debug_info);
                     }
                 } else {
@@ -726,7 +762,12 @@ fn set_page_table(
                         if page_flags_local & PDE64_RW == 0 || page_flags_local & PDE64_USER == 0 {
                             assert!(page_address_local >= stack_start, "{}", debug_info);
                         } else {
-                            assert_eq!(page_address, page_address_local, "{}", debug_info);
+                            assert_eq!(
+                                mapping_offset + page_address,
+                                page_address_local,
+                                "{}",
+                                debug_info
+                            );
                         }
                     }
                 }
@@ -737,8 +778,9 @@ fn set_page_table(
             page_address += PAGE_SIZE;
         }
     }
-
-    sregs.cr3 = p4_address as u64;
+    let cr3 = (mapping_offset + p4_address) as u64;
+    info!("CR3: {}, (0x{:x})", cr3, cr3);
+    sregs.cr3 = cr3;
     Ok((
         stack_start,
         PageFaultMetadata {
