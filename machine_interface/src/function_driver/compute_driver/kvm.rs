@@ -1,6 +1,5 @@
 use crate::{
     function_driver::{
-        compute_driver::kvm,
         functions::{ElfConfig, Function, FunctionConfig},
         load_utils::load_u8_from_file,
         thread_utils::{start_thread, EngineLoop},
@@ -20,7 +19,10 @@ use kvm_bindings::{
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::{debug, info};
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, LazyLock},
+};
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
@@ -61,6 +63,50 @@ fn step_debug(vcpu: &VcpuFd) {
     })
     .unwrap();
 }
+
+/// Address above which the memory is used for common mappings (interrupt handlers, root page table etc.).
+/// We don't want to require multiple PML4 entries, so we use the end of the last GiB
+/// of the first PML4 entry (total 512 GiB) for the common mapped memory.
+const SYSTEM_VIRTUAL_BASE: usize = (1 << 39) - (1 << 30);
+
+/// Amount of memory that is mapped into all VMs for interrupt handlers and root page tables.
+/// Allocate a slice. The first 2MB will be mapped to all VMs, the rest can be used
+/// the space after can be used for root only data.
+/// (Like the root page table)
+/// Amount of memory reserved for the system. Allocated at the end of the Physical address space
+/// Share memory mappings that all VMs need, such as GDT, IDT, interrupt handlers and the TSS.
+/// These mappings can be marked global, as they need to accesible from root and user space and can be used in all VMs.
+/// In the same memory slot also have the root page table, that does not get mapped into user space.
+const GLOBAL_SYSTEM_MEMORY_SIZE: usize = 5 * PAGE_SIZE;
+const ROOT_PAGE_TABLE_SIZE: usize = 2 * PAGE_SIZE;
+const SYSTEM_MEMORY_SIZE: usize = GLOBAL_SYSTEM_MEMORY_SIZE + ROOT_PAGE_TABLE_SIZE;
+
+/// Each VM needs to have some memory for per VM tasks that is useful to have at the same physical location everywhere.
+/// For example stack space for interrupt handlers.
+const PER_VM_SYSTEM_MEMORY: usize = 2 * PAGE_SIZE;
+
+/// Memory that is used across all VMs. Once initialized, contains all interrupt handlers as well as the root page table.
+/// Interrupt handlers and tables are expected to be put into pages also accessable from userspace, root page tables not.
+/// Also contains a place to coordinated free memory between VMs.
+static ROOT_MAPPING: LazyLock<u64> = LazyLock::new(|| {
+    let static_start = unsafe {
+        std::ptr::from_mut(
+            nix::sys::mman::mmap_anonymous(
+                None,
+                NonZeroUsize::new(SYSTEM_MEMORY_SIZE).unwrap(),
+                ProtFlags::all(),
+                MapFlags::MAP_SHARED,
+            )
+            .unwrap()
+            .as_mut(),
+        )
+    } as *mut u8;
+    let memory = unsafe { slice::from_raw_parts_mut(static_start, SYSTEM_MEMORY_SIZE) };
+    // write the interrupt handlers
+    prepare_static_memory(memory);
+    static_start.addr() as u64
+});
+
 struct KvmLoop {
     vm: VmFd,
     vcpu: VcpuFd,
@@ -122,93 +168,109 @@ impl EngineLoop for KvmLoop {
             dump_memory(&kvm_context.storage[elf_config.entry_point..elf_config.entry_point + 64]);
         }
 
-        let mut stack_start = kvm_context.storage.len();
+        let mut stack_start = kvm_context.context_size;
         // vector containing the mapping where something should be, where it
         let mut mappings = Vec::with_capacity(kvm_context.overlay.len());
         // go through things that are overlayed and map, it was made sure in the transfer function, that it is full pages
         // TODO: when cursor is stabilized use that, so mappings can be removed if they were copied
-        for (&overlay_end, (overlay_start, overlay_context)) in kvm_context.overlay.iter_mut() {
-            // map from back if it is a kvm context
-            let original = if let Some(context_item) = overlay_context {
-                if let ContextType::Kvm(overlay_kvm_context) = &context_item.context.context {
-                    let overlay_size = overlay_end - *overlay_start + 1;
-                    // map to end of context
-                    let mut mappig_start = stack_start - overlay_size;
-                    // make sure that the virtual and physical address have the same allignment with regards to large pages
-                    // for this mapping start needs to have the same distance to the next large page boundry as the virtual
-                    let virtual_large_offset =
-                        overlay_start.next_multiple_of(LARGE_PAGE) - *overlay_start;
-                    let mapping_large_offset =
-                        mappig_start.next_multiple_of(LARGE_PAGE) - mappig_start;
-                    let additional_offset = if virtual_large_offset >= mapping_large_offset {
-                        virtual_large_offset - mapping_large_offset
-                    } else {
-                        virtual_large_offset + LARGE_PAGE - mapping_large_offset
-                    };
-                    mappig_start -= additional_offset;
-                    stack_start = mappig_start;
-                    let start_address = kvm_context.storage.as_ptr().addr() + stack_start;
-                    let file_offset = (overlay_kvm_context.rangepool_start as usize) * PAGE_SIZE
-                        + context_item.offset;
-                    unsafe {
-                        mmap(
-                            NonZeroUsize::new(start_address),
-                            NonZeroUsize::new_unchecked(overlay_size),
-                            ProtFlags::all(),
-                            MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED,
-                            &overlay_kvm_context.fd,
-                            file_offset as i64,
-                        )
-                        .unwrap()
-                    };
+        // for (&overlay_end, (overlay_start, overlay_context)) in kvm_context.overlay.iter_mut() {
+        //     // map from back if it is a kvm context
+        //     let original = if let Some(context_item) = overlay_context {
+        //         if let ContextType::Kvm(overlay_kvm_context) = &context_item.context.context {
+        //             let overlay_size = overlay_end - *overlay_start + 1;
+        //             // map to end of context
+        //             let mut mappig_start = stack_start - overlay_size;
+        //             // make sure that the virtual and physical address have the same allignment with regards to large pages
+        //             // for this mapping start needs to have the same distance to the next large page boundry as the virtual
+        //             let virtual_large_offset =
+        //                 overlay_start.next_multiple_of(LARGE_PAGE) - *overlay_start;
+        //             let mapping_large_offset =
+        //                 mappig_start.next_multiple_of(LARGE_PAGE) - mappig_start;
+        //             let additional_offset = if virtual_large_offset >= mapping_large_offset {
+        //                 virtual_large_offset - mapping_large_offset
+        //             } else {
+        //                 virtual_large_offset + LARGE_PAGE - mapping_large_offset
+        //             };
+        //             mappig_start -= additional_offset;
+        //             stack_start = mappig_start;
+        //             let start_address = kvm_context.storage.as_ptr().addr() + stack_start;
+        //             let file_offset = (overlay_kvm_context.rangepool_start as usize) * PAGE_SIZE
+        //                 + context_item.offset;
+        //             unsafe {
+        //                 mmap(
+        //                     NonZeroUsize::new(start_address),
+        //                     NonZeroUsize::new_unchecked(overlay_size),
+        //                     ProtFlags::all(),
+        //                     MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED,
+        //                     &overlay_kvm_context.fd,
+        //                     file_offset as i64,
+        //                 )
+        //                 .unwrap()
+        //             };
 
-                    log::debug!(
-                        "zero copy pages at physical: {}, virtual {}, with size {}",
-                        mappig_start,
-                        *overlay_start,
-                        overlay_size
-                    );
-                    Some(mappig_start)
-                } else {
-                    panic!("KVM context overlay should not contain context reference that is not remappable");
-                }
-            } else {
-                None
-            };
-            // push each mapping into the vec
-            mappings.push((*overlay_start, overlay_end, original));
-        }
+        //             log::debug!(
+        //                 "zero copy pages at physical: {}, virtual {}, with size {}",
+        //                 mappig_start,
+        //                 *overlay_start,
+        //                 overlay_size
+        //             );
+        //             Some(mappig_start)
+        //         } else {
+        //             panic!("KVM context overlay should not contain context reference that is not remappable");
+        //         }
+        //     } else {
+        //         None
+        //     };
+        //     // push each mapping into the vec
+        //     mappings.push((*overlay_start, overlay_end, original));
+        // }
 
         // attach VM memory
-        let mut region = kvm_userspace_memory_region {
-            slot: 0,
-            flags: KVM_MEM_LOG_DIRTY_PAGES,
-            guest_phys_addr: 0x0,
-            memory_size: kvm_context.domain_size as u64,
-            userspace_addr: kvm_context.domain_start.addr() as u64,
-        };
         unsafe {
-            self.vm.set_user_memory_region(region).unwrap();
+            self.vm
+                .set_user_memory_region(kvm_userspace_memory_region {
+                    slot: 0,
+                    flags: KVM_MEM_LOG_DIRTY_PAGES,
+                    guest_phys_addr: 0x0,
+                    memory_size: kvm_context.domain_slice.len() as u64,
+                    userspace_addr: kvm_context.domain_slice.as_mut_ptr().addr() as u64,
+                })
+                .unwrap();
+            // Page tables need to be writable, as CPU will attempt to set accessed bit.
+            self.vm
+                .set_user_memory_region(kvm_userspace_memory_region {
+                    slot: 1,
+                    flags: 0,
+                    guest_phys_addr: SYSTEM_VIRTUAL_BASE as u64,
+                    memory_size: SYSTEM_MEMORY_SIZE as u64,
+                    userspace_addr: *ROOT_MAPPING,
+                })
+                .unwrap();
+            self.vm
+                .set_user_memory_region(kvm_userspace_memory_region {
+                    slot: 3,
+                    flags: 0,
+                    guest_phys_addr: (SYSTEM_VIRTUAL_BASE + SYSTEM_MEMORY_SIZE) as u64,
+                    memory_size: PER_VM_SYSTEM_MEMORY as u64,
+                    userspace_addr: self.state.task_stack.as_mut_ptr() as u64,
+                })
+                .unwrap();
         }
-
-        let storage =
-            unsafe { slice::from_raw_parts_mut(kvm_context.domain_start, kvm_context.domain_size) };
 
         #[cfg(target_arch = "x86_64")]
         self.vm.set_clock(&kvm_clock_data::default()).unwrap();
 
-        let mapping_offset = kvm_context.rangepool_start as usize * PAGE_SIZE;
-        info!("Mapping offset: {} ({:x})", mapping_offset, mapping_offset);
+        // let mapping_offset = kvm_context.rangepool_start as usize * PAGE_SIZE;
+        // info!("Mapping offset: {} ({:x})", mapping_offset, mapping_offset);
         info!("Elf entry: {}", elf_config.entry_point);
         // initialize vCPU
         let page_fault_metadata = self.state.init_vcpu(
             &self.vcpu,
             elf_config.entry_point as u64,
-            storage,
-            mappings,
+            kvm_context.domain_slice,
+            kvm_context,
             stack_start,
-            kvm_context.storage.len(),
-            mapping_offset,
+            kvm_context.context_size,
         )?;
 
         // make sure that the stack start has not moved into the occupied territory
@@ -229,14 +291,6 @@ impl EngineLoop for KvmLoop {
             dump_regs(&self.vcpu);
         }
 
-        debug!(
-            "Instrution at RIP: {}, {}, {}, {}",
-            storage[mapping_offset + 0x11000],
-            storage[mapping_offset + 0x11001],
-            storage[mapping_offset + 0x11002],
-            storage[mapping_offset + 0x11003]
-        );
-
         // start running the function
         // TODO: on unexpected break, mark function as failure
         loop {
@@ -245,11 +299,14 @@ impl EngineLoop for KvmLoop {
                 #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(14, _) => {
                     // ATTENTION: uncomment out 14 in x86_64 page handler so it exits to here
-                    check_page_fault_handling(
-                        &self.vcpu,
-                        &page_fault_metadata,
-                        kvm_context.storage,
-                    );
+                    // check_page_fault_handling(
+                    //     &self.vcpu,
+                    //     &page_fault_metadata,
+                    //     kvm_context.storage,
+                    // );
+                    debug!("Exit from page fault handler");
+                    dump_regs(&self.vcpu);
+                    break;
                 }
                 // the expected way to exit a function with the new interface
                 VcpuExit::IoOut(32, _) => {
@@ -328,7 +385,7 @@ impl EngineLoop for KvmLoop {
         //     let start = end - contiguous_pages * PAGE_SIZE;
         //     kvm_context.insert_into_overlay(start, end, None);
         // }
-        kvm_context.insert_into_overlay(0, kvm_context.storage.len(), None);
+        // kvm_context.insert_into_overlay(0, kvm_context.storage.len(), None);
 
         read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
         // go through the content and only keep overlay segments that are still used

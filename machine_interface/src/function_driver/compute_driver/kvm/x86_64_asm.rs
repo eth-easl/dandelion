@@ -1,6 +1,7 @@
 use super::x86_64::{
     LARGE_PAGE, PAGE_SIZE, PDE64_ALL_ALLOWED, PDE64_IS_PAGE, PDE64_PRESENT, PDE64_USER,
 };
+use super::{GLOBAL_SYSTEM_MEMORY_SIZE, ROOT_PCID, SYSTEM_VIRTUAL_BASE};
 use core::arch::global_asm;
 
 global_asm!("
@@ -33,8 +34,14 @@ global_asm!("
 // TODO: once attributes on asm stabilize,
 // add in avx-512 versions
 asm_start:
-   add eax, eax
-   mov eax, [rsp]
+   mov rcx, 0x7FC00
+   shl rcx, 20
+   mov rax, [0]
+   // add rcx, 64
+   // mov rbx, [rcx]
+   // mov ax, 0x43
+   mov ss, ax
+   // mov eax, [0]
    out 1, eax
 default_handler:
    out 31, eax
@@ -82,7 +89,7 @@ general_protection_exception_handler:
    out 13, eax
    mov rax, [rsp]
 page_fault_exception_handler:
-   out 14, eax
+   # out 14, eax
    # ensure the reentry flag is set to 0 after returning
    mov [rsp - 8], rax
    mov rax, [rsp + 16]
@@ -109,18 +116,24 @@ page_fault_exception_handler:
    "vmovdqa [rsp - 304], ymm5",
    "vmovdqa [rsp - 336], ymm6",
    "vmovdqa [rsp - 368], ymm7",
-   "# this handler assumes 4 level paging
+   "# Switch the page table to the root page table, keep old root page table pointer in rdx
+   mov rdx, cr3
+   mov rax, {ROOT_CR3_UPPER}
+   shl rax, 32
+   mov rbx, {ROOT_CR3_LOWER}
+   add rax, rbx
+   mov cr3, rax
+   # this handler assumes 4 level paging
    # each linear address consists of the following
    # 47 .. 39 | 38 .. 30 | 29 .. 21 | 20 .. 12 | 11 .. 0
    # p4       | p3       | p2       | p1       | Offset
    # with the p4 (PML4) being the offset into the page table pointed to by the root pointer in CR3
    # and then the others being indexes into the tables recursively
    # The p3 (direcotry pointer table) entries are either 1GB pages or directory table pointers
-   # p2 (directory table entries) are either 2MB pages or tables
+   # p2 (directory table) entries are either 2MB pages or tables
    # p1 (table) entries are always 4KB pages   
    # cr2 holds the offending address, cr3 the root table address, [rsp] holds the error code 
    # compute the table entries in 10 - 13, a number in [0..512)
-   # mov r10, cr3 # r10 holds the address of the p4 entry, always expect offset to be zero, so is same as p4 table
    mov r10, cr2 
    mov r11, cr2 
    mov r12, cr2 
@@ -135,13 +148,19 @@ page_fault_exception_handler:
    and r12, 0xFF8
    and r13, 0xFF8
    # find the entry addresses
-   mov rax, cr3
-   add r10, rax # r10 holds the address of the p4 entry
+   mov rax, rdx # load the old cr3
+   and rax, ~0xFFF # filter out the PCID to get the p4 address
+   add r10, rax # after add r10 holds the address of the p4 entry
    mov rbx, [r10]
-   and rbx, ~0xFFF # remove flags to get address
-   add r11, rbx # r11 holds the address of the p3 entry
-   mov r14, [r11]
-   and r14, ~0xFFF # r14 now contains base address of p2 table
+   and rbx, ~0xFFF # remove flags to get p3 address
+   add r11, rbx # after add r11 holds the address of the p3 entry
+   mov rcx, [r11]
+   and rcx, ~0xFFF # r14 now contains base address of p2 table
+   add r12, rcx # after add r12 holds the address of the p2 entry
+   mov rax, [r12] 
+   TODO: fix from here, first check if p2 is present, if not, get new page and zero it.
+   TODO: add check for 0 page access or some way to check if a 2MB table o should not be faulted in.
+   If it is, check for p1 table,
    # can compute the base address of p1 from this and p1 entry
    # by taking p2 entry, multiplying by table size and adding 1 page for the p2 page
    mov r15, r12
@@ -239,7 +258,7 @@ page_fault_exception_handler:
    mov rax, r13 
    imul rax, 512
    add rax, rcx
-   add rdx, r8 
+   # add rdx, r8 
    and rbx, ~0xFFF
    mov rcx, 0
 1: # copy from old page",
@@ -316,5 +335,7 @@ fault_handlers_end:
     PDE64_PRESENT = const PDE64_PRESENT,
     PDE64_USER = const PDE64_USER,
     PDE64_ALL_ALLOWED = const PDE64_ALL_ALLOWED,
-    PDE64_IS_PAGE = const PDE64_IS_PAGE
+    PDE64_IS_PAGE = const PDE64_IS_PAGE,
+    ROOT_CR3_UPPER = const ((SYSTEM_VIRTUAL_BASE + GLOBAL_SYSTEM_MEMORY_SIZE) as u64 + ROOT_PCID) >> 32,
+    ROOT_CR3_LOWER = const ((SYSTEM_VIRTUAL_BASE + GLOBAL_SYSTEM_MEMORY_SIZE) as u64 + ROOT_PCID) & 0xFFFF_FFFF,
 );
