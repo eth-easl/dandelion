@@ -89,7 +89,7 @@ general_protection_exception_handler:
    out 13, eax
    mov rax, [rsp]
 page_fault_exception_handler:
-   # out 14, eax
+   out 14, eax
    # ensure the reentry flag is set to 0 after returning
    mov [rsp - 8], rax
    mov rax, [rsp + 16]
@@ -158,9 +158,9 @@ page_fault_exception_handler:
    and rcx, ~0xFFF # r14 now contains base address of p2 table
    add r12, rcx # after add r12 holds the address of the p2 entry
    mov rax, [r12] 
-   TODO: fix from here, first check if p2 is present, if not, get new page and zero it.
-   TODO: add check for 0 page access or some way to check if a 2MB table o should not be faulted in.
-   If it is, check for p1 table,
+   # TODO: fix from here, first check if p2 is present, if not, get new page and zero it.
+   # TODO: add check for 0 page access or some way to check if a 2MB table o should not be faulted in.
+   # If it is, check for p1 table,
    # can compute the base address of p1 from this and p1 entry
    # by taking p2 entry, multiplying by table size and adding 1 page for the p2 page
    mov r15, r12

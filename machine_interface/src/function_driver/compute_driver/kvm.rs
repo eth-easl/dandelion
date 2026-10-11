@@ -128,7 +128,10 @@ impl EngineLoop for KvmLoop {
         #[cfg(target_arch = "x86_64")]
         {
             // enable all features the real cpu has on the vcpu
-            let cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+            let mut cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+            println!("cpuid: {:?}", cpuid);
+            let test = cpuid.as_slice()[1].ecx;
+            cpuid.as_mut_slice()[1].ecx = test | (1 << 16);
             vcpu.set_cpuid2(&cpuid).unwrap();
             // check that the clock capability is avalilable, so the clock can be set bevore entry
             assert!(kvm.check_extension(kvm_ioctls::Cap::KvmclockCtrl));
@@ -162,15 +165,15 @@ impl EngineLoop for KvmLoop {
 
         #[cfg(feature = "backend_debug")]
         {
-            debug!("context ptr: {:?}", kvm_context.storage.as_ptr());
-            debug!("context size: {}", kvm_context.storage.len());
+            // debug!("context ptr: {:?}", kvm_context.storage.as_ptr());
+            // debug!("context size: {}", kvm_context.storage.len());
             debug!("entry point: {:#x}", elf_config.entry_point);
-            dump_memory(&kvm_context.storage[elf_config.entry_point..elf_config.entry_point + 64]);
+            // dump_memory(&kvm_context.storage[elf_config.entry_point..elf_config.entry_point + 64]);
         }
 
         let mut stack_start = kvm_context.context_size;
         // vector containing the mapping where something should be, where it
-        let mut mappings = Vec::with_capacity(kvm_context.overlay.len());
+        // let mut mappings = Vec::with_capacity(kvm_context.overlay.len());
         // go through things that are overlayed and map, it was made sure in the transfer function, that it is full pages
         // TODO: when cursor is stabilized use that, so mappings can be removed if they were copied
         // for (&overlay_end, (overlay_start, overlay_context)) in kvm_context.overlay.iter_mut() {
@@ -260,17 +263,13 @@ impl EngineLoop for KvmLoop {
         #[cfg(target_arch = "x86_64")]
         self.vm.set_clock(&kvm_clock_data::default()).unwrap();
 
-        // let mapping_offset = kvm_context.rangepool_start as usize * PAGE_SIZE;
-        // info!("Mapping offset: {} ({:x})", mapping_offset, mapping_offset);
         info!("Elf entry: {}", elf_config.entry_point);
         // initialize vCPU
         let page_fault_metadata = self.state.init_vcpu(
             &self.vcpu,
             elf_config.entry_point as u64,
-            kvm_context.domain_slice,
             kvm_context,
             stack_start,
-            kvm_context.context_size,
         )?;
 
         // make sure that the stack start has not moved into the occupied territory
@@ -403,23 +402,24 @@ impl EngineLoop for KvmLoop {
             _ => unreachable!(),
         };
         let mut keep_index = 0;
-        kvm_context
-            .overlay
-            .retain(|overlay_end, (overlay_start, _)| {
-                while keep_index < overlay_keep.len() {
-                    let (item_start, item_end) = overlay_keep[keep_index];
-                    match (item_start <= *overlay_end, *overlay_start <= item_end) {
-                        // if there is overlap return true
-                        (true, true) => return true,
-                        // the item starts and ends before the current overlay item, so go to next one
-                        (true, false) => (),
-                        // item starts after the overlay ends, so go to next overlay and throw this one away
-                        (false, _) => return false,
-                    }
-                    keep_index += 1;
+        kvm_context.overlay.retain(|overlay_start, _| {
+            while keep_index < overlay_keep.len() {
+                let (item_start, item_end) = overlay_keep[keep_index];
+                match (
+                    item_start <= *overlay_start + PAGE_SIZE,
+                    *overlay_start <= item_end,
+                ) {
+                    // if there is overlap return true
+                    (true, true) => return true,
+                    // the item starts and ends before the current overlay item, so go to next one
+                    (true, false) => (),
+                    // item starts after the overlay ends, so go to next overlay and throw this one away
+                    (false, _) => return false,
                 }
-                false
-            });
+                keep_index += 1;
+            }
+            false
+        });
 
         Ok(context)
     }

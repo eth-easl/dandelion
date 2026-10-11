@@ -5,17 +5,9 @@ use crate::{
 };
 
 use super::MemoryResource;
-use dandelion_commons::{
-    dandelion_err, err_dandelion, range_pool::RangePool, DandelionError, DandelionResult,
-};
+use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
 use log::{debug, trace};
-use nix::{
-    sys::{
-        memfd::{memfd_create, MFdFlags},
-        mman::{MapFlags, ProtFlags},
-    },
-    unistd::ftruncate,
-};
+use nix::sys::mman::{MapFlags, ProtFlags};
 use std::{
     collections::{
         btree_map::Entry::{Occupied, Vacant},
@@ -24,11 +16,10 @@ use std::{
     fmt::Debug,
     num::NonZeroUsize,
     ops::Deref,
-    os::fd::OwnedFd,
     ptr::{self},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc,
     },
 };
 
@@ -56,7 +47,7 @@ impl Page {
         unsafe {
             core::slice::from_raw_parts_mut(
                 memory.as_mut_ptr().add(page_start) as *mut u64,
-                PAGE_SIZE,
+                PAGE_SIZE / size_of::<u64>(),
             )
         }
     }
@@ -123,6 +114,7 @@ fn get_page(memory: &[u8]) -> DandelionResult<Page> {
     loop {
         // make sure we are not trying to take the current root
         if next_free == 0 {
+            trace!("Dandelion error: Reached Capacity");
             return err_dandelion!(DandelionError::DomainError(
                 dandelion_commons::DomainError::ReachedCapacity
             ));
@@ -136,7 +128,9 @@ fn get_page(memory: &[u8]) -> DandelionResult<Page> {
             Ordering::SeqCst,
             Ordering::SeqCst,
         ) {
-            Ok(root) => return Ok(Page::new(root)),
+            Ok(root) => {
+                return Ok(Page::new(root));
+            }
             Err(root) => root,
         };
     }
@@ -286,7 +280,7 @@ impl ContextTrait for KvmContext {
 
         // handle first page with possible partial write or write smaller than 1 page
         let write_offset = offset % PAGE_SIZE;
-        if write_offset != 0 || bytes_to_write < PAGE_SIZE {
+        if write_offset != 0 || bytes_to_write <= PAGE_SIZE {
             let page_write_size = if write_offset + bytes_to_write > PAGE_SIZE {
                 PAGE_SIZE - write_offset
             } else {
@@ -323,15 +317,19 @@ impl ContextTrait for KvmContext {
                         }
                         PageType::Page => {
                             let page_start = **page as usize;
-                            let page =
-                                &mut self.domain_slice[page_start..page_start + page_write_size];
-                            page[write_offset..].copy_from_slice(&write_memory[..page_write_size]);
+                            let page = &mut self.domain_slice[page_start..page_start + PAGE_SIZE];
+                            page[write_offset..write_offset + page_write_size]
+                                .copy_from_slice(&write_memory[..page_write_size]);
                         }
                     };
                 }
             }
             // advance the write memory
             write_memory = &write_memory[page_write_size..];
+            // if we are done writing return
+            if write_memory.is_empty() {
+                return Ok(());
+            }
         }
 
         // handle all pages with full copy
@@ -358,8 +356,8 @@ impl ContextTrait for KvmContext {
                 let page = &mut self.domain_slice[start..start + PAGE_SIZE];
                 page.copy_from_slice(&write_memory[..PAGE_SIZE]);
                 write_memory = &write_memory[PAGE_SIZE..];
-                rounded_start += PAGE_SIZE;
                 to_insert.push((rounded_start, (PageType::Page, new_page)));
+                rounded_start += PAGE_SIZE;
             }
             // check the current page
             let page_start = match page_type {
@@ -386,8 +384,8 @@ impl ContextTrait for KvmContext {
             let page = &mut self.domain_slice[start..start + PAGE_SIZE];
             page.copy_from_slice(&write_memory[..PAGE_SIZE]);
             write_memory = &write_memory[PAGE_SIZE..];
-            rounded_start += PAGE_SIZE;
             to_insert.push((rounded_start, (PageType::Page, new_page)));
+            rounded_start += PAGE_SIZE;
         }
 
         // Bulk add all new pages
@@ -465,6 +463,7 @@ impl ContextTrait for KvmContext {
         while !read_memory.is_empty() {
             let new_chunck = self.get_chunk_ref(offset, read_memory.len())?;
             let chunck_size = new_chunck.len();
+            trace!("chunck size: {}", chunck_size);
             read_memory[..chunck_size].copy_from_slice(new_chunck);
             offset += chunck_size;
             read_memory = &mut read_memory[chunck_size..];
@@ -524,13 +523,15 @@ impl ContextTrait for KvmContext {
             .get(&page_start)
             .ok_or(dandelion_err!(DandelionError::InvalidRead))?;
         let page = **page_arc as usize;
-        let page_offset = offset - page_start;
-        let read_end = if offset + length <= offset.next_multiple_of(PAGE_SIZE) {
-            page_offset + length
-        } else {
-            PAGE_SIZE
-        };
-        Ok(&self.domain_slice[page + page_offset..read_end])
+        let page_offset = offset % PAGE_SIZE;
+        let read_end = usize::min(page_offset + length, PAGE_SIZE);
+        trace!(
+            "returning slice from page {} with offset {} to {}",
+            page,
+            page_offset,
+            read_end
+        );
+        Ok(&self.domain_slice[page + page_offset..page + read_end])
         // if let Some((&overlay_end, (overlay_start, overlay_option))) =
         //     self.overlay.range(offset..).next()
         // {
@@ -576,8 +577,7 @@ impl ContextTrait for KvmContext {
 // TODO: consider counting physical pages available (or approximation thereof) to delay scheduling when there are no pages
 #[derive(Debug)]
 pub struct KvmMemoryDomain {
-    occupation: Arc<Mutex<RangePool<u32>>>,
-    fd: Arc<OwnedFd>,
+    // occupation: Arc<Mutex<RangePool<u32>>>,
     domain_start: *mut u8,
     domain_size: usize,
 }
@@ -595,41 +595,48 @@ impl MemoryDomain for KvmMemoryDomain {
             }
         };
 
-        // create memfd for anonymous memory file
-        let upper_end = u32::try_from(size / PAGE_SIZE)
-            .expect("Total memory pool should be smaller for current u32 setup");
-        let occupation = Arc::new(Mutex::new(RangePool::new(0..upper_end)));
-        let fd = memfd_create("KvmMemoryDomain", MFdFlags::empty()).unwrap();
-        ftruncate(&fd, i64::try_from(size).unwrap()).unwrap();
+        let domain_size = size.next_multiple_of(PAGE_SIZE);
+        trace!("Creating KVM domain with size: {}", domain_size);
 
         let domain_start = unsafe {
             ptr::from_mut(
-                nix::sys::mman::mmap(
+                nix::sys::mman::mmap_anonymous(
                     None,
-                    NonZeroUsize::new(size).unwrap(),
+                    NonZeroUsize::new(domain_size).unwrap(),
                     ProtFlags::all(),
                     MapFlags::MAP_SHARED,
-                    &fd,
-                    0,
                 )
                 .or(err_dandelion!(DandelionError::DomainError(
                     dandelion_commons::DomainError::Mapping,
                 )))?
                 .as_mut(),
+            ) as *mut u8
+        };
+
+        // to initialize the free page pointer list, need to cast it as u64 slice
+        let page_size = PAGE_SIZE / size_of::<u64>();
+        let memory = unsafe {
+            core::slice::from_raw_parts_mut(
+                domain_start as *mut u64,
+                domain_size / size_of::<u64>(),
             )
-        } as *mut u8;
+        };
+        // step through in page / sizeof(u64) steps and set pointers
+        for (page_index, page_start) in memory.iter_mut().step_by(page_size).enumerate() {
+            *page_start = ((page_index + 1) * PAGE_SIZE) as u64;
+        }
+        // set last page to NULL pointer
+        memory[(domain_size - PAGE_SIZE) / size_of::<u64>()] = 0;
 
         Ok(Box::new(KvmMemoryDomain {
-            fd: Arc::new(fd),
-            occupation,
             domain_start,
-            domain_size: size,
+            domain_size,
         }))
     }
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         // round up to next page size
-        if size > (u32::MAX as usize) * PAGE_SIZE {
+        if size > self.domain_size {
             return err_dandelion!(DandelionError::DomainError(
                 dandelion_commons::DomainError::InvalidMemorySize,
             ));
@@ -667,7 +674,7 @@ impl MemoryDomain for KvmMemoryDomain {
 
         let new_context = Box::new(KvmContext {
             overlay: BTreeMap::new(),
-            context_size: size.next_multiple_of(PAGE_SIZE),
+            context_size: size,
             domain_slice: unsafe {
                 core::slice::from_raw_parts_mut(self.domain_start, self.domain_size)
             },
