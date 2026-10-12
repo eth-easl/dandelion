@@ -1,13 +1,10 @@
 use crate::function_registry::FunctionRegistry;
+use composition::CompositionTemplate;
 use dandelion_commons::{CompositionError, DError, DandelionError, FunctionId};
 use dparser::Module;
 use itertools::Itertools;
-use machine_interface::{
-    composition::{Composition, FunctionDependencies, InputSetDescriptor, ShardingMode},
-    function_driver::Metadata,
-    machine_config::EngineType,
-    context::{malloc::MallocMemoryDomain, MemoryDomain},
-};
+use machine_interface::{function_driver::Metadata, machine_config::EngineType};
+use memory::context::{malloc::MallocMemoryDomain, MemoryDomain};
 use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
 
 fn get_module(comp_string: &str) -> Module {
@@ -35,9 +32,8 @@ fn create_test_function_registry(functions: &[(&str, &[&str], &[&str])]) -> Func
     let function_reg = FunctionRegistry::new();
 
     let dummy_engine_type = get_some_engine_type();
-    let dummy_domain = Arc::new(
-        MallocMemoryDomain::init(memory::context::MemoryResource::None).unwrap(),
-    );
+    let dummy_domain =
+        Arc::new(MallocMemoryDomain::init(memory::context::MemoryResource::None).unwrap());
     let mut dummy_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     dummy_path.pop();
     dummy_path.push("machine_interface/tests/data/test_elf_mmu_aarch64_basic");
@@ -341,6 +337,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
     "#;
     let function_registry =
         create_test_function_registry(&[("Function", &["Fin", "Unused"], &["Fout"])]);
+    let template = CompositionTemplate::parse(composition_string, &function_registry);
     let module = get_module(composition_string);
     let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,

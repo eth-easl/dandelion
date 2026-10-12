@@ -4,9 +4,9 @@ use std::{
 };
 
 use log::error;
-use memory::data::{DataItem, DataSet, DataSetAccumulator, Invocation};
+use memory::data::{DataItem, DataSet, DataSetAccumulator};
 
-use crate::{sharding::AnyShardingMode, Function};
+use crate::{function::Invocation, sharding::AnyShardingMode, Function};
 
 #[derive(Debug)]
 enum State {
@@ -81,7 +81,7 @@ impl CompositionSet {
     /// any other (blocking or non-blocking) consumers.
     pub(crate) fn push_items(
         &self,
-        items: Arc<Vec<Arc<DataItem>>>,
+        items: Arc<Vec<DataItem>>,
         complete: bool,
         any_sharding_mode: &AnyShardingMode,
         out: &mut impl Extend<Invocation>,
@@ -156,7 +156,7 @@ impl CompositionSet {
 mod tests {
     use super::*;
     use crate::{function::Function, sharding::Sharding};
-    use memory::{data::Position, Context};
+    use memory::{data::Position, Context, LocalData};
 
     /// A small real context for tests; the composition layer only tracks items, it never reads
     /// their bytes, so any context of sufficient size will do.
@@ -166,16 +166,18 @@ mod tests {
         Arc::new(domain.acquire_context(4096).expect("context"))
     }
 
-    fn item(key: u32) -> Arc<DataItem> {
-        Arc::new(DataItem::new_local(
+    fn item(key: u32) -> DataItem {
+        DataItem::new_local(
             format!("item-{key}"),
             key,
-            test_context(),
-            Position { offset: 0, size: 0 },
-        ))
+            LocalData {
+                ctx: test_context(),
+                pos: Position { offset: 0, size: 0 },
+            },
+        )
     }
 
-    fn items(keys: &[u32]) -> Arc<Vec<Arc<DataItem>>> {
+    fn items(keys: &[u32]) -> Arc<Vec<DataItem>> {
         Arc::new(keys.iter().copied().map(item).collect())
     }
 

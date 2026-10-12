@@ -12,7 +12,7 @@ use memory::{
     context::{self, Context},
     DataItem, DataSet,
 };
-use std::thread::spawn;
+use std::{sync::Arc, thread::spawn};
 
 extern crate alloc;
 
@@ -24,7 +24,7 @@ pub trait EngineLoop {
         context: Context,
         input_sets: &Vec<(String, Option<DataSet>)>,
         output_sets: &Vec<String>,
-    ) -> DandelionResult<(i32, Vec<Vec<DataItem>>)>;
+    ) -> DandelionResult<(i32, Vec<Arc<Vec<DataItem>>>)>;
     fn get_engine_type(&self) -> EngineType;
 }
 
@@ -159,7 +159,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
             WorkToDo::FunctionArguments {
                 function_id: _,
                 function_alternatives,
-                mut input_sets,
+                input_sets,
                 metadata,
                 caching,
                 mut recorder,
@@ -205,10 +205,10 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 for (set_index, (_, static_set)) in metadata.input_sets.iter().enumerate() {
                     // need to add each input set to the content
                     // the input_sets vec can have less entries than the functions defined sets (not all sets need to be used in composition)
-                    let input_option = input_sets[set_index].take();
-                    let transfer_option = static_set.as_ref().or(input_option.as_ref());
+                    let input_set = &input_sets[set_index];
+                    let transfer_set = static_set.as_ref().unwrap_or(input_set);
                     // Always push the content set, even if it is empty / not present, so keep numbering consistent
-                    if let Some(transfer_set) = transfer_option {
+                    if !transfer_set.is_empty() {
                         function_context.content.push(Some(crate::ContextDataSet {
                             items: Vec::with_capacity(transfer_set.len()),
                             total_size: 0,

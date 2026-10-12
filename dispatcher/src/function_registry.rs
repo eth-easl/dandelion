@@ -1,21 +1,20 @@
 use composition::CompositionTemplate;
 use dandelion_commons::{
     err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
-    FunctionRegistryError,
+    FunctionRegistryError, SystemFunction,
 };
 use itertools::Itertools;
 use log::{error, trace};
 use machine_interface::{
     function_driver::{
-        functions::{FunctionAlternative, SystemFunction},
+        functions::FunctionAlternative,
         system_driver::{
             get_system_function_input_sets, get_system_function_output_sets, SYSTEM_FUNCTIONS,
         },
-        Metadata,
     },
     machine_config::EngineType,
-    context::MemoryDomain,
 };
+use memory::{context::MemoryDomain, data::Metadata};
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -263,6 +262,7 @@ impl composition::Registry for FunctionRegistry {
             .read()
             .expect("Function registry lock poisoned!");
         let (input_sets, output_sets) = match lock_guard.get(id) {
+            // TODO: refactor to work on iterators of string references, so we don't need to create a vec every time
             Some(func_type) => match func_type {
                 FunctionType::SystemFunction(sys_function) => (
                     &get_system_function_input_sets(*sys_function),

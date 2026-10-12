@@ -72,7 +72,7 @@ impl JoinIterator for SetAllIterator {
 /// Implements the JoinIterator for the `each` sharding.
 pub(crate) struct SetEachIterator {
     left: Option<Box<dyn JoinIterator>>,
-    items: Arc<Vec<Arc<DataItem>>>,
+    items: Arc<Vec<DataItem>>,
     item_idx: usize,
     write_idx: usize,
 }
@@ -148,7 +148,7 @@ impl JoinIterator for SetEachIterator {
 ///       the left instead of a more general `JoinIterator`.
 pub(crate) struct SetKeyIterator {
     left: Option<Box<SetKeyIterator>>,
-    items: Arc<Vec<Arc<DataItem>>>,
+    items: Arc<Vec<DataItem>>,
     key_groups: Vec<(u32, Range<usize>)>,
     key_groups_idx: usize,
     key: u32,
@@ -786,7 +786,7 @@ impl JoinIterator for AnyIterator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memory::{data::Position, Context};
+    use memory::{data::Position, Context, LocalData};
 
     /// A small real context for tests; the composition layer only tracks items, it never reads
     /// their bytes, so any context of sufficient size will do.
@@ -796,22 +796,26 @@ mod tests {
         Arc::new(domain.acquire_context(4096).expect("context"))
     }
 
-    fn item(key: u32) -> Arc<DataItem> {
-        Arc::new(DataItem::new_local(
+    fn item(key: u32) -> DataItem {
+        DataItem::new_local(
             format!("item-{key}"),
             key,
-            test_context(),
-            Position { offset: 0, size: 0 },
-        ))
+            LocalData {
+                ctx: test_context(),
+                pos: Position { offset: 0, size: 0 },
+            },
+        )
     }
 
-    fn sized_item(key: u32, size: usize) -> Arc<DataItem> {
-        Arc::new(DataItem::new_local(
+    fn sized_item(key: u32, size: usize) -> DataItem {
+        DataItem::new_local(
             format!("item-{key}"),
             key,
-            test_context(),
-            Position { offset: 0, size },
-        ))
+            LocalData {
+                ctx: test_context(),
+                pos: Position { offset: 0, size },
+            },
+        )
     }
 
     #[test]
@@ -848,7 +852,7 @@ mod tests {
     #[test]
     fn any_iterator_reduces_to_the_requested_partition_count() {
         let items: Vec<_> = (0..4).map(|k| sized_item(k, 10)).collect();
-        let total_size: usize = items.iter().map(|i| i.data.size()).sum();
+        let total_size: usize = items.iter().map(|i| i.size()).sum();
         let set = DataSet::from_items(Arc::new(items));
 
         let (iter_opt, largest_set_size, _min_set_size, max_partitions) =

@@ -3,17 +3,12 @@ use dandelion_commons::records::Recorder;
 use dispatcher::dispatcher::Dispatcher;
 use log::debug;
 use machine_interface::{
-    composition::{
-        Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, JoinStrategy,
-        ShardingMode,
-    },
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
-    context::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
-    DataItem, DataSet, Position,
+    ContextDataItem, ContextDataSet, DataItem, DataSet, Position,
 };
-use std::{collections::BTreeMap, time::Instant};
-use std::{iter, sync::Arc};
+use memory::context::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource};
+use std::{collections::BTreeMap, iter, sync::Arc, time::Instant};
 
 pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
@@ -61,13 +56,14 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     let mat_len = mat_a.len();
     let mut in_context =
         ReadOnlyContext::new(mat_a.into()).expect("Should be able to create read only context");
-    in_context.content = vec![Some(DataSet {
-        ident: String::from(""),
-        buffers: vec![DataItem {
+    let mat_size = mat_len * core::mem::size_of::<u64>();
+    in_context.content = vec![Some(ContextDataSet {
+        total_size: mat_size,
+        items: vec![ContextDataItem {
             ident: String::from(""),
             data: Position {
                 offset: 0,
-                size: mat_len * core::mem::size_of::<u64>(),
+                size: mat_size,
             },
             key: 0,
         }],
@@ -114,13 +110,14 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     let mat_len = mat_a.len();
     let mut in_context = ReadOnlyContext::new(mat_a.into_boxed_slice())
         .expect("Should be able to create read only context");
-    in_context.content = vec![Some(DataSet {
-        ident: String::from(""),
-        buffers: vec![DataItem {
+    let mat_size = mat_len * core::mem::size_of::<u64>();
+    in_context.content = vec![Some(ContextDataSet {
+        total_size: mat_size,
+        items: vec![ContextDataItem {
             ident: String::from(""),
             data: Position {
                 offset: 0,
-                size: mat_len * core::mem::size_of::<u64>(),
+                size: mat_size,
             },
             key: 0,
         }],
@@ -313,26 +310,28 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     data.extend_from_slice(&mat_b);
     let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
         .expect("Should be able to create read only context");
-    in_context.content = vec![Some(DataSet {
-        ident: String::from(""),
-        buffers: vec![
-            DataItem {
+    let mat_a_size = mat_a.len() * core::mem::size_of::<u64>();
+    let mat_b_size = mat_b.len() * core::mem::size_of::<u64>();
+    in_context.content = vec![Some(ContextDataSet {
+        items: vec![
+            ContextDataItem {
                 ident: String::from(""),
                 data: Position {
                     offset: 0,
-                    size: mat_a.len() * core::mem::size_of::<u64>(),
+                    size: mat_a_size,
                 },
                 key: 0,
             },
-            DataItem {
+            ContextDataItem {
                 ident: String::from(""),
                 data: Position {
-                    offset: mat_a.len() * core::mem::size_of::<u64>(),
-                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                    offset: mat_a_size,
+                    size: mat_b_size,
                 },
                 key: 1,
             },
         ],
+        total_size: mat_a_size + mat_b_size,
     })];
 
     let composition = Composition {
@@ -391,16 +390,17 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     let data_len = data.len();
     let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
         .expect("Should be able to create read only context");
-    in_context.content = vec![Some(DataSet {
-        ident: String::from(""),
-        buffers: vec![DataItem {
+    let data_size = data_len * core::mem::size_of::<u64>();
+    in_context.content = vec![Some(ContextDataSet {
+        items: vec![ContextDataItem {
             ident: String::from(""),
             data: Position {
                 offset: 0,
-                size: data_len * core::mem::size_of::<u64>(),
+                size: data_size,
             },
             key: 0,
         }],
+        total_size: data_size,
     })];
 
     let composition = Composition {
@@ -480,39 +480,42 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     data.extend_from_slice(&mat_bt);
     let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
         .expect("Should be able to create read only context");
+    let mat_a_size = mat_a.len() * core::mem::size_of::<u64>();
+    let mat_b_size = mat_b.len() * core::mem::size_of::<u64>();
+
     in_context.content = vec![
-        Some(DataSet {
-            ident: String::from("A set"),
-            buffers: vec![DataItem {
+        Some(ContextDataSet {
+            items: vec![ContextDataItem {
                 ident: String::from("A"),
                 data: Position {
                     offset: 0,
-                    size: mat_a.len() * core::mem::size_of::<u64>(),
+                    size: mat_a_size,
                 },
                 key: 0,
             }],
+            total_size: mat_a_size,
         }),
-        Some(DataSet {
-            ident: String::from("B set"),
-            buffers: vec![DataItem {
+        Some(ContextDataSet {
+            items: vec![ContextDataItem {
                 ident: String::from("B"),
                 data: Position {
-                    offset: mat_a.len() * core::mem::size_of::<u64>(),
-                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                    offset: mat_a_size,
+                    size: mat_b_size,
                 },
                 key: 0,
             }],
+            total_size: mat_b_size,
         }),
-        Some(DataSet {
-            ident: String::from("BT set"),
-            buffers: vec![DataItem {
+        Some(ContextDataSet {
+            items: vec![ContextDataItem {
                 ident: String::from("BT"),
                 data: Position {
-                    offset: (mat_a.len() + mat_b.len()) * core::mem::size_of::<u64>(),
-                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                    offset: mat_a_size + mat_b_size,
+                    size: mat_b_size,
                 },
                 key: 0,
             }],
+            total_size: mat_b_size,
         }),
     ];
 
@@ -693,28 +696,31 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
     data.extend_from_slice(&mat_b);
     let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
         .expect("Should be able to create read only context");
+    let mat_a_size = mat_a.len() * core::mem::size_of::<u64>();
+    let mat_b_size = mat_b.len() * core::mem::size_of::<u64>();
+
     in_context.content = vec![
-        Some(DataSet {
-            ident: String::from("a set"),
-            buffers: vec![DataItem {
+        Some(ContextDataSet {
+            items: vec![ContextDataItem {
                 ident: String::from("a mat"),
                 data: Position {
                     offset: 0,
-                    size: mat_a.len() * core::mem::size_of::<u64>(),
+                    size: mat_a_size,
                 },
                 key: 0,
             }],
+            total_size: mat_a_size,
         }),
-        Some(DataSet {
-            ident: String::from("b set"),
-            buffers: vec![DataItem {
+        Some(ContextDataSet {
+            items: vec![ContextDataItem {
                 ident: String::from("b mat"),
                 data: Position {
-                    offset: mat_a.len() * core::mem::size_of::<u64>(),
-                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                    offset: mat_a_size,
+                    size: mat_b_size,
                 },
                 key: 0,
             }],
+            total_size: mat_b_size,
         }),
     ];
 

@@ -9,7 +9,7 @@ use crate::{
 };
 use dandelion_commons::FunctionId;
 use log::trace;
-use memory::data::{DataItem, DataSet, DataSetAccumulator, Invocation};
+use memory::data::{DataItem, DataSet, DataSetAccumulator};
 
 enum InputSet {
     /// This set is blocking and only set to complete once complete.
@@ -48,11 +48,11 @@ struct Inner {
 
 pub(crate) struct Function {
     composition_idx: usize,
-
     inner: Mutex<Inner>,
-
     min_set_bytes: Vec<usize>, // TODO: might want a metadata reference here?
-
+    // TODO: consider changing this to a template type, that the dispatcher then fills in.
+    // Would allow to change the type to do for example metadata memoization.
+    // For example using a Weak to the registry's function struct allows fast reuse and detection for when it goes stale.
     function_id: FunctionId,
     join_order: Arc<Vec<usize>>,
 }
@@ -194,7 +194,7 @@ impl Function {
     pub(crate) fn push_streaming_items(
         &self,
         set_idx: usize,
-        mut items: Arc<Vec<Arc<DataItem>>>,
+        mut items: Arc<Vec<DataItem>>,
         complete: bool,
         any_sharding_mode: &AnyShardingMode,
         out: &mut impl Extend<Invocation>,
@@ -256,6 +256,7 @@ impl Function {
                     inner.inputs[set_idx].take()
                 {
                     inner.inputs[set_idx] = Some((
+                        // TODO: why is this collect unsorted? This is used in sharding later, so should be sorted
                         InputSet::Complete(acc.collect_unsorted()),
                         sharding,
                         optional,
@@ -267,6 +268,7 @@ impl Function {
             inner.all_started = inner.inputs.iter().enumerate().all(|(idx, in_opt)| {
                 in_opt
                     .as_ref()
+                    // TODO: why does it check the index here? The set that just arrived should also be marked complete at this point, no?
                     .map_or(true, |(set, _, _, _)| idx == set_idx || set.is_complete())
             });
 
@@ -322,7 +324,7 @@ impl Function {
 
     pub(crate) fn add_invocation_output(
         &self,
-        sets: Vec<DataSet>,
+        sets: Vec<Arc<Vec<DataItem>>>,
         any_sharding_mode: &AnyShardingMode,
         out: &mut impl Extend<Invocation>,
     ) {
@@ -345,7 +347,7 @@ impl Function {
             debug_assert_eq!(sets.len(), inner.outputs.len());
             for (data, out_set_opt) in sets.into_iter().zip(inner.outputs.iter()) {
                 if let Some(out_set) = out_set_opt {
-                    out_set.push_items(data.items, complete, any_sharding_mode, out);
+                    out_set.push_items(data, complete, any_sharding_mode, out);
                 }
             }
         }
@@ -356,10 +358,17 @@ impl Function {
     }
 }
 
+#[derive(Debug)]
+pub struct Invocation {
+    pub function_id: FunctionId,
+    pub composition_idx: usize,
+    pub input: Vec<DataSet>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memory::{data::Position, Context};
+    use memory::{data::Position, Context, LocalData};
 
     /// A small real context for tests; the composition layer only tracks items, it never reads
     /// their bytes, so any context of sufficient size will do.
@@ -381,16 +390,18 @@ mod tests {
         Arc::new(name.to_string())
     }
 
-    fn item(key: u32) -> Arc<DataItem> {
-        Arc::new(DataItem::new_local(
+    fn item(key: u32) -> DataItem {
+        DataItem::new_local(
             format!("item-{key}"),
             key,
-            test_context(),
-            Position { offset: 0, size: 0 },
-        ))
+            LocalData {
+                ctx: test_context(),
+                pos: Position { offset: 0, size: 0 },
+            },
+        )
     }
 
-    fn items(keys: &[u32]) -> Arc<Vec<Arc<DataItem>>> {
+    fn items(keys: &[u32]) -> Arc<Vec<DataItem>> {
         Arc::new(keys.iter().copied().map(item).collect())
     }
 

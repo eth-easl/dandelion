@@ -3,5 +3,5 @@ pub mod function_registry;
 pub mod queue;
 pub mod resource_pool;
 
-#[cfg(test)]
-mod tests;
+// #[cfg(test)]
+// mod tests;

@@ -2,13 +2,13 @@ mod policy;
 
 pub use policy::PREFETCH_PER_CORE;
 
+use composition::SystemInfo;
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, DispatcherError,
 };
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::trace;
 use machine_interface::{
-    composition::SystemInfo,
     function_driver::{EngineWorkQueue, WorkDone, WorkToDo},
     machine_config::EngineType,
     promise::{Debt, PromiseBuffer},
@@ -273,13 +273,7 @@ fn get_flags_and_local(work: &WorkToDo) -> (u32, bool) {
             ..
         } => {
             // check if all the sets are already fully locally available
-            let local = input_sets.into_iter().all(|set_option| {
-                if let Some(set) = set_option {
-                    set.is_local()
-                } else {
-                    true
-                }
-            });
+            let local = input_sets.into_iter().all(|set| set.is_local());
             let mut flags = 0;
             trace!(
                 "found function arguments with alternatives: {:?}",

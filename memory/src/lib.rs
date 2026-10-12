@@ -4,6 +4,5 @@ pub mod util;
 
 pub use context::Context;
 pub use data::{
-    DataItem, DataSet, DataSetAccumulator, Invocation, IoData, ItemData, LocalData, Metadata,
-    Position, RemoteData,
+    DataItem, DataSet, DataSetAccumulator, IoData, ItemData, LocalData, Position, RemoteData,
 };

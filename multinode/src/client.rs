@@ -457,7 +457,7 @@ async fn remote_queue_server_logic(
                                         start_epoch,
                                         node_id,
                                     );
-                                    Ok(WorkDone::CompositionSet(
+                                    Ok(WorkDone::DataItems(
                                         proto_data_sets_to_composition_sets_with_delete_on_drop(
                                             metadata_sets.metadata_sets,
                                             data_option,

@@ -461,11 +461,11 @@ pub(crate) async fn resolve_io_item(
 
 async fn resolve_all_sets(
     client: HttpClient,
-    input_sets: Vec<Option<DataSet>>,
+    input_sets: Vec<DataSet>,
     semaphore: Arc<Semaphore>,
     ticket: OwnedSemaphorePermit,
     // TODO: this these functions should all return local sets, reintroduce local sets
-    result_sender: impl FnOnce(DandelionResult<Vec<Vec<DataItem>>>) + 'static + Send,
+    result_sender: impl FnOnce(DandelionResult<Vec<Arc<Vec<DataItem>>>>) + 'static + Send,
 ) {
     // drop ticket so at least one will be available for the new tasks we spawn
     drop(ticket);
@@ -478,57 +478,46 @@ async fn resolve_all_sets(
     // collect items that need to be fetched from one node
     let mut fetching_nodes = BTreeMap::new();
 
-    for (set_index, set_option) in input_sets.into_iter().enumerate() {
-        if let Some(set) = set_option {
-            let mut new_items = Vec::with_capacity(set.len());
-            for item in set.into_iter() {
-                match &item.data {
-                    ItemData::Local(local) => {
-                        // a not entirely local set, directly push the items that are already local
-                        new_items.push(DataItem {
-                            ident: item.ident.clone(),
-                            key: item.key,
-                            data: ItemData::Local(local.clone()),
-                        });
-                    }
-                    ItemData::Io(_) => {
-                        let permit = semaphore.clone().acquire_owned().await.unwrap();
-                        let item_clone = item.clone();
-                        // TODO: consider issues if we move to a single file wide client with an Init once.
-                        let client_clone = client.clone();
-                        io_futures.push(spawn(async move {
-                            let io_data = if let ItemData::Io(ref io_data) = item_clone.data {
-                                io_data
-                            } else {
-                                unreachable!()
-                            };
-                            let resolved = resolve_io_item(io_data, &client_clone).await?;
-                            let new_item = DataItem {
-                                ident: item_clone.ident.clone(),
-                                key: item_clone.key,
-                                data: ItemData::Local(resolved),
-                            };
-                            drop(permit);
-                            Ok((set_index, new_item))
-                        }));
-                    }
-                    ItemData::Remote(remote_data) => {
-                        let node_id = remote_data.node_id;
-                        match fetching_nodes.entry(node_id) {
-                            Entry::Vacant(vacant) => {
-                                vacant.insert(vec![(set_index, item.clone())]);
-                            }
-                            Entry::Occupied(mut occupied) => {
-                                occupied.get_mut().push((set_index, item.clone()));
-                            }
+    for (set_index, set) in input_sets.into_iter().enumerate() {
+        let mut new_items = Vec::with_capacity(set.len());
+        for item in set.into_iter() {
+            match &item.data {
+                ItemData::Local(_) => {
+                    // a not entirely local set, directly push the items that are already local
+                    new_items.push(item.clone());
+                }
+                ItemData::Io(_) => {
+                    let permit = semaphore.clone().acquire_owned().await.unwrap();
+                    let item_clone = item.clone();
+                    // TODO: consider issues if we move to a single file wide client with an Init once.
+                    let client_clone = client.clone();
+                    io_futures.push(spawn(async move {
+                        let io_data = if let ItemData::Io(ref io_data) = item_clone.data {
+                            io_data
+                        } else {
+                            unreachable!()
                         };
-                    }
+                        let resolved = resolve_io_item(io_data, &client_clone).await?;
+                        let new_item =
+                            DataItem::new_local(item_clone.ident.clone(), item_clone.key, resolved);
+                        drop(permit);
+                        Ok((set_index, new_item))
+                    }));
+                }
+                ItemData::Remote(remote_data) => {
+                    let node_id = remote_data.node_id;
+                    match fetching_nodes.entry(node_id) {
+                        Entry::Vacant(vacant) => {
+                            vacant.insert(vec![(set_index, item.clone())]);
+                        }
+                        Entry::Occupied(mut occupied) => {
+                            occupied.get_mut().push((set_index, item.clone()));
+                        }
+                    };
                 }
             }
-            sets_vec.push(new_items);
-        } else {
-            sets_vec.push(Vec::new());
         }
+        sets_vec.push(new_items);
     }
 
     // perform grouped fetching for all data from each node
@@ -572,7 +561,7 @@ async fn resolve_all_sets(
             }
         }
 
-        result_sender(Ok(sets_vec));
+        result_sender(Ok(sets_vec.into_iter().map(Arc::new).collect()));
         drop(ticket);
     });
 }
@@ -625,15 +614,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                             Ok(sets) => {
                                 let input_sets = sets
                                     .into_iter()
-                                    .map(|item_vec| {
-                                        if item_vec.len() > 0 {
-                                            let items =
-                                                item_vec.into_iter().map(Arc::new).collect();
-                                            Some(DataSet::from_items(Arc::new(items)))
-                                        } else {
-                                            None
-                                        }
-                                    })
+                                    .map(|item_vec| DataSet::from_items(item_vec))
                                     .collect();
                                 queue_clone.requeu_engine_args(
                                     WorkToDo::FunctionArguments {

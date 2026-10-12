@@ -1,7 +1,7 @@
 use std::{fmt::Debug, ops::Deref, sync::Arc};
 
 use crate::context::{Context, ContextDataSet};
-use dandelion_commons::{DandelionResult, FunctionId};
+use dandelion_commons::DandelionResult;
 use log::error;
 use tokio::sync::{mpsc, OnceCell};
 
@@ -114,19 +114,43 @@ pub struct IoData {
     pub set_index: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct DataItem {
+    inner: Arc<DataItemInner>,
+}
+
+impl core::ops::Deref for DataItem {
+    type Target = DataItemInner;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DataItemInner {
     pub ident: String,
     pub key: u32,
     pub data: ItemData,
 }
 
 impl DataItem {
-    pub fn new_local(ident: String, key: u32, ctx: Arc<Context>, pos: Position) -> Self {
+    pub fn new_local(ident: String, key: u32, local: LocalData) -> Self {
         DataItem {
-            ident,
-            key,
-            data: ItemData::Local(LocalData { ctx, pos }),
+            inner: Arc::new(DataItemInner {
+                ident,
+                key,
+                data: ItemData::Local(local),
+            }),
+        }
+    }
+
+    pub fn new_io(ident: String, key: u32, io_data: IoData) -> Self {
+        DataItem {
+            inner: Arc::new(DataItemInner {
+                ident,
+                key,
+                data: ItemData::Io(io_data),
+            }),
         }
     }
 
@@ -151,7 +175,7 @@ impl DataItem {
 pub struct DataSet {
     /// Share items among DataSet clones so sets that are frequently read by multiple consumers
     /// (e.g. streaming consumers) are efficient.
-    pub items: Arc<Vec<Arc<DataItem>>>,
+    pub items: Arc<Vec<DataItem>>,
     pub num_unresolved: usize,
     pub total_size: usize,
 }
@@ -159,7 +183,7 @@ pub struct DataSet {
 impl DataSet {
     // TODO this does construct an unsorted data set, meaning we cannot rely on datasets always being sorted.
     // Should check if we need this or it would make sense to only construct datasets that are sorted (or never sorted, and leave that to the composition sets?)
-    pub fn from_items(items: Arc<Vec<Arc<DataItem>>>) -> DataSet {
+    pub fn from_items(items: Arc<Vec<DataItem>>) -> DataSet {
         let mut num_unresolved = 0;
         let mut total_size = 0;
         for item in items.iter() {
@@ -203,7 +227,7 @@ impl DataSet {
         out_set
     }
 
-    pub fn from_context(mut ctx: Context) -> Vec<Option<DataSet>> {
+    pub fn from_context(mut ctx: Context) -> Vec<DataSet> {
         // take the content from the context before putting it into an arc
         let sets = core::mem::take(&mut ctx.content);
         let context_arc = Arc::new(ctx);
@@ -212,27 +236,37 @@ impl DataSet {
                 if let Some(set) = set_option {
                     let ContextDataSet { items, total_size } = set;
                     if items.is_empty() {
-                        None
+                        DataSet {
+                            items: Arc::new(Vec::new()),
+                            num_unresolved: 0,
+                            total_size: 0,
+                        }
                     } else {
                         let set_items = items
                             .into_iter()
                             .map(|ctx_itm| {
-                                Arc::new(DataItem::new_local(
+                                DataItem::new_local(
                                     ctx_itm.ident,
                                     ctx_itm.key,
-                                    context_arc.clone(),
-                                    ctx_itm.data,
-                                ))
+                                    LocalData {
+                                        ctx: context_arc.clone(),
+                                        pos: ctx_itm.data,
+                                    },
+                                )
                             })
                             .collect();
-                        Some(DataSet {
+                        DataSet {
                             items: Arc::new(set_items),
                             num_unresolved: 0,
                             total_size,
-                        })
+                        }
                     }
                 } else {
-                    None
+                    DataSet {
+                        items: Arc::new(Vec::new()),
+                        num_unresolved: 0,
+                        total_size: 0,
+                    }
                 }
             })
             .collect()
@@ -241,8 +275,8 @@ impl DataSet {
 
 /// Iterator over a reference of the composition set, not taking ownership.
 impl<'origin> IntoIterator for &'origin DataSet {
-    type Item = &'origin Arc<DataItem>;
-    type IntoIter = std::slice::Iter<'origin, Arc<DataItem>>;
+    type Item = &'origin DataItem;
+    type IntoIter = std::slice::Iter<'origin, DataItem>;
     fn into_iter(self) -> Self::IntoIter {
         self.items.iter()
     }
@@ -250,7 +284,7 @@ impl<'origin> IntoIterator for &'origin DataSet {
 
 #[derive(Debug)]
 pub struct DataSetAccumulator {
-    items: Vec<Arc<DataItem>>,
+    items: Vec<DataItem>,
     num_unresolved: usize,
     total_size: usize,
 }
@@ -268,7 +302,7 @@ impl DataSetAccumulator {
         self.items.is_empty()
     }
 
-    pub fn push_items(&mut self, items: &[Arc<DataItem>]) {
+    pub fn push_items(&mut self, items: &[DataItem]) {
         for item in items.iter() {
             if !item.is_local() {
                 self.num_unresolved += 1;
@@ -310,13 +344,6 @@ impl DataSetAccumulator {
 }
 
 // TODO: move to better file?
-#[derive(Debug)]
-pub struct Invocation {
-    pub function_id: FunctionId,
-    pub composition_idx: usize,
-    pub input: Vec<DataSet>,
-}
-
 /// Struct holding general function metadata that is true across all drivers.
 #[derive(Debug)]
 pub struct Metadata {

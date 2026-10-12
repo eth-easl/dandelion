@@ -405,6 +405,7 @@ dependencies = [
  "dandelion_commons",
  "log",
  "memory",
+ "tokio",
 ]
 
 [[package]]

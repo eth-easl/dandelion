@@ -5,8 +5,8 @@ use std::{
 };
 
 use crate::common::{data_set, item, parse_composition, TestRegistry};
-use composition::{AnyShardingMode, Composition};
-use memory::data::{DataSet, Invocation};
+use composition::{AnyShardingMode, Composition, Invocation};
+use memory::data::DataSet;
 
 /// How long a round may take before it is considered deadlocked.
 const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);

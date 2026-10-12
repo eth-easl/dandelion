@@ -18,7 +18,7 @@ use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
 use memory::{
     context::{Context, ContextDataItem, ContextDataSet, ContextTrait, ContextType, MemoryDomain},
-    DataItem, DataSet, ItemData, LocalData,
+    DataItem, DataSet, LocalData,
 };
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
 use std::{num::NonZeroUsize, sync::Arc};
@@ -104,7 +104,7 @@ impl EngineLoop for KvmLoop {
         mut context: Context,
         input_sets: &Vec<(String, Option<DataSet>)>,
         output_sets: &Vec<String>,
-    ) -> DandelionResult<(i32, Vec<Vec<DataItem>>)> {
+    ) -> DandelionResult<(i32, Vec<Arc<Vec<DataItem>>>)> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return err_dandelion!(DandelionError::ConfigMissmatch),
@@ -357,18 +357,20 @@ impl EngineLoop for KvmLoop {
         let context_arc = Arc::new(context);
         let mut set_vec = Vec::with_capacity(items.len());
         for set in items {
-            set_vec.push(
+            set_vec.push(Arc::new(
                 set.into_iter()
-                    .map(|(ident, key, pos)| DataItem {
-                        ident,
-                        key,
-                        data: ItemData::Local(LocalData {
-                            ctx: context_arc.clone(),
-                            pos,
-                        }),
+                    .map(|(ident, key, pos)| {
+                        DataItem::new_local(
+                            ident,
+                            key,
+                            LocalData {
+                                ctx: context_arc.clone(),
+                                pos,
+                            },
+                        )
                     })
                     .collect(),
-            );
+            ));
         }
 
         Ok((exit_code, set_vec))

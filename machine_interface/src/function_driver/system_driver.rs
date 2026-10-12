@@ -1,11 +1,10 @@
 pub mod reqwest;
 
-use crate::ContextDataSet;
 use dandelion_commons::{
     err_dandelion, try_with_capacity, DandelionError, DandelionResult, MultinodeError,
     SystemFunction,
 };
-use memory::data::{DataItem, DataSet, IoData, ItemData, Position, RemoteData};
+use memory::data::{DataItem, DataSet, IoData, Position, RemoteData};
 use memory::Context;
 use std::{
     future::Future,
@@ -38,9 +37,7 @@ const HTTP_INPUT_SETS: [&str; 1] = ["requests"];
 const HTTP_OUTPUT_SETS: [&str; 2] = ["headers", "bodies"];
 
 /// Provides the input set names for a given system function
-pub fn get_system_function_input_sets(
-    function: SystemFunction,
-) -> Vec<(String, Option<ContextDataSet>)> {
+pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<(String, Option<DataSet>)> {
     return match function {
         SystemFunction::HTTP => HTTP_INPUT_SETS,
         SystemFunction::MEMCACHED => HTTP_INPUT_SETS,
@@ -64,8 +61,8 @@ pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 /// Currently assumes the HTTP_INPUT_SETS and HTTP_OUTPUT_SETS
 pub fn convert_to_references(
     function: SystemFunction,
-    mut inputs: Vec<Option<DataSet>>,
-) -> DandelionResult<Vec<Option<DataSet>>> {
+    mut inputs: Vec<DataSet>,
+) -> DandelionResult<Vec<Arc<Vec<DataItem>>>> {
     // check that the function id contains string correcpsonding to system function
     debug_assert_eq!(
         1,
@@ -75,39 +72,38 @@ pub fn convert_to_references(
 
     // go through all input sets and check if there is already a static one, or on in the input data
     let mut output_vec = try_with_capacity!(Vec, 2)?;
-    output_vec.resize(2, None);
 
-    if let Some(input_set) = inputs[0].take() {
+    if let Some(input_set) = inputs.pop() {
         let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
         let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
         for item in input_set.into_iter() {
             let set_once = Arc::new(OnceCell::new());
-            let header_item = DataItem {
-                ident: item.ident.clone(),
-                key: item.key,
-                data: ItemData::Io(IoData {
+            let header_item = DataItem::new_io(
+                item.ident.clone(),
+                item.key,
+                IoData {
                     original_data: Box::new(item.data.clone()),
                     resolved: set_once.clone(),
                     function,
                     set_index: 0,
-                }),
-            };
-            let body_item = DataItem {
-                ident: item.ident.clone(),
-                key: item.key,
-                data: ItemData::Io(IoData {
+                },
+            );
+            let body_item = DataItem::new_io(
+                item.ident.clone(),
+                item.key,
+                IoData {
                     original_data: Box::new(item.data.clone()),
                     resolved: set_once,
                     function,
                     set_index: 1,
-                }),
-            };
-            out_0_list.push(Arc::new(header_item));
-            out_1_list.push(Arc::new(body_item));
+                },
+            );
+            out_0_list.push(header_item);
+            out_1_list.push(body_item);
         }
 
-        output_vec[0] = Some(DataSet::from_items(Arc::new(out_0_list)));
-        output_vec[1] = Some(DataSet::from_items(Arc::new(out_1_list)));
+        output_vec.push(Arc::new(out_0_list));
+        output_vec.push(Arc::new(out_1_list));
     }
     Ok(output_vec)
 }
@@ -124,7 +120,7 @@ pub trait RemoteDataClient: Send + Sync {
     fn resolve_multiple_data<'meta>(
         &'meta self,
         // Metadata for data that needs to be fetched
-        metadata: &'meta Vec<(usize, Arc<DataItem>)>,
+        metadata: &'meta Vec<(usize, DataItem)>,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<Vec<(usize, DataItem)>>> + Send + 'meta>>;
 
     fn delete_remote_data(

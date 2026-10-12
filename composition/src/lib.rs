@@ -12,11 +12,16 @@ use crate::{
     set::CompositionSet,
     sharding::Sharding,
 };
-
-pub use crate::sharding::{AnyShardingMode, AnyShardingParams, SystemInfo};
+pub use crate::{
+    function::Invocation,
+    sharding::{AnyShardingMode, AnyShardingParams, SystemInfo},
+};
 use dandelion_commons::{dandelion_err, DandelionError, DandelionResult, FunctionId};
 use log::warn;
-use memory::data::{DataSet, Invocation, Metadata};
+use memory::{
+    data::{DataSet, Metadata},
+    DataItem,
+};
 
 /// Functions from the function registry side required build compositions.
 pub trait Registry {
@@ -67,6 +72,7 @@ impl CompositionTemplate {
 
 pub struct Composition {
     functions: Vec<Arc<Function>>,
+    // This is a global setting, does every composition need it's own?
     any_sharding_mode: AnyShardingMode,
     input_sets: Vec<Arc<CompositionSet>>,
     output_sets: Vec<Arc<CompositionSet>>,
@@ -162,7 +168,7 @@ impl Composition {
     /// Pushes the output of a finished invocation and adds all resulting invocations to `out`.
     pub fn push_invocation_output(
         &self,
-        output: Vec<DataSet>,
+        output: Vec<Arc<Vec<DataItem>>>,
         composition_idx: usize,
         out: &mut impl Extend<Invocation>,
     ) {

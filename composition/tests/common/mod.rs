@@ -17,7 +17,7 @@ use dandelion_commons::{
 };
 use memory::{
     data::{DataItem, DataSet, Position},
-    Context,
+    Context, LocalData,
 };
 
 /// A small real context for tests; the composition layer only tracks items, it never reads their
@@ -106,17 +106,19 @@ pub fn parse_composition(src: &str, name: &str, registry: &TestRegistry) -> Comp
 
 /// Builds a [`DataItem`] with the given key and a made-up (zero-sized) position; good enough for
 /// tests that only care about item identity/ordering, not actual data contents.
-pub fn item(ident: &str, key: u32) -> Arc<DataItem> {
-    Arc::new(DataItem::new_local(
+pub fn item(ident: &str, key: u32) -> DataItem {
+    DataItem::new_local(
         ident.to_string(),
         key,
-        test_context(),
-        Position { offset: 0, size: 0 },
-    ))
+        LocalData {
+            ctx: test_context(),
+            pos: Position { offset: 0, size: 0 },
+        },
+    )
 }
 
 /// Builds a [`DataSet`] out of the given items.
-pub fn data_set(items: Vec<Arc<DataItem>>) -> DataSet {
+pub fn data_set(items: Vec<DataItem>) -> DataSet {
     DataSet::from_items(Arc::new(items))
 }
 
@@ -128,7 +130,7 @@ pub fn data_set(items: Vec<Arc<DataItem>>) -> DataSet {
 pub fn run_to_completion(
     mut composition: Composition,
     inputs: Vec<DataSet>,
-    mut respond: impl FnMut(&memory::data::Invocation) -> Vec<DataSet>,
+    mut respond: impl FnMut(&composition::Invocation) -> Vec<DataSet>,
 ) -> Vec<DataSet> {
     let mut pending = Vec::new();
     composition.start_execution(inputs, &mut pending);

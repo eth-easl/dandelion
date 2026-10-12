@@ -1,7 +1,11 @@
-use std::{cmp, sync::Arc};
+use std::{
+    cmp,
+    sync::{atomic::AtomicUsize, Arc},
+};
 
 use log::{debug, trace};
 use memory::data::DataSet;
+use tokio::sync::watch;
 
 use crate::join_iterator::{
     AnyIterator, JoinIterator, SetAllIterator, SetEachIterator, SetKeyIterator,
@@ -44,12 +48,12 @@ impl Sharding {
 // TODO: figure out where to put this
 /// Contains system information used by the sharding policy.
 pub struct SystemInfo {
-    // /// The number of local compute cores in the system (as a watcher so we can update remote nodes
-    // /// if the local core count changes).
-    // pub num_local_cores_watcher: watch::Receiver<usize>,
-    // pub num_local_cores_sender: watch::Sender<usize>,
-    // /// The number of remote compute cores in the system.
-    // pub num_remote_cores: AtomicUsize,
+    /// The number of local compute cores in the system (as a watcher so we can update remote nodes
+    /// if the local core count changes).
+    pub num_local_cores_watcher: watch::Receiver<usize>,
+    pub num_local_cores_sender: watch::Sender<usize>,
+    /// The number of remote compute cores in the system.
+    pub num_remote_cores: AtomicUsize,
 }
 
 impl SystemInfo {
@@ -61,6 +65,7 @@ impl SystemInfo {
     }
 }
 
+#[derive(Clone)]
 pub struct AnyShardingParams {
     /// A reference to the current system information maintained by the queue.
     pub sys_info: Arc<SystemInfo>,
@@ -68,6 +73,7 @@ pub struct AnyShardingParams {
     pub offload_const: usize,
 }
 
+#[derive(Clone)]
 pub enum AnyShardingMode {
     /// Use the maximum number of partiions (`AnyKey` becomes `Key`, `AnyEach` becomes `Each`).
     MaxSharding,
@@ -129,6 +135,7 @@ impl AnySetGroup {
 ///
 /// The `min_set_size` is used to create `any` set shards of at least that size and is ignored if
 /// set to 0.
+// TODO: use &[DataItem] instead of DataSet to remove need to have a DataSet, when we only need the items.
 pub(crate) fn create_sharding_iter(
     mut sets: Vec<Option<(DataSet, Sharding)>>,
     join_order: &[usize],
@@ -361,7 +368,7 @@ mod tests {
     use super::*;
     use memory::{
         data::{DataItem, Position},
-        Context,
+        Context, LocalData,
     };
 
     /// A small real context for tests; the composition layer only tracks items, it never reads
@@ -372,13 +379,15 @@ mod tests {
         Arc::new(domain.acquire_context(4096).expect("context"))
     }
 
-    fn item(key: u32) -> Arc<DataItem> {
-        Arc::new(DataItem::new_local(
+    fn item(key: u32) -> DataItem {
+        DataItem::new_local(
             format!("item-{key}"),
             key,
-            test_context(),
-            Position { offset: 0, size: 0 },
-        ))
+            LocalData {
+                ctx: test_context(),
+                pos: Position { offset: 0, size: 0 },
+            },
+        )
     }
 
     /// Builds a `DataSet` with one item per given key, sorted ascending (as

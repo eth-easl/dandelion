@@ -1,4 +1,5 @@
 use super::{check_matrix, setup_dispatcher, zero_id};
+use composition::Composition;
 use dandelion_commons::records::Recorder;
 use machine_interface::{
     composition::{
@@ -6,9 +7,9 @@ use machine_interface::{
     },
     function_driver::{functions::SystemFunction, ComputeResource},
     machine_config::{DomainType, EngineType},
-    context::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
+use memory::context::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource};
 use std::sync::Arc;
 use std::{collections::BTreeMap, time::Instant};
 

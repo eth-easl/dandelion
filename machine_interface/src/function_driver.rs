@@ -24,13 +24,13 @@ pub enum WorkToDo {
     FunctionArguments {
         function_id: Arc<String>,
         function_alternatives: Vec<Arc<functions::FunctionAlternative>>,
-        input_sets: Vec<Option<DataSet>>,
+        input_sets: Vec<DataSet>,
         metadata: Arc<Metadata>,
         caching: bool,
         recorder: Recorder,
     },
     SetsToResolve {
-        input_sets: Vec<Option<DataSet>>,
+        input_sets: Vec<DataSet>,
     },
     RemoteToDelete {
         remote_data: RemoteData,
@@ -39,13 +39,13 @@ pub enum WorkToDo {
 }
 
 pub enum WorkDone {
-    DataItems(Vec<Vec<DataItem>>),
+    DataItems(Vec<Arc<Vec<DataItem>>>),
     Resources(Vec<ComputeResource>),
     RemoteDeleted,
 }
 
 impl WorkDone {
-    pub fn get_data_items(self) -> Vec<Vec<DataItem>> {
+    pub fn get_data_items(self) -> Vec<Arc<Vec<DataItem>>> {
         return match self {
             WorkDone::DataItems(sets) => sets,
             _ => panic!("WorkDone is not context when context was expected"),

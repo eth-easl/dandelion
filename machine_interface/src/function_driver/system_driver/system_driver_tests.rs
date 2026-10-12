@@ -8,7 +8,10 @@ use crate::{
     DataSet, Position,
 };
 use memory::context::{read_only::ReadOnlyContext, ContextDataItem, ContextDataSet, ContextTrait};
-use std::process::{Child, Command};
+use std::{
+    process::{Child, Command},
+    sync::Arc,
+};
 
 struct HttpServer {
     proc_child: Child,
@@ -80,7 +83,11 @@ fn get_http(
     }));
 
     let input_sets =
-        convert_to_references(SystemFunction::HTTP, DataSet::from_context(input_context)).unwrap();
+        convert_to_references(SystemFunction::HTTP, DataSet::from_context(input_context))
+            .unwrap()
+            .into_iter()
+            .map(|items| DataSet::from_items(Arc::new(items)))
+            .collect();
 
     // let recorder = Recorder::new(zero_id(), Instant::now());
 
@@ -150,7 +157,11 @@ dolore magna aliquyam erat, sed diam voluptua."#,
     }));
 
     let input_sets =
-        convert_to_references(SystemFunction::HTTP, DataSet::from_context(input_context)).unwrap();
+        convert_to_references(SystemFunction::HTTP, DataSet::from_context(input_context))
+            .unwrap()
+            .into_iter()
+            .map(|items| DataSet::from_items(Arc::new(items)))
+            .collect();
 
     // let recorder = Recorder::new(zero_id(), Instant::now());
 

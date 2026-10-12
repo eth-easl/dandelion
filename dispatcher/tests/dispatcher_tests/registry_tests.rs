@@ -1,11 +1,10 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
 use dandelion_commons::records::Recorder;
 use machine_interface::{
-    composition::CompositionSet,
+    context::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
     function_driver::{ComputeResource, Metadata},
     machine_config::{DomainType, EngineType},
-    context::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
-    DataItem, DataSet, Position,
+    ContextDataItem, ContextDataSet, DataItem, DataSet, Position,
 };
 use std::{sync::Arc, time::Instant, vec};
 
@@ -15,16 +14,17 @@ fn create_context(matrix: Box<[u64]>) -> Context {
     let mat_len = matrix.len();
     let mut fixed =
         ReadOnlyContext::new(matrix).expect("Should be able to make context from boxed array");
-    fixed.content.push(Some(DataSet {
-        ident: String::from(""),
-        buffers: vec![DataItem {
+    let data_size = mat_len * core::mem::size_of::<u64>();
+    fixed.content.push(Some(ContextDataSet {
+        items: vec![ContextDataItem {
             ident: String::from(""),
             data: Position {
                 offset: 0,
-                size: mat_len * core::mem::size_of::<u64>(),
+                size: data_size,
             },
             key: 0,
         }],
+        total_size: data_size,
     }));
     return fixed;
 }
