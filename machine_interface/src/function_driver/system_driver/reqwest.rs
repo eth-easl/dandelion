@@ -650,12 +650,12 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                 )
                 .await;
             }
-            WorkToDo::RemoteToDelete { remote_data } => {
+            WorkToDo::RemoteToDelete { node_id, data_id } => {
                 tokio::spawn(async move {
                     match crate::function_driver::system_driver::get_remote_data_client() {
                         Ok(client) => {
                             let result = client
-                                .delete_remote_data(remote_data)
+                                .delete_remote_data(node_id, data_id)
                                 .await
                                 .map(|_| WorkDone::RemoteDeleted);
                             debt.fulfill(result);

@@ -22,10 +22,10 @@ use futures::{
     FutureExt,
 };
 use machine_interface::{
-    function_driver::{functions::FunctionAlternative, Metadata},
+    function_driver::functions::FunctionAlternative,
     machine_config::{self, IntoEnumIterator},
-    context::malloc::MallocMemoryDomain,
 };
+use memory::{context::malloc::MallocMemoryDomain, data::Metadata};
 use tokio::sync::mpsc;
 
 const EXPECTED_ERROR: DandelionError = DandelionError::NotImplemented;
@@ -72,7 +72,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
 fn test_remote_queue_server() {
     let work_queue = WorkQueue::init();
     // add an initial amount of remote cores, since that message is processed before the main state machine starts
-    work_queue.add_remote_cores(2);
+    work_queue.system_info.add_remote_cores(2);
     let engine_type = machine_config::EngineType::iter().next().unwrap();
     let (remote_data_deletion_sender, _remote_data_deletion_receiver) = mpsc::unbounded_channel();
 

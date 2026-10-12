@@ -14,7 +14,7 @@ use crate::{
 };
 pub use crate::{
     function::Invocation,
-    sharding::{AnyShardingMode, AnyShardingParams, SystemInfo},
+    sharding::{AnyShardingMode, AnyShardingParams, DEFAULT_AUTOSHARDING_OFFLOAD_CONST},
 };
 use dandelion_commons::{dandelion_err, DandelionError, DandelionResult, FunctionId};
 use log::warn;

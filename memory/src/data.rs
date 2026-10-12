@@ -14,11 +14,11 @@ pub enum ItemData {
 
 impl ItemData {
     fn size(&self) -> usize {
-        if let ItemData::Local(LocalData { pos, .. }) = self {
-            pos.size
-        } else {
-            // TODO for remote items this could be known, add this information
-            0
+        match self {
+            ItemData::Local(LocalData { pos, .. }) => pos.size,
+            ItemData::Remote(remote_data) => remote_data.size,
+            // NOTE: The size of IO data is only known once it is resolved.
+            ItemData::Io(_) => 0,
         }
     }
     fn is_local(&self) -> bool {
@@ -47,20 +47,21 @@ pub struct RemoteData {
 
 /// TODO: for the ones we create locally we are going through the sender too,
 /// think if it would be easier to have an enum in the delete sender to perform local drop directly.
-/// TODO: should have the size, this is known and should be recorded here
 #[derive(Debug)]
 pub struct RemoteDataInner {
     pub node_id: u64,
     pub data_id: u64,
+    pub size: usize,
     delete_sender: Option<mpsc::UnboundedSender<(u64, u64)>>,
 }
 
 impl RemoteData {
-    pub fn new(node_id: u64, data_id: u64) -> Self {
+    pub fn new(node_id: u64, data_id: u64, size: usize) -> Self {
         Self {
             inner: Arc::new(RemoteDataInner {
                 node_id,
                 data_id,
+                size,
                 delete_sender: None,
             }),
         }
@@ -69,12 +70,14 @@ impl RemoteData {
     pub fn delete_on_drop(
         node_id: u64,
         data_id: u64,
+        size: usize,
         delete_sender: mpsc::UnboundedSender<(u64, u64)>,
     ) -> Self {
         Self {
             inner: Arc::new(RemoteDataInner {
                 node_id,
                 data_id,
+                size,
                 delete_sender: Some(delete_sender),
             }),
         }
@@ -134,6 +137,12 @@ pub struct DataItemInner {
 }
 
 impl DataItem {
+    pub fn new(ident: String, key: u32, data: ItemData) -> Self {
+        DataItem {
+            inner: Arc::new(DataItemInner { ident, key, data }),
+        }
+    }
+
     pub fn new_local(ident: String, key: u32, local: LocalData) -> Self {
         DataItem {
             inner: Arc::new(DataItemInner {

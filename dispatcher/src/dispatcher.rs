@@ -125,7 +125,7 @@ impl Dispatcher {
                 if engine_type == EngineType::System {
                     continue;
                 }
-                work_queue.add_local_cores(1);
+                work_queue.system_info.add_local_cores(1);
             }
         }
 
@@ -227,7 +227,7 @@ impl Dispatcher {
         recorder.record(RecordPoint::EnterDispatcher);
 
         let mut templates = CompositionTemplate::parse(&composition_desc, &self.function_registry)?;
-        let (composition_name, template, metadata) = match templates.pop() {
+        let (composition_name, template, _metadata) = match templates.pop() {
             Some(parsed) if templates.is_empty() => parsed,
             _ => {
                 debug!(

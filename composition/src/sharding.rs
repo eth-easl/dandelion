@@ -1,11 +1,8 @@
-use std::{
-    cmp,
-    sync::{atomic::AtomicUsize, Arc},
-};
+use std::{cmp, sync::Arc};
 
+use dandelion_commons::SystemInfo;
 use log::{debug, trace};
 use memory::data::DataSet;
-use tokio::sync::watch;
 
 use crate::join_iterator::{
     AnyIterator, JoinIterator, SetAllIterator, SetEachIterator, SetKeyIterator,
@@ -45,25 +42,8 @@ impl Sharding {
     }
 }
 
-// TODO: figure out where to put this
-/// Contains system information used by the sharding policy.
-pub struct SystemInfo {
-    /// The number of local compute cores in the system (as a watcher so we can update remote nodes
-    /// if the local core count changes).
-    pub num_local_cores_watcher: watch::Receiver<usize>,
-    pub num_local_cores_sender: watch::Sender<usize>,
-    /// The number of remote compute cores in the system.
-    pub num_remote_cores: AtomicUsize,
-}
-
-impl SystemInfo {
-    pub(crate) fn local_cores(&self) -> usize {
-        todo!("implement")
-    }
-    pub(crate) fn remote_cores(&self) -> usize {
-        todo!("implement")
-    }
-}
+/// Default offload constant used for `AnyShardingMode::AutoSharding`.
+pub const DEFAULT_AUTOSHARDING_OFFLOAD_CONST: usize = 2;
 
 #[derive(Clone)]
 pub struct AnyShardingParams {

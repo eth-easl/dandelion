@@ -7,10 +7,10 @@ use crate::{
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
-        composition_sets_to_proto, composition_sets_to_proto_and_refs, engine_type_dtop,
-        engine_type_ptod, pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
+        composition_sets_to_proto, composition_sets_to_proto_and_refs, engine_type_from_proto,
+        engine_type_to_proto, pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
         proto_data_sets_to_composition_sets_with_delete_on_drop, recorder_add_timestamps,
-        recorder_dtop, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
+        recorder_to_proto, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
 };
 use dandelion_commons::{
@@ -22,11 +22,11 @@ use dispatcher::{
 };
 use log::{debug, error, info, trace, warn};
 use machine_interface::{
-    composition::{CompositionSet, RemoteData},
     function_driver::{WorkDone, WorkToDo},
     machine_config::{EngineType, IntoEnumIterator},
     promise::Debt,
 };
+use memory::DataSet;
 use prost::bytes::{Bytes, BytesMut};
 use std::{
     collections::{BTreeMap, BTreeSet, BinaryHeap},
@@ -61,7 +61,7 @@ const _: () = assert!(size_of::<u64>() == size_of::<usize>());
 async fn send_message(
     metadata_buffer: &Bytes,
     mut sender: impl AsyncWriteExt + Unpin,
-    data_buffer: Option<(Vec<Option<CompositionSet>>, u64)>,
+    data_buffer: Option<(Vec<DataSet>, u64)>,
 ) -> std::io::Result<()> {
     let metadata_size: u32 = metadata_buffer.len().try_into().unwrap();
     let flags = match data_buffer {
@@ -249,7 +249,7 @@ async fn remote_queue_server_logic(
     message_sender: mpsc::Sender<queue_message::QueueMessage>,
     queue: WorkQueue,
     export_registry: ExportRegistry,
-    remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
+    remote_data_deletion_sender: mpsc::UnboundedSender<(u64, u64)>,
     node_id: u64,
     mut remote_num_cores: u64,
 ) {
@@ -295,8 +295,9 @@ async fn remote_queue_server_logic(
 
                         let mut invocations = Vec::new();
                         for engine in work_request.engines {
-                            let engine_flags =
-                                get_engine_flag(engine_type_ptod(engine.engine_type).unwrap());
+                            let engine_flags = get_engine_flag(
+                                engine_type_from_proto(engine.engine_type).unwrap(),
+                            );
                             let work_found = queue.try_get_work_for_remote(
                                 engine_flags,
                                 node_id,
@@ -321,7 +322,7 @@ async fn remote_queue_server_logic(
                                     promise_id
                                 };
                                 let (function_id, data_sets, recorder, &caching) = match &work {
-                                    // Todo send along relevant information, like caching bool and recorder start time
+                                    // TODO: send along relevant information, like caching bool and recorder start time
                                     WorkToDo::FunctionArguments {
                                         function_id,
                                         function_alternatives: _,
@@ -330,8 +331,8 @@ async fn remote_queue_server_logic(
                                         caching,
                                         recorder,
                                     } => (function_id, input_sets, recorder, caching),
-                                    WorkToDo::SetsToResolve { input_sets: _ }
-                                    | WorkToDo::RemoteToDelete { remote_data: _ }
+                                    WorkToDo::SetsToResolve { .. }
+                                    | WorkToDo::RemoteToDelete { .. }
                                     | WorkToDo::Shutdown(_) => {
                                         panic!("Should only get function arguments when polling for remote queue")
                                     }
@@ -345,10 +346,9 @@ async fn remote_queue_server_logic(
                                 let (metadata_sets, remote_data_references) =
                                     composition_sets_to_proto_and_refs(
                                         data_sets,
-                                        |item, context| {
+                                        |local_data| {
                                             export_registry.insert_function(
-                                                item,
-                                                context,
+                                                local_data,
                                                 Some(remote_data_deletion_sender.clone()),
                                             )
                                         },
@@ -505,12 +505,13 @@ async fn remote_queue_server_logic(
                         let mut success = true;
                         if node_update.num_local_cores < remote_num_cores {
                             success = queue
+                                .system_info
                                 .remove_remote_cores(
                                     (remote_num_cores - node_update.num_local_cores) as usize,
                                 )
                                 .is_ok();
                         } else {
-                            queue.add_remote_cores(
+                            queue.system_info.add_remote_cores(
                                 (node_update.num_local_cores - remote_num_cores) as usize,
                             );
                         }
@@ -540,7 +541,7 @@ async fn remote_queue_server_logic(
                     promise_id
                 };
                 let (function_id, data_sets, recorder, &caching) = match &work {
-                    // Todo send along relevant information, like caching bool and recorder start time
+                    // TODO: send along relevant information, like caching bool and recorder start time
                     WorkToDo::FunctionArguments {
                         function_id,
                         function_alternatives: _,
@@ -549,8 +550,8 @@ async fn remote_queue_server_logic(
                         caching,
                         recorder,
                     } => (function_id, input_sets, recorder, caching),
-                    WorkToDo::SetsToResolve { input_sets: _ }
-                    | WorkToDo::RemoteToDelete { remote_data: _ }
+                    WorkToDo::SetsToResolve { .. }
+                    | WorkToDo::RemoteToDelete { .. }
                     | WorkToDo::Shutdown(_) => {
                         panic!("Should only get function arguments when polling for remote queue")
                     }
@@ -561,12 +562,9 @@ async fn remote_queue_server_logic(
                     .unwrap()
                     .as_micros();
                 let (metadata_sets, remote_data_references) =
-                    composition_sets_to_proto_and_refs(data_sets, |item, context| {
-                        export_registry.insert_function(
-                            item,
-                            context,
-                            Some(remote_data_deletion_sender.clone()),
-                        )
+                    composition_sets_to_proto_and_refs(data_sets, |local_data| {
+                        export_registry
+                            .insert_function(local_data, Some(remote_data_deletion_sender.clone()))
                     });
                 let caching = caching;
                 let function_id = function_id.to_string();
@@ -645,7 +643,9 @@ async fn remote_queue_server_logic(
     message_receiver.close();
 
     // Undo the bookkeeping for this node
-    let _ = queue.remove_remote_cores(remote_num_cores as usize);
+    let _ = queue
+        .system_info
+        .remove_remote_cores(remote_num_cores as usize);
 
     // already removed if it was graceful shutdown
     if !remote_graceful_shutdown {
@@ -689,7 +689,7 @@ pub async fn remote_queue_server(
     socket: TcpStream,
     queue: WorkQueue,
     export_registry: ExportRegistry,
-    remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
+    remote_data_deletion_sender: mpsc::UnboundedSender<(u64, u64)>,
 ) {
     let (mut read_socket, write_socket) = socket.into_split();
 
@@ -722,7 +722,7 @@ pub async fn remote_queue_server(
     );
 
     // tell the queue about the remote cores
-    queue.add_remote_cores(num_local_cores as usize);
+    queue.system_info.add_remote_cores(num_local_cores as usize);
 
     // start sender loop
     let (queue_message_sender, queue_message_reciever) = mpsc::channel(64);
@@ -883,7 +883,7 @@ async fn dispatcher_call(
     start_time: Duration,
     invocation_id: u32,
     function_id: Arc<String>,
-    input_sets: Vec<Option<CompositionSet>>,
+    input_sets: Vec<DataSet>,
     caching: bool,
     recorder: Recorder,
 ) {
@@ -900,15 +900,15 @@ async fn dispatcher_call(
     let (response_message, exported_data_ids) = match function_result {
         Ok(sets) => {
             let mut exported_data_ids = Vec::new();
-            let metadata_sets = composition_sets_to_proto(sets, |item, context| {
-                let remote_data = export_registry.insert_function(item, context, None);
+            let metadata_sets = composition_sets_to_proto(sets, |local_data| {
+                let remote_data = export_registry.insert_function(local_data, None);
                 exported_data_ids.push(remote_data.data_id);
                 remote_data
             });
             (
                 proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
                     metadata_sets,
-                    timestamps: recorder_dtop(recorder, start_time),
+                    timestamps: recorder_to_proto(recorder, start_time),
                 }),
                 exported_data_ids,
             )
@@ -963,15 +963,7 @@ async fn send_cancel_acknowledgement(
 async fn remote_queue_client_logic(
     mut receiver: mpsc::Receiver<PollingOption>,
     message_sender: mpsc::Sender<remote_message::RemoteMessage>,
-    dispatcher_sender: impl Fn(
-        ExportRegistry,
-        Duration,
-        u32,
-        Arc<String>,
-        Vec<Option<CompositionSet>>,
-        bool,
-        Recorder,
-    ),
+    dispatcher_sender: impl Fn(ExportRegistry, Duration, u32, Arc<String>, Vec<DataSet>, bool, Recorder),
     idle_cores: impl Fn() -> usize,
     prefetch_multiplier: usize,
     export_registry: ExportRegistry,
@@ -1261,7 +1253,7 @@ async fn remote_queue_client_logic(
             };
             let engines = EngineType::iter()
                 .map(|engine_type| proto::Engine {
-                    engine_type: engine_type_dtop(engine_type) as i32,
+                    engine_type: engine_type_to_proto(engine_type) as i32,
                     engine_capacity: engine_number as u32,
                 })
                 .collect();
@@ -1303,7 +1295,7 @@ pub async fn remote_queue_client(
     shutdown_receiver: watch::Receiver<bool>,
 ) -> bool {
     // set up the connection by sending a single node info
-    let mut local_core_watcher = queue.system_info.num_local_cores_watcher.clone();
+    let mut local_core_watcher = queue.system_info.local_cores_watcher();
     let local_core_count = *local_core_watcher.borrow_and_update();
     let node_info_buffer = serialize_node_info(NodeInfo {
         version: 1,

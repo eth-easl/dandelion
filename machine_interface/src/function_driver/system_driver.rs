@@ -125,7 +125,8 @@ pub trait RemoteDataClient: Send + Sync {
 
     fn delete_remote_data(
         &self,
-        data: RemoteData,
+        node_id: u64,
+        data_id: u64,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
 }
 

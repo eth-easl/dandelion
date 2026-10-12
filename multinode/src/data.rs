@@ -7,12 +7,10 @@ use hyper::{
     Method, Request, Response, StatusCode,
 };
 use log::{debug, error, trace, warn};
-use machine_interface::{
-    composition::{RemoteData, RemoteDataClient},
-    context::{
-        bytes::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
-    },
-    DataItem, Position,
+use machine_interface::function_driver::system_driver::RemoteDataClient;
+use memory::{
+    context::{bytes::BytesContext, read_only::ReadOnlyContext, ContextTrait, ContextType},
+    Context, DataItem, ItemData, LocalData, Position, RemoteData,
 };
 use prost::bytes;
 use std::{
@@ -146,24 +144,24 @@ impl ExportRegistry {
 
     pub fn insert_function(
         &self,
-        item: &DataItem,
-        context: Arc<Context>,
-        delete_sender: Option<tokio::sync::mpsc::UnboundedSender<RemoteData>>,
+        local_data: LocalData,
+        delete_sender: Option<tokio::sync::mpsc::UnboundedSender<(u64, u64)>>,
     ) -> RemoteData {
+        let LocalData { ctx, pos } = local_data;
         let mut inner = self.inner.lock().unwrap();
         let data_id = inner.next_data_id;
         inner.next_data_id += 1;
         inner.data.insert(
             data_id,
             ExportedData {
-                context,
-                position: item.data,
+                context: ctx,
+                position: pos,
             },
         );
         if let Some(delete_sender) = delete_sender {
-            RemoteData::delete_on_drop(self.node_id, data_id, delete_sender)
+            RemoteData::delete_on_drop(self.node_id, data_id, pos.size, delete_sender)
         } else {
-            RemoteData::new(self.node_id, data_id)
+            RemoteData::new(self.node_id, data_id, pos.size)
         }
     }
 
@@ -356,12 +354,21 @@ impl RemoteDataClient for HttpRemoteDataClient {
 
     fn resolve_multiple_data<'meta>(
         &'meta self,
-        metadata: &'meta mut Vec<(usize, DataItem)>,
-        remote_items: Vec<RemoteData>,
-    ) -> Pin<Box<dyn Future<Output = DandelionResult<Arc<Context>>> + Send + 'meta>> {
+        metadata: &'meta Vec<(usize, DataItem)>,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<Vec<(usize, DataItem)>>> + Send + 'meta>> {
         Box::pin(async move {
-            // collect all ids
+            // collect all remote references, all of them are expected to be on the same node
+            let remote_items: Vec<&RemoteData> = metadata
+                .iter()
+                .map(|(_, item)| match &item.data {
+                    ItemData::Remote(remote_data) => remote_data,
+                    _ => panic!("Can only resolve remote data items"),
+                })
+                .collect();
             let node_id = remote_items[0].node_id;
+            debug_assert!(remote_items
+                .iter()
+                .all(|remote_data| remote_data.node_id == node_id));
             let mut body_data = Vec::with_capacity(remote_items.len() * size_of::<u64>());
             for remote_item in remote_items.iter() {
                 body_data.extend(remote_item.data_id.to_le_bytes());
@@ -399,42 +406,61 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 }
             }
             trace!("Finished resolving remote data");
-            // make sure data is only dropped once we have resolved it
+            // the remote items are borrowed from the caller, which drops them only after the
+            // data has been resolved
             drop(remote_items);
 
-            // assumes the local items sizes are correct
-            // also assumes that returned items have the same ordering as they were requested in
-            let mut offset = 0;
-            for (_, item) in metadata {
-                item.data.offset = offset;
-                offset += item.data.size;
-            }
-            // after updating all items, the total offset should be equal to the total amount of data that was received
-            assert_eq!(size, offset);
-
-            Ok(Arc::new(Context::new(
+            let context = Arc::new(Context::new(
                 ContextType::Bytes(Box::new(BytesContext::new(body))),
                 size,
-            )))
+            ));
+
+            // assumes the remote items sizes are correct
+            // also assumes that returned items have the same ordering as they were requested in
+            let mut offset = 0;
+            let mut resolved_items = Vec::with_capacity(metadata.len());
+            for (set_index, item) in metadata {
+                let item_size = item.size();
+                resolved_items.push((
+                    *set_index,
+                    DataItem::new_local(
+                        item.ident.clone(),
+                        item.key,
+                        LocalData {
+                            ctx: context.clone(),
+                            pos: Position {
+                                offset,
+                                size: item_size,
+                            },
+                        },
+                    ),
+                ));
+                offset += item_size;
+            }
+            // after creating all items, the total offset should be equal to the total amount of data that was received
+            assert_eq!(size, offset);
+
+            Ok(resolved_items)
         })
     }
 
     fn delete_remote_data(
         &self,
-        data: RemoteData,
+        node_id: u64,
+        data_id: u64,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>> {
         trace!(
             "Deleting remote data: node_id={}, data_id={}",
-            data.node_id,
-            data.data_id
+            node_id,
+            data_id
         );
         Box::pin(async move {
-            if data.node_id == self.local_registry.node_id {
-                return self.local_registry.delete_exported_data(data.data_id);
+            if node_id == self.local_registry.node_id {
+                return self.local_registry.delete_exported_data(data_id);
             }
 
-            let mut url = self.remote_data_url(data.node_id)?;
-            url.push_str(&format!("{}", data.data_id));
+            let mut url = self.remote_data_url(node_id)?;
+            url.push_str(&format!("{}", data_id));
 
             let response = self.client.delete(url).send().await.map_err(|err| {
                 dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(

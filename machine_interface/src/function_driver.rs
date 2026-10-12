@@ -1,5 +1,5 @@
 use crate::machine_config::EngineType;
-use memory::{context::MemoryDomain, DataItem, RemoteData};
+use memory::{context::MemoryDomain, DataItem};
 extern crate alloc;
 use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionResult};
@@ -33,7 +33,8 @@ pub enum WorkToDo {
         input_sets: Vec<DataSet>,
     },
     RemoteToDelete {
-        remote_data: RemoteData,
+        node_id: u64,
+        data_id: u64,
     },
     Shutdown(EngineType),
 }

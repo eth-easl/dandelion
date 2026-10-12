@@ -1,15 +1,15 @@
+use composition::{AnyShardingMode, AnyShardingParams};
 use dandelion_server::config::{self, FuncMetadata, PreloadFunc};
 use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
 use log::{debug, error, info, warn};
 use machine_interface::{
-    composition::{
-        get_remote_data_client, set_remote_data_client, AnyShardingMode, AnyShardingParams,
-        LocalCompositionSet, RemoteData,
+    function_driver::{
+        system_driver::{get_remote_data_client, set_remote_data_client},
+        ComputeResource,
     },
-    function_driver::{ComputeResource, Metadata},
     machine_config::{create_engine_resource_map, DomainType, EngineType},
-    context::MemoryResource,
 };
+use memory::{context::MemoryResource, data::Metadata, DataSet};
 use multinode::data::ExportRegistry;
 use nix::sched::CpuSet;
 use std::{collections::BTreeMap, fs::read_to_string, sync::Arc};
@@ -22,14 +22,14 @@ use tokio::{
 mod frontend;
 
 async fn delete_service_loop(
-    mut remote_data_deletion_receiver: mpsc::UnboundedReceiver<RemoteData>,
+    mut remote_data_deletion_receiver: mpsc::UnboundedReceiver<(u64, u64)>,
 ) {
     loop {
-        if let Some(remote_data) = remote_data_deletion_receiver.recv().await {
+        if let Some((node_id, data_id)) = remote_data_deletion_receiver.recv().await {
             spawn(async move {
                 match get_remote_data_client() {
                     Ok(client) => {
-                        if let Err(err) = client.delete_remote_data(remote_data).await {
+                        if let Err(err) = client.delete_remote_data(node_id, data_id).await {
                             warn!("Failed to delete remote data: {}", err);
                         }
                     }
@@ -47,7 +47,7 @@ async fn remote_queue_server(
     queue_port: u16,
     queue: WorkQueue,
     export_registry: ExportRegistry,
-    remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
+    remote_data_deletion_sender: mpsc::UnboundedSender<(u64, u64)>,
 ) {
     // socket to listen to
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], queue_port));
@@ -319,7 +319,7 @@ fn main() -> () {
                         }
                     };
 
-                    let input_sets: Vec<(String, Option<LocalCompositionSet>)> =
+                    let input_sets: Vec<(String, Option<DataSet>)> =
                         input_sets.into_iter().map(|s| (s, None)).collect();
                     let metadata = Metadata {
                         input_sets,

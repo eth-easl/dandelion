@@ -1,12 +1,8 @@
 pub mod config;
 
-use dandelion_commons::{records::Recorder, DandelionError};
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 use hyper::body::Frame;
-use machine_interface::{
-    composition::LocalCompositionSet,
-    context::{Context, ContextTrait},
-    DataItem,
-};
+use memory::{context::ContextTrait, DataItem, LocalData};
 use serde::{Deserialize, Serialize};
 use std::{io::IoSlice, sync::Arc};
 
@@ -44,17 +40,18 @@ pub struct InputItem<'data> {
 struct ItemData {
     response_offset: usize,
     reponse_size: usize,
-    data_item: DataItem,
-    context: Arc<Context>,
+    local_data: LocalData,
 }
 
 fn encode_item(
-    data_item: DataItem,
-    context: Arc<Context>,
+    data_item: &DataItem,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
     array_index: usize,
-) -> usize {
+) -> DandelionResult<usize> {
+    // response items need to be local to be sent
+    let local_data = data_item.local_ref()?.clone();
+
     // add item to array with doc type and index into array as name
     response.push(3);
     response.extend_from_slice(format!("{}", array_index).as_bytes());
@@ -81,16 +78,14 @@ fn encode_item(
     response.push(5);
     response.extend_from_slice("data\0".as_bytes());
     // binary lenth, generic subtype subtype and then all data
-    let data_size = data_item.data.size as i32;
-    response.extend_from_slice(&data_size.to_le_bytes());
+    let item_size = local_data.pos.size;
+    response.extend_from_slice(&(item_size as i32).to_le_bytes());
     response.push(0);
 
-    let item_size = data_item.data.size;
     data_items.push(ItemData {
         response_offset: response.len(),
         reponse_size: item_size,
-        data_item,
-        context,
+        local_data,
     });
 
     // end doc and set length
@@ -98,19 +93,16 @@ fn encode_item(
     let doc_size = (response.len() - doc_start + item_size) as i32;
     response[doc_start..doc_start + 4].copy_from_slice(&doc_size.to_le_bytes());
 
-    return item_size;
+    return Ok(item_size);
 }
 
 fn encode_sets(
-    sets: Vec<Option<LocalCompositionSet>>,
+    sets: Vec<Arc<Vec<DataItem>>>,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
-) -> usize {
+) -> DandelionResult<usize> {
     let mut all_items = 0;
-    // filter out empty sets
-    let non_empty_set = sets.into_iter().filter_map(|set| set);
-    // if list is empty need to push empty string
-    for (index, set) in non_empty_set.enumerate() {
+    for (index, set) in sets.into_iter().enumerate() {
         // add item to array with doc type and name equal to index into the array
         response.push(3);
         response.extend_from_slice(format!("{}", index).as_bytes());
@@ -122,7 +114,8 @@ fn encode_sets(
         // set identifier: string type, identifier e_name and actual set name as length, string, null byte
         response.push(2);
         response.extend_from_slice("identifier\0".as_bytes());
-        let set_name = set.get_name();
+        // TODO: sets no longer carry names, send them once we have them again
+        let set_name = "";
         response.extend_from_slice(&((set_name.len() + 1) as i32).to_le_bytes());
         response.extend_from_slice(set_name.as_bytes());
         response.push(0);
@@ -134,8 +127,8 @@ fn encode_sets(
         response.extend_from_slice(&0i32.to_le_bytes());
 
         let mut set_items_length = 0;
-        for (array_index, (data_item, context)) in set.into_iter().enumerate() {
-            set_items_length += encode_item(data_item, context, response, data_items, array_index);
+        for (array_index, data_item) in set.iter().enumerate() {
+            set_items_length += encode_item(data_item, response, data_items, array_index)?;
         }
         all_items += set_items_length;
 
@@ -149,13 +142,13 @@ fn encode_sets(
         let doc_size = (response.len() - doc_start + set_items_length) as i32;
         response[doc_start..doc_start + 4].copy_from_slice(&doc_size.to_le_bytes());
     }
-    return all_items;
+    return Ok(all_items);
 }
 
 fn encode_response(
-    sets: Vec<Option<LocalCompositionSet>>,
+    sets: Vec<Arc<Vec<DataItem>>>,
     _timings: &Recorder,
-) -> (usize, Vec<u8>, Vec<ItemData>) {
+) -> DandelionResult<(usize, Vec<u8>, Vec<ItemData>)> {
     // lenght of dict, list of items closing 0 byte
     let mut response = Vec::<u8>::new();
     let mut data_items = Vec::new();
@@ -169,7 +162,7 @@ fn encode_response(
     response.extend_from_slice(&0i32.to_le_bytes());
 
     // encode sets
-    let all_items = encode_sets(sets, &mut response, &mut data_items);
+    let all_items = encode_sets(sets, &mut response, &mut data_items)?;
     log::trace!("Response contains items with total size of {}", all_items);
     // end array and set length
     response.push(0);
@@ -199,7 +192,7 @@ fn encode_response(
     let doc_length = (response.len() + all_items) as i32;
     response[0..4].copy_from_slice(&doc_length.to_le_bytes());
 
-    return (all_items, response, data_items);
+    Ok((all_items, response, data_items))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -242,15 +235,9 @@ impl DandelionBuf {
                 &self.serial[item_offset - to_item..item_offset]
             }
             ReadMode::ToItemEnd(buf_item_index, to_end) => {
-                let ItemData {
-                    context,
-                    response_offset: _,
-                    reponse_size: _,
-                    data_item,
-                } = &self.items[buf_item_index];
-                let position = data_item.data;
-                let start = position.offset + (position.size - to_end);
-                context.get_chunk_ref(start, to_end).unwrap()
+                let LocalData { ctx, pos } = &self.items[buf_item_index].local_data;
+                let start = pos.offset + (pos.size - to_end);
+                ctx.get_chunk_ref(start, to_end).unwrap()
             }
         };
     }
@@ -360,8 +347,8 @@ pub struct DandelionBody {
 }
 
 impl DandelionBody {
-    pub fn new(sets: Vec<Option<LocalCompositionSet>>, timing: &Recorder) -> Self {
-        let (total_item_size, serial, items) = encode_response(sets, timing);
+    pub fn new(sets: Vec<Arc<Vec<DataItem>>>, timing: &Recorder) -> DandelionResult<Self> {
+        let (total_item_size, serial, items) = encode_response(sets, timing)?;
         let read_offset = if items.len() > 0 {
             if items[0].response_offset > 0 {
                 ReadMode::ToItem(0, items[0].response_offset)
@@ -371,14 +358,14 @@ impl DandelionBody {
         } else {
             ReadMode::ToEnd(serial.len())
         };
-        return DandelionBody {
+        return Ok(DandelionBody {
             buffer: Some(DandelionBuf {
                 read_offset,
                 remaining: total_item_size + serial.len(),
                 serial,
                 items,
             }),
-        };
+        });
     }
     pub fn from_vec(array: Vec<u8>) -> Self {
         return DandelionBody {
@@ -437,9 +424,9 @@ async fn test_dandelion_body_serialization_async(mut body: DandelionBody, expect
 
 #[test]
 fn test_dandelion_body_serialization() {
-    use machine_interface::{
-        composition::CompositionSet, context::read_only::ReadOnlyContext, DataItem, DataSet,
-        Position,
+    use memory::{
+        context::{read_only::ReadOnlyContext, ContextDataItem, ContextDataSet},
+        DataSet, Position,
     };
 
     let pattern = [0xCu8, 0xAu8, 0xFu8, 0xEu8];
@@ -454,7 +441,8 @@ fn test_dandelion_body_serialization() {
 
     let expected_response_struct = DandelionDeserializeResponse {
         sets: vec![InputSet {
-            identifier: String::from("set_ident"),
+            // TODO: sets currently have no names, so the response always contains empty set identifiers
+            identifier: String::from(""),
             items: vec![InputItem {
                 identifier: String::from("item_ident"),
                 key: 7,
@@ -467,9 +455,8 @@ fn test_dandelion_body_serialization() {
     let expected_response = bson::to_vec(&expected_response_struct).unwrap();
 
     let mut new_context = ReadOnlyContext::new(data_box).unwrap();
-    new_context.content = vec![Some(DataSet {
-        ident: String::from("set_ident"),
-        buffers: vec![DataItem {
+    new_context.content = vec![Some(ContextDataSet {
+        items: vec![ContextDataItem {
             key: 7,
             ident: String::from("item_ident"),
             data: Position {
@@ -477,12 +464,13 @@ fn test_dandelion_body_serialization() {
                 size: repetitions * pattern.len(),
             },
         }],
+        total_size: repetitions * pattern.len(),
     })];
-    let composition_set = CompositionSet::from_context(new_context)
+    let sets = DataSet::from_context(new_context)
         .into_iter()
-        .map(|set| set.map(|set| set.into_local()))
+        .map(|set| set.items)
         .collect();
-    let context_body = DandelionBody::new(composition_set, &recorder);
+    let context_body = DandelionBody::new(sets, &recorder).unwrap();
 
     tokio::runtime::Builder::new_current_thread()
         .build()

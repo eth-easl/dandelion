@@ -66,7 +66,10 @@ fn deserialize_queue_message(buf: Bytes) -> DandelionResult<proto::QueueMessage>
 #[test]
 fn test_serialize_invocation_request() {
     use crate::proto::{item_data, queue_message, Invocation, QueueMessage};
-    use machine_interface::{composition::ItemData, context::ContextTrait};
+    use memory::{
+        context::{ContextDataItem, ContextDataSet, ContextTrait},
+        DataSet, ItemData, LocalData, Position, RemoteData,
+    };
 
     // construct invocation data
     let expected_id = String::from("TestName");
@@ -80,62 +83,63 @@ fn test_serialize_invocation_request() {
     data.extend_from_slice(&item_0_0_data.to_le_bytes());
     data.extend_from_slice(&item_1_0_data.to_le_bytes());
     data.extend_from_slice(&item_1_1_data.to_le_bytes());
-    let mut in_context =
-        memory::context::read_only::ReadOnlyContext::new(data.into_boxed_slice())
-            .expect("Should be able to create read only context");
+    let mut in_context = memory::context::read_only::ReadOnlyContext::new(data.into_boxed_slice())
+        .expect("Should be able to create read only context");
     in_context.content = vec![
-        Some(machine_interface::DataSet {
-            ident: String::from("Set 0"),
-            buffers: vec![machine_interface::DataItem {
+        Some(ContextDataSet {
+            items: vec![ContextDataItem {
                 ident: String::from(item_0_0_name),
-                data: machine_interface::Position {
+                data: Position {
                     offset: 0,
                     size: size_of::<u64>(),
                 },
                 key: 0,
             }],
+            total_size: size_of::<u64>(),
         }),
-        Some(machine_interface::DataSet {
-            ident: String::from("Set 1"),
-            buffers: vec![
-                machine_interface::DataItem {
+        Some(ContextDataSet {
+            items: vec![
+                ContextDataItem {
                     ident: String::from(item_1_0_name),
-                    data: machine_interface::Position {
+                    data: Position {
                         offset: size_of::<u64>(),
                         size: size_of::<u64>(),
                     },
                     key: 7,
                 },
-                machine_interface::DataItem {
+                ContextDataItem {
                     ident: String::from(item_1_1_name),
-                    data: machine_interface::Position {
+                    data: Position {
                         offset: 2 * size_of::<u64>(),
                         size: size_of::<u128>(),
                     },
                     key: 14,
                 },
             ],
+            total_size: size_of::<u64>() + size_of::<u128>(),
         }),
     ];
-    let inputs = machine_interface::composition::CompositionSet::from_context(in_context);
+    let inputs = DataSet::from_context(in_context)
+        .into_iter()
+        .map(|set| set.items)
+        .collect();
 
     // serialize
     let node_id = 42;
     let mut next_data_id = 0;
-    let serialized_metadata_sets = util::composition_sets_to_proto(inputs, |item, context| {
-        let data_id = next_data_id;
-        next_data_id += 1;
-        let data_slice = context
-            .get_chunk_ref(item.data.offset, item.data.size)
-            .unwrap();
-        match data_id {
-            0 => assert_eq!(&item_0_0_data.to_le_bytes(), data_slice),
-            1 => assert_eq!(&item_1_0_data.to_le_bytes(), data_slice),
-            2 => assert_eq!(&item_1_1_data.to_le_bytes(), data_slice),
-            _ => panic!("Unexpected exported data id"),
-        }
-        machine_interface::composition::RemoteData::new(node_id, data_id)
-    });
+    let serialized_metadata_sets =
+        util::composition_sets_to_proto(inputs, |LocalData { ctx, pos }| {
+            let data_id = next_data_id;
+            next_data_id += 1;
+            let data_slice = ctx.get_chunk_ref(pos.offset, pos.size).unwrap();
+            match data_id {
+                0 => assert_eq!(&item_0_0_data.to_le_bytes(), data_slice),
+                1 => assert_eq!(&item_1_0_data.to_le_bytes(), data_slice),
+                2 => assert_eq!(&item_1_1_data.to_le_bytes(), data_slice),
+                _ => panic!("Unexpected exported data id"),
+            }
+            RemoteData::new(node_id, data_id, pos.size)
+        });
     // assert!(set_option.is_none());
     assert_eq!(3, next_data_id);
     println!("serialized set: {:?}", serialized_metadata_sets);
@@ -232,46 +236,42 @@ fn test_serialize_invocation_request() {
     assert!(caching);
 
     // check the composition sets are as expected
-    let mut sets = util::proto_data_sets_to_composition_sets(deserialized_metadata_sets, None);
+    let sets = util::proto_data_sets_to_composition_sets(deserialized_metadata_sets, None);
     assert_eq!(2, sets.len());
 
-    let set_0 = sets[0].take().expect("Should have Some(_) for set 0");
+    let set_0 = &sets[0];
     assert_eq!(1, set_0.len());
-    let (item_0_0, item_0_0_item_data) = set_0.into_iter().next().unwrap();
+    let item_0_0 = &set_0.items[0];
     assert_eq!(item_0_0_name, item_0_0.ident);
     assert_eq!(0, item_0_0.key);
-    assert_eq!(0, item_0_0.data.offset);
-    assert_eq!(size_of_val(&item_0_0_data), item_0_0.data.size);
-    match item_0_0_item_data {
-        ItemData::RemoteData(remote_data) => {
+    assert_eq!(size_of_val(&item_0_0_data), item_0_0.size());
+    match &item_0_0.data {
+        ItemData::Remote(remote_data) => {
             assert_eq!(node_id, remote_data.node_id);
             assert_eq!(0, remote_data.data_id);
         }
         _ => panic!("Should have remote data"),
     };
 
-    let set_1 = sets[1].take().expect("Should have Some(_) for set 1");
+    let set_1 = &sets[1];
     assert_eq!(2, set_1.len());
-    let mut set_1_iterator = set_1.into_iter();
-    let (item_1_0, item_1_0_item_data) = set_1_iterator.next().unwrap();
+    let item_1_0 = &set_1.items[0];
     assert_eq!(item_1_0_name, item_1_0.ident);
     assert_eq!(7, item_1_0.key);
-    assert_eq!(0, item_1_0.data.offset);
-    assert_eq!(size_of_val(&item_1_0_data), item_1_0.data.size);
-    match item_1_0_item_data {
-        ItemData::RemoteData(remote_data) => {
+    assert_eq!(size_of_val(&item_1_0_data), item_1_0.size());
+    match &item_1_0.data {
+        ItemData::Remote(remote_data) => {
             assert_eq!(node_id, remote_data.node_id);
             assert_eq!(1, remote_data.data_id);
         }
         _ => panic!("Should have remote data"),
     };
-    let (item_1_1, item_1_1_item_data) = set_1_iterator.next().unwrap();
+    let item_1_1 = &set_1.items[1];
     assert_eq!(item_1_1_name, item_1_1.ident);
     assert_eq!(14, item_1_1.key);
-    assert_eq!(0, item_1_1.data.offset);
-    assert_eq!(size_of_val(&item_1_1_data), item_1_1.data.size);
-    match item_1_1_item_data {
-        ItemData::RemoteData(remote_data) => {
+    assert_eq!(size_of_val(&item_1_1_data), item_1_1.size());
+    match &item_1_1.data {
+        ItemData::Remote(remote_data) => {
             assert_eq!(node_id, remote_data.node_id);
             assert_eq!(2, remote_data.data_id);
         }
