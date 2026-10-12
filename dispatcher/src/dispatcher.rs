@@ -221,7 +221,7 @@ impl Dispatcher {
         inputs: Vec<DataSet>,
         caching: bool,
         mut recorder: Recorder,
-        // Possibly want to reintroduce a local type, for the way up, and also use it here.
+        // TODO: Possibly want to reintroduce a local type, for the way up, and also use it here.
     ) -> DandelionResult<(Vec<Arc<Vec<DataItem>>>, Recorder)> {
         debug!("Parsing single use composition");
         recorder.record(RecordPoint::EnterDispatcher);
@@ -297,7 +297,7 @@ impl Dispatcher {
         mut composition: Composition,
         inputs: Vec<DataSet>,
         caching: bool,
-        mut recorder: Recorder,
+        recorder: Recorder,
     ) -> DandelionResult<Vec<Arc<Vec<DataItem>>>> {
         // build up ready sets
         trace!("queue composition");

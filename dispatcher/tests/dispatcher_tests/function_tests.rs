@@ -1,14 +1,22 @@
-use super::{check_matrix, setup_dispatcher, zero_id};
+use super::{check_matrix, run_composition, setup_dispatcher, zero_id};
 use dandelion_commons::records::Recorder;
-use dispatcher::dispatcher::Dispatcher;
 use log::debug;
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
-    ContextDataItem, ContextDataSet, DataItem, DataSet, Position,
 };
-use memory::context::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource};
-use std::{collections::BTreeMap, iter, sync::Arc, time::Instant};
+use memory::{
+    context::{
+        read_only::ReadOnlyContext, ContextDataItem, ContextDataSet, MemoryDomain, MemoryResource,
+    },
+    DataSet, Position,
+};
+use std::{iter, time::Instant};
+
+/// Function declaration matching the single input/output test function registration.
+const DECL_1_TO_1: &str = "function test_function(A) => (Out);";
+/// Function declaration matching the three input/single output test function registration.
+const DECL_3_TO_1: &str = "function test_function(A, B, C) => (Out);";
 
 pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
@@ -69,7 +77,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         }],
     })];
 
-    let inputs = CompositionSet::from_context(in_context);
+    let inputs = DataSet::from_context(in_context);
 
     let recorder = Recorder::new(zero_id(), Instant::now());
 
@@ -82,12 +90,10 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_sets.len());
-    let out_set = out_sets[0].as_ref().expect("Should have set");
-    let mut out_set_iter = out_set.into_iter();
-    let (item, out_context) = out_set_iter.next().unwrap();
-    assert!(out_set_iter.next().is_none());
+    assert_eq!(1, out_sets[0].len());
+    let item = &out_sets[0][0];
     assert_eq!(0, item.key);
-    check_matrix(out_context, item, 2, vec![5, 11, 11, 25])
+    check_matrix(item, 2, vec![5, 11, 11, 25])
 }
 
 pub fn composition_single_matmul<Domain: MemoryDomain>(
@@ -96,10 +102,10 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
         relative_path,
-        vec![(String::from(""), None)],
-        vec![String::from("")],
+        vec![(String::from("A"), None)],
+        vec![String::from("Out")],
         engine_type,
         engine_resource,
         memory_resource,
@@ -123,58 +129,22 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
         }],
     })];
 
-    let composition = Composition {
-        dependencies: vec![FunctionDependencies {
-            function: function_id,
-            join_info: (vec![0], vec![]),
-            input_set_ids: vec![Some(InputSetDescriptor {
-                composition_id: 0,
-                sharding: ShardingMode::All,
-                optional: false,
-            })],
-            output_set_ids: vec![Some(1)],
-        }],
-        output_map: BTreeMap::from([(1, 0)]),
-    };
-    let inputs = CompositionSet::from_context(in_context);
+    let composition = format!(
+        r#"
+        {DECL_1_TO_1}
+        composition SingleMatmul(InMat) => (OutMat) {{
+            test_function(A = all InMat) => (OutMat = Out);
+        }}
+    "#
+    );
+    let inputs = DataSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
-
-    let result = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
-    let out_contexts = match result {
-        Ok(context) => context,
-        Err(err) => panic!("Failed with: {:?}", err),
-    };
-    assert_eq!(1, out_contexts.len());
-    let out_context_list = out_contexts[0].as_ref().expect("Should have set");
-
-    let mut out_context_iter = out_context_list.into_iter();
-    let (item, out_context) = out_context_iter.next().unwrap();
-    assert!(out_context_iter.next().is_none());
+    let out_sets = run_composition(&dispatcher, &composition, inputs);
+    assert_eq!(1, out_sets.len());
+    assert_eq!(1, out_sets[0].len());
+    let item = &out_sets[0][0];
     assert_eq!(0, item.key);
-    check_matrix(&out_context, item, 2, vec![5, 11, 11, 25])
-}
-
-fn composition_option_helper(
-    composition: Composition,
-    inputs: Vec<Option<CompositionSet>>,
-    dispatcher: &mut Dispatcher,
-) -> Vec<Option<CompositionSet>> {
-    let recorder = Recorder::new(zero_id(), Instant::now());
-
-    let result = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
-    let out_contexts = match result {
-        Ok(context) => context,
-        Err(err) => panic!("Failed with: {:?}", err),
-    };
-
-    return out_contexts;
+    check_matrix(item, 2, vec![5, 11, 11, 25])
 }
 
 pub fn composition_optional<Domain: MemoryDomain>(
@@ -183,108 +153,77 @@ pub fn composition_optional<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (mut dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
         relative_path,
-        vec![(String::from(""), None)],
-        vec![String::from(""), String::from("")],
+        vec![(String::from("A"), None)],
+        vec![String::from("Out1"), String::from("Out2")],
         engine_type,
         engine_resource,
         memory_resource,
     );
+    let decl = "function test_function(A) => (Out1, Out2);";
 
     debug!("Starting test for case where the set is an input set, not optional and not present");
-    let composition1 = Composition {
-        dependencies: vec![FunctionDependencies {
-            function: function_id.clone(),
-            join_info: (vec![0], vec![]),
-            input_set_ids: vec![Some(InputSetDescriptor {
-                composition_id: 0,
-                sharding: ShardingMode::All,
-                optional: false,
-            })],
-            output_set_ids: vec![Some(1)],
-        }],
-        output_map: BTreeMap::from([(1, 0)]),
-    };
-    let inputs1 = vec![None];
-    let out_contexts = composition_option_helper(composition1, inputs1, &mut dispatcher);
-    assert_eq!(1, out_contexts.len());
-    assert!(out_contexts[0].is_none());
+    let composition1 = format!(
+        r#"
+        {decl}
+        composition Optional(In) => (Res) {{
+            test_function(A = all In) => (Res = Out1);
+        }}
+    "#
+    );
+    let out_sets = run_composition(&dispatcher, &composition1, vec![DataSet::default()]);
+    assert_eq!(1, out_sets.len());
+    assert!(out_sets[0].is_empty());
 
     debug!("Starting test for case where the set is an input set, optional and not present");
-    let composition2 = Composition {
-        dependencies: vec![FunctionDependencies {
-            function: function_id.clone(),
-            join_info: (vec![0], vec![]),
-            input_set_ids: vec![Some(InputSetDescriptor {
-                composition_id: 0,
-                sharding: ShardingMode::All,
-                optional: true,
-            })],
-            output_set_ids: vec![Some(1)],
-        }],
-        output_map: BTreeMap::from([(1, 0)]),
-    };
-    let inputs2 = vec![None];
-    let out_contexts = composition_option_helper(composition2, inputs2, &mut dispatcher);
-    assert_eq!(1, out_contexts.len());
-    assert!(out_contexts[0].is_some());
+    let composition2 = format!(
+        r#"
+        {decl}
+        composition Optional(In) => (Res) {{
+            test_function(A = optional all In) => (Res = Out1);
+        }}
+    "#
+    );
+    let out_sets = run_composition(&dispatcher, &composition2, vec![DataSet::default()]);
+    assert_eq!(1, out_sets.len());
+    // TODO: the basic function produces no output, so this cannot distinguish the function running
+    // from it being skipped. Should use a function that produces output even without inputs
+    // (probably needs to be implemented first).
+    assert!(out_sets[0].is_empty());
 
     debug!(
         "Starting test for case where the set is a composition set, not optional and not present"
     );
-    let composition5 = Composition {
-        dependencies: vec![
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (vec![], vec![]),
-                input_set_ids: vec![],
-                output_set_ids: vec![None, Some(1)],
-            },
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (vec![0], vec![]),
-                input_set_ids: vec![Some(InputSetDescriptor {
-                    composition_id: 1,
-                    sharding: ShardingMode::All,
-                    optional: false,
-                })],
-                output_set_ids: vec![Some(2)],
-            },
-        ],
-        output_map: BTreeMap::from([(2, 0)]),
-    };
-    let inputs5 = vec![];
-    let out_contexts = composition_option_helper(composition5, inputs5, &mut dispatcher);
-    assert_eq!(1, out_contexts.len());
-    assert!(out_contexts[0].is_none());
+    let composition5 = format!(
+        r#"
+        {decl}
+        composition Optional() => (Res) {{
+            test_function() => (Inter = Out2);
+            test_function(A = all Inter) => (Res = Out1);
+        }}
+    "#
+    );
+    let out_sets = run_composition(&dispatcher, &composition5, vec![]);
+    assert_eq!(1, out_sets.len());
+    assert!(out_sets[0].is_empty());
 
     debug!("Starting test for case where the set is a composition set, optional and not present");
-    let composition6 = Composition {
-        dependencies: vec![
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (vec![], vec![]),
-                input_set_ids: vec![],
-                output_set_ids: vec![None, Some(1)],
-            },
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (vec![0], vec![]),
-                input_set_ids: vec![Some(InputSetDescriptor {
-                    composition_id: 1,
-                    sharding: ShardingMode::All,
-                    optional: true,
-                })],
-                output_set_ids: vec![Some(2)],
-            },
-        ],
-        output_map: BTreeMap::from([(2, 0)]),
-    };
-    let inputs6 = vec![];
-    let out_contexts = composition_option_helper(composition6, inputs6, &mut dispatcher);
-    assert_eq!(1, out_contexts.len());
-    assert!(out_contexts[0].is_some());
+    let composition6 = format!(
+        r#"
+        {decl}
+        composition Optional() => (Res) {{
+            test_function() => (Inter = Out2);
+            test_function(A = optional all Inter) => (Res = Out1);
+        }}
+    "#
+    );
+    let out_sets = run_composition(&dispatcher, &composition6, vec![]);
+    assert_eq!(1, out_sets.len());
+    // TODO: the basic function produces no output, so this cannot distinguish the function running
+    // from it being skipped. Should use a function that produces output even without inputs
+    // (probably needs to be implemented first).
+    assert!(out_sets[0].is_empty());
 }
 
 pub fn composition_parallel_matmul<Domain: MemoryDomain>(
@@ -293,10 +232,10 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
         relative_path,
-        vec![(String::from(""), None)],
-        vec![String::from("")],
+        vec![(String::from("A"), None)],
+        vec![String::from("Out")],
         engine_type,
         engine_resource,
         memory_resource,
@@ -334,39 +273,25 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
         total_size: mat_a_size + mat_b_size,
     })];
 
-    let composition = Composition {
-        dependencies: vec![FunctionDependencies {
-            function: function_id,
-            join_info: (vec![0], vec![]),
-            input_set_ids: vec![Some(InputSetDescriptor {
-                composition_id: 0,
-                sharding: ShardingMode::Each,
-                optional: false,
-            })],
-            output_set_ids: vec![Some(1)],
-        }],
-        output_map: BTreeMap::from([(1, 0)]),
-    };
-    let inputs = CompositionSet::from_context(in_context);
+    let composition = format!(
+        r#"
+        {DECL_1_TO_1}
+        composition ParallelMatmul(InMats) => (OutMats) {{
+            test_function(A = each InMats) => (OutMats = Out);
+        }}
+    "#
+    );
+    let inputs = DataSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
-
-    let result = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
-    let out_vec = match result {
-        Ok(v) => v,
-        Err(err) => panic!("Failed with: {:?}", err),
-    };
+    let out_vec = run_composition(&dispatcher, &composition, inputs);
     assert_eq!(1, out_vec.len());
-    let out_set = out_vec[0].as_ref().expect("Should have set");
+    let out_set = &out_vec[0];
 
     // check for each shard:
     assert_eq!(2, out_set.len());
-    for (item, matrix_context) in out_set.into_iter() {
+    for item in out_set.iter() {
         assert!(item.key == 1 || item.key == 0);
-        check_matrix(&matrix_context, item, 2, vec![5, 11, 11, 25]);
+        check_matrix(item, 2, vec![5, 11, 11, 25]);
     }
 }
 
@@ -376,10 +301,10 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
         relative_path,
-        vec![(String::from(""), None)],
-        vec![String::from("")],
+        vec![(String::from("A"), None)],
+        vec![String::from("Out")],
         engine_type,
         engine_resource,
         memory_resource,
@@ -403,50 +328,23 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         total_size: data_size,
     })];
 
-    let composition = Composition {
-        dependencies: vec![
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (vec![0], vec![]),
-                input_set_ids: vec![Some(InputSetDescriptor {
-                    composition_id: 0,
-                    sharding: ShardingMode::All,
-                    optional: false,
-                })],
-                output_set_ids: vec![Some(1)],
-            },
-            FunctionDependencies {
-                function: function_id,
-                join_info: (vec![0], vec![]),
-                input_set_ids: vec![Some(InputSetDescriptor {
-                    composition_id: 1,
-                    sharding: ShardingMode::All,
-                    optional: false,
-                })],
-                output_set_ids: vec![Some(2)],
-            },
-        ],
-        output_map: BTreeMap::from([(2, 0)]),
-    };
+    let composition = format!(
+        r#"
+        {DECL_1_TO_1}
+        composition ChainMatmul(InMat) => (OutMat) {{
+            test_function(A = all InMat) => (Inter = Out);
+            test_function(A = all Inter) => (OutMat = Out);
+        }}
+    "#
+    );
+    let inputs = DataSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
-
-    let inputs = CompositionSet::from_context(in_context);
-    let result = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
-    let out_contexts = match result {
-        Ok(context) => context,
-        Err(err) => panic!("Failed with: {:?}", err),
-    };
-    assert_eq!(1, out_contexts.len());
-    let out_composition_set = out_contexts[0].as_ref().expect("Should have set 0");
-    let mut out_context_iter = out_composition_set.into_iter();
-    let (item, out_context) = out_context_iter.next().unwrap();
-    assert!(out_context_iter.next().is_none());
+    let out_sets = run_composition(&dispatcher, &composition, inputs);
+    assert_eq!(1, out_sets.len());
+    assert_eq!(1, out_sets[0].len());
+    let item = &out_sets[0][0];
     assert_eq!(0, item.key);
-    check_matrix(&out_context, item, 2, vec![146, 330, 330, 746]);
+    check_matrix(item, 2, vec![146, 330, 330, 746]);
 }
 
 pub fn composition_diamond_matmac<Domain: MemoryDomain>(
@@ -455,14 +353,14 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = self::setup_dispatcher::<Domain>(
+    let (dispatcher, _) = self::setup_dispatcher::<Domain>(
         relative_path,
         vec![
-            (String::from(""), None),
-            (String::from(""), None),
-            (String::from(""), None),
+            (String::from("A"), None),
+            (String::from("B"), None),
+            (String::from("C"), None),
         ],
-        vec![String::from("")],
+        vec![String::from("Out")],
         engine_type,
         engine_resource,
         memory_resource,
@@ -519,145 +417,31 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         }),
     ];
 
-    let composition = Composition {
-        dependencies: vec![
+    let composition = format!(
+        r#"
+        {DECL_3_TO_1}
+        composition DiamondMatmac(MatA, MatB, MatBT) => (Result) {{
             // C = A*B
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (
-                    vec![0, 1, 2],
-                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
-                ),
-                input_set_ids: vec![
-                    Some(InputSetDescriptor {
-                        composition_id: 0,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                    Some(InputSetDescriptor {
-                        composition_id: 1,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                    None,
-                ],
-                output_set_ids: vec![Some(3)],
-            },
+            test_function(A = all MatA, B = all MatB) => (MatC = Out);
             // D = B^T*A
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (
-                    vec![0, 1, 2],
-                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
-                ),
-                input_set_ids: vec![
-                    Some(InputSetDescriptor {
-                        composition_id: 2,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                    Some(InputSetDescriptor {
-                        composition_id: 0,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                    None,
-                ],
-                output_set_ids: vec![Some(4)],
-            },
+            test_function(A = all MatBT, B = all MatA) => (MatD = Out);
             // E = B + C
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (
-                    vec![0, 1, 2],
-                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
-                ),
-                input_set_ids: vec![
-                    None,
-                    Some(InputSetDescriptor {
-                        composition_id: 1,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                    Some(InputSetDescriptor {
-                        composition_id: 3,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                ],
-                output_set_ids: vec![Some(5)],
-            },
+            test_function(B = all MatB, C = all MatC) => (MatE = Out);
             // G = D * C
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (
-                    vec![0, 1, 2],
-                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
-                ),
-                input_set_ids: vec![
-                    Some(InputSetDescriptor {
-                        composition_id: 4,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                    Some(InputSetDescriptor {
-                        composition_id: 3,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                    None,
-                ],
-                output_set_ids: vec![Some(6)],
-            },
+            test_function(A = all MatD, B = all MatC) => (MatG = Out);
             // Result = D*E + G
-            FunctionDependencies {
-                function: function_id.clone(),
-                join_info: (
-                    vec![0, 1, 2],
-                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
-                ),
-                input_set_ids: vec![
-                    Some(InputSetDescriptor {
-                        composition_id: 4,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                    Some(InputSetDescriptor {
-                        composition_id: 5,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                    Some(InputSetDescriptor {
-                        composition_id: 6,
-                        sharding: ShardingMode::All,
-                        optional: false,
-                    }),
-                ],
-                output_set_ids: vec![Some(7)],
-            },
-        ],
-        output_map: BTreeMap::from([(7, 0)]),
-    };
+            test_function(A = all MatD, B = all MatE, C = all MatG) => (Result = Out);
+        }}
+    "#
+    );
+    let inputs = DataSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
-
-    let inputs = CompositionSet::from_context(in_context);
-    let result = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
-    let out_contexts = match result {
-        Ok(context) => context,
-        Err(err) => panic!("Failed with: {:?}", err),
-    };
-    assert_eq!(1, out_contexts.len());
-    let out_composition_set = out_contexts[0].as_ref().expect("Should have set 0");
-    let mut out_context_iter = out_composition_set.into_iter();
-    let (item, out_context) = out_context_iter.next().unwrap();
-    assert!(out_context_iter.next().is_none());
+    let out_sets = run_composition(&dispatcher, &composition, inputs);
+    assert_eq!(1, out_sets.len());
+    assert_eq!(1, out_sets[0].len());
+    let item = &out_sets[0][0];
     assert_eq!(0, item.key);
     check_matrix(
-        &out_context,
         item,
         4,
         vec![
@@ -672,14 +456,14 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = self::setup_dispatcher::<Domain>(
+    let (dispatcher, _) = self::setup_dispatcher::<Domain>(
         relative_path,
         vec![
-            (String::from(""), None),
-            (String::from(""), None),
-            (String::from(""), None),
+            (String::from("A"), None),
+            (String::from("B"), None),
+            (String::from("C"), None),
         ],
-        vec![String::from("")],
+        vec![String::from("Out")],
         engine_type,
         engine_resource,
         memory_resource,
@@ -724,83 +508,42 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
         }),
     ];
 
-    let mut dependencies = vec![FunctionDependencies {
-        // C+C, should be a matrix filled with 2s
-        // also test that we can use the same set as mutliple input set for one function
-        function: function_id.clone(),
-        join_info: (
-            vec![0, 1, 2],
-            vec![JoinStrategy::Cross, JoinStrategy::Cross],
-        ),
-        input_set_ids: vec![
-            None,
-            Some(InputSetDescriptor {
-                composition_id: 1,
-                sharding: ShardingMode::All,
-                optional: false,
-            }),
-            Some(InputSetDescriptor {
-                composition_id: 1,
-                sharding: ShardingMode::All,
-                optional: false,
-            }),
-        ],
-        output_set_ids: vec![Some(2)],
-    }];
-
+    // C+C, should be a matrix filled with 2s
+    // also test that we can use the same set as mutliple input set for one function
+    let mut applications =
+        String::from("test_function(B = all MatB, C = all MatB) => (Twos = Out);\n");
     let chain_length = 10;
     for chain_stage in 0..chain_length {
-        let (input_set, output_set) = if chain_stage == 0 {
-            (0, 3)
+        let input_set = if chain_stage == 0 {
+            String::from("MatA")
         } else {
-            (chain_stage + 2, chain_stage + 3)
+            format!("Stage{}", chain_stage - 1)
         };
-        dependencies.push(FunctionDependencies {
-            function: function_id.clone(),
-            join_info: (
-                vec![0, 1, 2],
-                vec![JoinStrategy::Cross, JoinStrategy::Cross],
-            ),
-            input_set_ids: vec![
-                None,
-                Some(InputSetDescriptor {
-                    composition_id: 2,
-                    sharding: ShardingMode::All,
-                    optional: false,
-                }),
-                Some(InputSetDescriptor {
-                    composition_id: input_set,
-                    sharding: ShardingMode::All,
-                    optional: false,
-                }),
-            ],
-            output_set_ids: vec![Some(output_set)],
-        });
+        let output_set = if chain_stage == chain_length - 1 {
+            String::from("Result")
+        } else {
+            format!("Stage{}", chain_stage)
+        };
+        applications.push_str(&format!(
+            "test_function(B = all Twos, C = all {input_set}) => ({output_set} = Out);\n"
+        ));
     }
+    let composition = format!(
+        r#"
+        {DECL_3_TO_1}
+        composition ChainLargeMatmac(MatA, MatB) => (Result) {{
+            {applications}
+        }}
+    "#
+    );
 
-    let composition = Composition {
-        dependencies,
-        output_map: BTreeMap::from([(chain_length + 2, 0)]),
-    };
-
-    let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
-
-    let inputs = CompositionSet::from_context(in_context);
-    let result = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
-    let out_contexts = match result {
-        Ok(context) => context,
-        Err(err) => panic!("Failed with: {:?}", err),
-    };
-    assert_eq!(1, out_contexts.len());
-    let out_composition_set = out_contexts[0].as_ref().expect("Should have set 0");
-    let mut out_context_iter = out_composition_set.into_iter();
-    let (out_item, out_context) = out_context_iter.next().unwrap();
-    assert!(out_context_iter.next().is_none());
+    let inputs = DataSet::from_context(in_context);
+    let out_sets = run_composition(&dispatcher, &composition, inputs);
+    assert_eq!(1, out_sets.len());
+    assert_eq!(1, out_sets[0].len());
+    let out_item = &out_sets[0][0];
     let expected =
         (1 + 2 * chain_length as u64..matrix_size + 1 + 2 * chain_length as u64).collect();
     assert_eq!(0, out_item.key);
-    check_matrix(&out_context, out_item, matrix_width, expected);
+    check_matrix(out_item, matrix_width, expected);
 }
