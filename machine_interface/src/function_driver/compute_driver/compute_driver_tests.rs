@@ -390,7 +390,7 @@ fn engine_stdio<Dom: MemoryDomain>(
     assert_eq!(2, io_set.len());
     let mut stdout_vec = Vec::<u8>::new();
     let mut stderr_vec = Vec::<u8>::new();
-    for data_item in io_set.into_iter() {
+    for data_item in io_set.iter() {
         let identifyer = data_item.ident.clone();
         let item = data_item.local_ref().unwrap();
         match identifyer.as_str() {
@@ -557,7 +557,7 @@ fn engine_fileio<Dom: MemoryDomain>(
 
     let output_set = &result_sets[2];
     assert_eq!(4, output_set.len());
-    for item in output_set.into_iter() {
+    for item in output_set.iter() {
         let expected_string = match item.ident.as_str() {
             "out_file" => in_file1_content,
             "out_folder/out_file" => in_file2_content,

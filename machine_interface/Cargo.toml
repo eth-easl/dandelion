@@ -32,7 +32,6 @@ test-log = "0.2.16"
 # project internal dependencies
 dandelion_commons = { path = "../dandelion_commons" }
 memory = { path = "../memory" }
-composition = { path = "../composition" }
 
 # FFI dependencies
 libc = "0.2"
