@@ -507,7 +507,7 @@ mod tests {
         );
 
         function.add_invocation_output(
-            vec![DataSet::from_items(items(&[100]))],
+            vec![items(&[100])],
             &AnyShardingMode::MaxSharding,
             &mut Vec::new(),
         );

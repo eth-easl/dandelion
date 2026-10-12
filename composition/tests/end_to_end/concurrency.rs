@@ -4,9 +4,9 @@ use std::{
     time::Duration,
 };
 
-use crate::common::{data_set, item, parse_composition, TestRegistry};
+use crate::common::{data_set, item, items, parse_composition, TestRegistry};
 use composition::{AnyShardingMode, Composition, Invocation};
-use memory::data::DataSet;
+use memory::DataItem;
 
 /// How long a round may take before it is considered deadlocked.
 const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -17,7 +17,7 @@ const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 fn run_groups_concurrently(
     composition: &Arc<Composition>,
     groups: Vec<Vec<Invocation>>,
-    respond: fn(&Invocation) -> Vec<DataSet>,
+    respond: fn(&Invocation) -> Vec<Arc<Vec<DataItem>>>,
 ) -> Vec<Invocation> {
     let barrier = Arc::new(Barrier::new(groups.len()));
     let (tx, rx) = mpsc::channel();
@@ -55,8 +55,8 @@ fn run_groups_concurrently(
     follow_ups
 }
 
-fn pass_through(invocation: &Invocation) -> Vec<DataSet> {
-    vec![data_set(vec![invocation.input[0].items[0].clone()])]
+fn pass_through(invocation: &Invocation) -> Vec<Arc<Vec<DataItem>>> {
+    vec![items(vec![invocation.input[0].items[0].clone()])]
 }
 
 /// Two producers streaming into the two `each` inputs of the same function at the same time used

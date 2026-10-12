@@ -117,9 +117,14 @@ pub fn item(ident: &str, key: u32) -> DataItem {
     )
 }
 
-/// Builds a [`DataSet`] out of the given items.
+/// Builds a [`DataSet`] out of the given items, e.g. to use as composition input.
 pub fn data_set(items: Vec<DataItem>) -> DataSet {
     DataSet::from_items(Arc::new(items))
+}
+
+/// Wraps the given items into an output set, as returned by an invocation.
+pub fn items(items: Vec<DataItem>) -> Arc<Vec<DataItem>> {
+    Arc::new(items)
 }
 
 /// Runs a composition to completion given its composition-level inputs, driving every produced
@@ -130,7 +135,7 @@ pub fn data_set(items: Vec<DataItem>) -> DataSet {
 pub fn run_to_completion(
     mut composition: Composition,
     inputs: Vec<DataSet>,
-    mut respond: impl FnMut(&composition::Invocation) -> Vec<DataSet>,
+    mut respond: impl FnMut(&composition::Invocation) -> Vec<Arc<Vec<DataItem>>>,
 ) -> Vec<DataSet> {
     let mut pending = Vec::new();
     composition.start_execution(inputs, &mut pending);

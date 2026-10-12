@@ -1,4 +1,4 @@
-use crate::common::{data_set, item, parse_composition, run_to_completion, TestRegistry};
+use crate::common::{data_set, item, items, parse_composition, run_to_completion, TestRegistry};
 use composition::{AnyShardingMode, Composition};
 
 #[test]
@@ -32,7 +32,7 @@ fn keyed_inner_join_pairs_matching_composition_inputs() {
             "an inner join must only ever see matching keys"
         );
         seen_keys.push(a_item.key);
-        vec![data_set(vec![item("combined", a_item.key)])]
+        vec![items(vec![item("combined", a_item.key)])]
     });
 
     seen_keys.sort();
@@ -68,7 +68,7 @@ fn two_stage_pipeline_aggregates_streamed_outputs() {
         match invocation.function_id.as_str() {
             "Square" => {
                 let n: i64 = invocation.input[0].items[0].ident.parse().unwrap();
-                vec![data_set(vec![item(&(n * n).to_string(), 0)])]
+                vec![items(vec![item(&(n * n).to_string(), 0)])]
             }
             "Sum" => {
                 let total: i64 = invocation.input[0]
@@ -76,7 +76,7 @@ fn two_stage_pipeline_aggregates_streamed_outputs() {
                     .iter()
                     .map(|i| i.ident.parse::<i64>().unwrap())
                     .sum();
-                vec![data_set(vec![item(&total.to_string(), 0)])]
+                vec![items(vec![item(&total.to_string(), 0)])]
             }
             other => panic!("unexpected function invoked: {other}"),
         }
@@ -117,7 +117,7 @@ fn two_each_inputs_wait_for_both_sides_before_combining() {
     let outputs = run_to_completion(composition, vec![in_a, in_b], |invocation| {
         match invocation.function_id.as_str() {
             // Pass the item through unchanged, preserving its key, so Combine can be checked below.
-            "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
+            "Emit" => vec![items(vec![invocation.input[0].items[0].clone()])],
             "Combine" => {
                 assert_eq!(
                     invocation.input[0].items.len(),
@@ -133,7 +133,7 @@ fn two_each_inputs_wait_for_both_sides_before_combining() {
                     invocation.input[0].items[0].key,
                     invocation.input[1].items[0].key,
                 ));
-                vec![data_set(vec![item("out", 0)])]
+                vec![items(vec![item("out", 0)])]
             }
             other => panic!("unexpected function invoked: {other}"),
         }
@@ -179,7 +179,7 @@ fn optional_each_input_that_stays_empty_does_not_block_or_appear() {
             invocation.input[1].items.is_empty(),
             "B is optional and stayed empty"
         );
-        vec![data_set(vec![item("out", 0)])]
+        vec![items(vec![item("out", 0)])]
     });
 
     assert_eq!(
@@ -219,13 +219,13 @@ fn each_items_arriving_before_blocking_all_input_wait_for_it() {
         .function_id
         .as_str()
     {
-        "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
+        "Emit" => vec![items(vec![invocation.input[0].items[0].clone()])],
         _ => {
             combine_inputs.push((
                 invocation.input[0].items[0].key,
                 invocation.input[1].items.len(),
             ));
-            vec![data_set(vec![item("out", 0)])]
+            vec![items(vec![item("out", 0)])]
         }
     });
 
@@ -264,11 +264,11 @@ fn empty_push_into_optional_each_input_does_not_duplicate_invocations() {
         composition,
         vec![data_set(vec![item("a1", 1)]), data_set(vec![item("b1", 1)])],
         |invocation| match invocation.function_id.as_str() {
-            "Emit" if invocation.input[0].items[0].ident == "b1" => vec![data_set(vec![])],
-            "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
+            "Emit" if invocation.input[0].items[0].ident == "b1" => vec![items(vec![])],
+            "Emit" => vec![items(vec![invocation.input[0].items[0].clone()])],
             _ => {
                 combine_count += 1;
-                vec![data_set(vec![item("out", 0)])]
+                vec![items(vec![item("out", 0)])]
             }
         },
     );
@@ -304,11 +304,11 @@ fn empty_final_push_into_optional_each_input_that_had_items_does_not_run_without
         .function_id
         .as_str()
     {
-        "Emit" if invocation.input[0].items[0].ident == "b0" => vec![data_set(vec![])],
-        "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
+        "Emit" if invocation.input[0].items[0].ident == "b0" => vec![items(vec![])],
+        "Emit" => vec![items(vec![invocation.input[0].items[0].clone()])],
         _ => {
             combine_b_sizes.push(invocation.input[1].items.len());
-            vec![data_set(vec![item("out", 0)])]
+            vec![items(vec![item("out", 0)])]
         }
     });
 
@@ -340,7 +340,7 @@ fn empty_optional_all_input_is_treated_as_absent() {
                 invocation.input[1].items.is_empty(),
                 "B is optional and stayed empty"
             );
-            vec![data_set(vec![item("out", 0)])]
+            vec![items(vec![item("out", 0)])]
         },
     );
 

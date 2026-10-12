@@ -118,3 +118,32 @@ fn acyclic_composition_with_statements_out_of_order_and_a_diamond_parses() {
         .unwrap_or_else(|e| panic!("expected the composition to parse:\n{e}"));
     assert_eq!(compositions.len(), 1);
 }
+
+#[test]
+fn line_comments_are_ignored() {
+    let src = r#"
+        // leading comment
+        function FunA(A, B) => (C); // trailing comment
+        function FunB(C) => (D);
+
+        // comment between items
+        composition Commented(InputA, InputB) => (OutputD) { // after opening brace
+            // comment before a statement
+            FunA(
+                A = keyed InputA, // between arguments
+                B = keyed InputB
+            ) => (InterC = C) // before the join clause
+            by A inner B; // after the join clause
+            FunB(C = all InterC) => (OutputD = D);
+            // comment before closing brace
+        }
+        // comment at the end without newline"#;
+    let registry = TestRegistry::new()
+        .with_function("FunA", &["A", "B"], &["C"])
+        .with_function("FunB", &["C"], &["D"]);
+
+    let compositions = CompositionTemplate::parse(src, &registry)
+        .unwrap_or_else(|e| panic!("expected comments to be skipped:\n{e}"));
+    assert_eq!(compositions.len(), 1);
+    assert_eq!(compositions[0].0.as_str(), "Commented");
+}

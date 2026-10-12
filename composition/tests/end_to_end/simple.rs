@@ -1,4 +1,4 @@
-use crate::common::{data_set, item, parse_composition, run_to_completion, TestRegistry};
+use crate::common::{data_set, item, items, parse_composition, run_to_completion, TestRegistry};
 use composition::{AnyShardingMode, Composition};
 
 #[test]
@@ -26,7 +26,7 @@ fn all_sharded_single_invocation_passes_data_through() {
             2,
             "the whole `all` set arrives in a single invocation"
         );
-        vec![data_set(vec![item("out", 0)])]
+        vec![items(vec![item("out", 0)])]
     });
 
     assert_eq!(
@@ -63,7 +63,7 @@ fn each_sharded_input_runs_one_invocation_per_item() {
         );
         let doubled = invocation.input[0].items[0].ident.repeat(2);
         let key = invocation.input[0].items[0].key;
-        vec![data_set(vec![item(&doubled, key)])]
+        vec![items(vec![item(&doubled, key)])]
     });
 
     assert_eq!(invocation_count, 3);
@@ -99,7 +99,7 @@ fn each_to_each_streaming_chain_runs_without_a_composition_level_intermediate() 
     let outputs = run_to_completion(composition, vec![numbers], |invocation| {
         let n: i64 = invocation.input[0].items[0].ident.parse().unwrap();
         let key = invocation.input[0].items[0].key;
-        vec![data_set(vec![item(&(n + 1).to_string(), key)])]
+        vec![items(vec![item(&(n + 1).to_string(), key)])]
     });
 
     let mut values: Vec<i64> = outputs[0]
@@ -140,9 +140,9 @@ fn streaming_consumer_completes_when_final_push_is_empty() {
     let outputs = run_to_completion(composition, vec![numbers], |invocation| {
         let first = invocation.input[0].items[0].clone();
         if first.ident == "0" {
-            vec![data_set(vec![])]
+            vec![items(vec![])]
         } else {
-            vec![data_set(vec![first])]
+            vec![items(vec![first])]
         }
     });
 
@@ -174,14 +174,14 @@ fn single_optional_each_input_does_not_run_for_empty_final_push() {
     let numbers = data_set(vec![item("0", 0), item("1", 1)]);
     let mut second_stage_sizes = Vec::new();
     let outputs = run_to_completion(composition, vec![numbers], |invocation| {
-        let items = &invocation.input[0].items;
+        let input = &invocation.input[0].items;
         if invocation.composition_idx == 1 {
-            second_stage_sizes.push(items.len());
-            vec![data_set(items.to_vec())]
-        } else if items[0].ident == "0" {
-            vec![data_set(vec![])]
+            second_stage_sizes.push(input.len());
+            vec![items(input.to_vec())]
+        } else if input[0].ident == "0" {
+            vec![items(vec![])]
         } else {
-            vec![data_set(items.to_vec())]
+            vec![items(input.to_vec())]
         }
     });
 

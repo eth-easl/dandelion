@@ -407,12 +407,14 @@ mod tests {
         DataSet::from_items(Arc::new(
             keys.into_iter()
                 .map(|key| {
-                    Arc::new(DataItem::new_local(
+                    DataItem::new_local(
                         format!("item-{key}"),
                         key,
-                        test_context(),
-                        Position { offset: 0, size },
-                    ))
+                        LocalData {
+                            ctx: test_context(),
+                            pos: Position { offset: 0, size },
+                        },
+                    )
                 })
                 .collect(),
         ))

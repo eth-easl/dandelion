@@ -29,6 +29,19 @@ impl<T> Spanned<T> {
 /// An simple string slice identifier in the input.
 type Ident<'src> = &'src str;
 
+/// Skips any mix of whitespace and `//` line comments.
+fn pad<'src>() -> impl ChumskyParser<'src, &'src str, (), extra::Err<Rich<'src, char>>> + Clone {
+    let comment = just("//")
+        .then(any().and_is(text::newline().not()).repeated())
+        .ignored();
+    text::whitespace()
+        .at_least(1)
+        .ignored()
+        .or(comment)
+        .repeated()
+        .ignored()
+}
+
 /// Wrapper to get back a Ident<'src> alias.
 fn ident<'src>(
 ) -> impl ChumskyParser<'src, &'src str, Ident<'src>, extra::Err<Rich<'src, char>>> + Clone {
@@ -128,24 +141,24 @@ pub(crate) struct Parser<'src, R: Registry> {
 impl<'src, R: Registry> Parser<'src, R> {
     pub(crate) fn new(registry: &'src R) -> Self {
         let function_decl = just("function")
-            .padded()
-            .ignore_then(ident().padded())
+            .padded_by(pad())
+            .ignore_then(ident().padded_by(pad()))
             .then(
                 ident()
-                    .padded()
+                    .padded_by(pad())
                     .separated_by(just(','))
                     .collect::<Vec<_>>()
                     .delimited_by(just('('), just(')')),
             )
-            .then_ignore(just("=>").padded())
+            .then_ignore(just("=>").padded_by(pad()))
             .then(
                 ident()
-                    .padded()
+                    .padded_by(pad())
                     .separated_by(just(','))
                     .collect::<Vec<_>>()
                     .delimited_by(just('('), just(')')),
             )
-            .then_ignore(just(";").padded())
+            .then_ignore(just(";").padded_by(pad()))
             .map(|((name, params), returns)| FunctionDecl {
                 name,
                 params,
@@ -154,9 +167,9 @@ impl<'src, R: Registry> Parser<'src, R> {
             .map_with(|v, e| Spanned::new(v, e.span().into_range()));
 
         let input_descriptor = ident()
-            .padded()
-            .then_ignore(just('=').padded())
-            .then(just("optional").padded().or_not())
+            .padded_by(pad())
+            .then_ignore(just('=').padded_by(pad()))
+            .then(just("optional").padded_by(pad()).or_not())
             .then(
                 (just("all")
                     .or(just("keyed"))
@@ -171,9 +184,9 @@ impl<'src, R: Registry> Parser<'src, R> {
                     "anyEach" => Sharding::AnyEach,
                     _ => unreachable!(),
                 })
-                .padded(),
+                .padded_by(pad()),
             )
-            .then(ident().padded())
+            .then(ident().padded_by(pad()))
             .map(|(((name, optional), sharding), ident)| InputDescriptor {
                 name,
                 ident,
@@ -183,9 +196,9 @@ impl<'src, R: Registry> Parser<'src, R> {
             .map_with(|v, e| Spanned::new(v, e.span().into_range()));
 
         let output_descriptor = ident()
-            .padded()
-            .then_ignore(just("=").padded())
-            .then(ident().padded())
+            .padded_by(pad())
+            .then_ignore(just("=").padded_by(pad()))
+            .then(ident().padded_by(pad()))
             .map(|(ident, name)| OutputDescriptor {
                 ident,
                 name,
@@ -194,7 +207,7 @@ impl<'src, R: Registry> Parser<'src, R> {
             .map_with(|v, e| Spanned::new(v, e.span().into_range()));
 
         let name_followed_by_strategy = ident()
-            .padded()
+            .padded_by(pad())
             .then(
                 just("cross")
                     .or(just("inner"))
@@ -210,13 +223,13 @@ impl<'src, R: Registry> Parser<'src, R> {
                         _ => unreachable!(),
                     }),
             )
-            .padded();
+            .padded_by(pad());
 
-        let by_join_strategy = just("by").padded().ignore_then(
+        let by_join_strategy = just("by").padded_by(pad()).ignore_then(
             name_followed_by_strategy
                 .repeated()
                 .collect::<Vec<(Ident<'src>, JoinStrategy)>>()
-                .padded()
+                .padded_by(pad())
                 .then(ident())
                 .map(|(xs, x)| {
                     let (mut names, strats): (Vec<_>, Vec<_>) = xs.into_iter().unzip();
@@ -231,19 +244,19 @@ impl<'src, R: Registry> Parser<'src, R> {
         let function_application = ident()
             .then(
                 input_descriptor
-                    .separated_by(just(',').padded())
+                    .separated_by(just(',').padded_by(pad()))
                     .collect::<Vec<_>>()
-                    .delimited_by(just('(').padded(), just(')').padded()),
+                    .delimited_by(just('(').padded_by(pad()), just(')').padded_by(pad())),
             )
-            .padded()
-            .then_ignore(just("=>").padded())
+            .padded_by(pad())
+            .then_ignore(just("=>").padded_by(pad()))
             .then(
                 output_descriptor
-                    .separated_by(just(',').padded())
+                    .separated_by(just(',').padded_by(pad()))
                     .collect::<Vec<_>>()
-                    .delimited_by(just('(').padded(), just(')').padded()),
+                    .delimited_by(just('(').padded_by(pad()), just(')').padded_by(pad())),
             )
-            .padded()
+            .padded_by(pad())
             .then(by_join_strategy.or_not())
             .map(
                 |(((name, args), rets), join_strategy)| FunctionApplication {
@@ -256,36 +269,36 @@ impl<'src, R: Registry> Parser<'src, R> {
             .map_with(|v, e| Spanned::new(v, e.span().into_range()))
             .map(Statement::FunctionApplication);
 
-        let statement = function_application.then_ignore(just(';').padded());
+        let statement = function_application.then_ignore(just(';').padded_by(pad()));
 
         // TODO: loop syntax (`loop { input_descriptor* => function_application* => output_descriptor* }`)
         // is not parsed yet.
 
         let composition = just("composition")
-            .padded()
-            .ignore_then(ident().padded())
+            .padded_by(pad())
+            .ignore_then(ident().padded_by(pad()))
             .then(
                 ident()
-                    .padded()
-                    .separated_by(just(',').padded())
+                    .padded_by(pad())
+                    .separated_by(just(',').padded_by(pad()))
                     .collect::<Vec<_>>()
-                    .delimited_by(just('(').padded(), just(')').padded())
-                    .padded(),
+                    .delimited_by(just('(').padded_by(pad()), just(')').padded_by(pad()))
+                    .padded_by(pad()),
             )
-            .then_ignore(just("=>").padded())
+            .then_ignore(just("=>").padded_by(pad()))
             .then(
                 ident()
-                    .padded()
-                    .separated_by(just(',').padded())
+                    .padded_by(pad())
+                    .separated_by(just(',').padded_by(pad()))
                     .collect::<Vec<_>>()
-                    .delimited_by(just('(').padded(), just(')').padded()),
+                    .delimited_by(just('(').padded_by(pad()), just(')').padded_by(pad())),
             )
-            .padded()
+            .padded_by(pad())
             .then(
                 statement
                     .repeated()
                     .collect::<Vec<_>>()
-                    .delimited_by(just('{').padded(), just('}').padded()),
+                    .delimited_by(just('{').padded_by(pad()), just('}').padded_by(pad())),
             )
             .map(|(((name, params), returns), statements)| CompositionDecl {
                 name,
@@ -300,7 +313,7 @@ impl<'src, R: Registry> Parser<'src, R> {
             .or(composition.map(Item::CompositionDecl)))
         .repeated()
         .collect::<Vec<_>>()
-        .padded()
+        .padded_by(pad())
         .then_ignore(end())
         .map(Module)
         .boxed();
