@@ -3,15 +3,15 @@ use crate::{
         GLOBAL_SYSTEM_MEMORY_SIZE, PER_VM_SYSTEM_MEMORY, SYSTEM_MEMORY_SIZE, SYSTEM_VIRTUAL_BASE,
     },
     memory_domain::{
-        kvm::{KvmContext, Page, PageType},
+        kvm::{KvmContext, PageType},
         ContextTrait,
     },
 };
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
+use dandelion_commons::DandelionResult;
 use kvm_bindings::{kvm_fpu, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs, Msrs};
 use kvm_ioctls::{VcpuFd, VmFd};
 use log::{debug, info, trace};
-use std::{collections::BTreeMap, num::NonZeroUsize, os::raw::c_void, slice};
+use std::{num::NonZeroUsize, os::raw::c_void, slice};
 
 // CR0 bits
 /// Protected Mode Enable
@@ -625,10 +625,6 @@ fn set_page_table(
         p2_table_number,
         kvm_context.context_size
     );
-    trace!(
-        "value at 65536: {}",
-        u8_slice_to_u64_slice(kvm_context.domain_slice)[65536 / 8]
-    );
 
     // always only need 1 p4 table, since it is top level
     // get physical page
@@ -636,10 +632,7 @@ fn set_page_table(
     let p3_physical = kvm_context.get_page()?;
     // set up the p4 table, which only has 1 entry at the start, the single p3 table
     trace!("P4 address: {}, P3 address: {}", *p4_physical, *p3_physical);
-    trace!(
-        "value at 65536: {}",
-        u8_slice_to_u64_slice(kvm_context.domain_slice)[65536 / 8]
-    );
+
     let p4_table = p4_physical.get_slice(kvm_context.domain_slice);
     p4_table[0] = PDE64_ALL_ALLOWED | *p3_physical;
     p4_table[1..].fill(0);
@@ -697,6 +690,13 @@ fn set_page_table(
 
     // go through overlay and add all pages in the p2 tables
     for (virtual_address, (page_type, physical_address)) in kvm_context.overlay.iter() {
+        if matches!(page_type, PageType::CoW) {
+            trace!(
+                "Virtual CoW page at virtual address: {}, physicall address {}",
+                virtual_address,
+                **physical_address
+            );
+        }
         // flags to set for the page
         let flags = match page_type {
             PageType::Page => PDE64_ALL_ALLOWED,
@@ -704,31 +704,43 @@ fn set_page_table(
         };
 
         // To get the table indices we need to shift by the page size,
-        let p3_index = virtual_address >> HUGE_PAGE_SHIFT & (TABLE_SIZE - 1);
-        let p2_index = virtual_address >> LARGE_PAGE_SHIFT & (TABLE_SIZE - 1);
-        let p1_index = virtual_address >> PAGE_SHIFT & (TABLE_SIZE - 1);
+        let p3_index = (virtual_address >> HUGE_PAGE_SHIFT) & (TABLE_SIZE - 1);
+        let p2_index = (virtual_address >> LARGE_PAGE_SHIFT) & (TABLE_SIZE - 1);
+        let p1_index = (virtual_address >> PAGE_SHIFT) & (TABLE_SIZE - 1);
 
-        let p2_base = (p3_physical.get_slice(kvm_context.domain_slice)[p3_index] as usize
-            & !(PAGE_SIZE - 1))
-            / size_of::<u64>();
+        let p2_address =
+            p3_physical.get_slice(kvm_context.domain_slice)[p3_index] as usize & !(PAGE_SIZE - 1);
+        let p2_base = p2_address / size_of::<u64>();
         // read p2 entry
         let p2_entry = u8_slice_to_u64_slice(kvm_context.domain_slice)[p2_base + p2_index];
+
+        if matches!(page_type, PageType::CoW) {
+            trace!("p2 entry: {}", p2_entry);
+        }
+
         // check if p2 entry points to valid p1 table, if not insert table
         if p2_entry & PDE64_PRESENT == 0 {
-            trace!(
-                "adding p2 entry for address: {}, p3 index: {}, p2 index: {}, p1 index: {}",
+            let new_p1 = kvm_context.get_page()?;
+            if matches!(page_type, PageType::CoW) {
+                trace!(
+                "adding p2 entry for address: {}, p3 index: {}, p2 index: {}, p1 index: {} at {}",
                 virtual_address,
                 p3_index,
                 p2_index,
-                p1_index
+                p1_index,
+                *new_p1
             );
-            let new_p1 = kvm_context.get_page()?;
+            }
             u8_slice_to_u64_slice(kvm_context.domain_slice)[p2_base + p2_index] =
                 PDE64_ALL_ALLOWED | *new_p1;
             new_p1.get_slice(kvm_context.domain_slice).fill(0);
             new_p1.get_slice(kvm_context.domain_slice)[p1_index] = flags | **physical_address;
         } else {
-            let p1_base = p2_entry as usize & !(PAGE_SIZE - 1) / size_of::<u64>();
+            let p1_base = (p2_entry as usize & !(PAGE_SIZE - 1)) / size_of::<u64>();
+            if matches!(page_type, PageType::CoW) {
+                trace!("adding p1 entry for address: {}, p3 adress {}, p3 index: {}, p2 address: {}, p2 index: {}, p1 base: {}, p1 index; {}, physical: {}",
+                virtual_address, *p3_physical, p3_index, p2_address, p2_index, p1_base, p1_index, **physical_address);
+            }
             debug_assert_eq!(
                 0,
                 u8_slice_to_u64_slice(kvm_context.domain_slice)[p1_base + p1_index]

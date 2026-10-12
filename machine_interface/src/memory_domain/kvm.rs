@@ -429,7 +429,7 @@ impl ContextTrait for KvmContext {
             }
         }
 
-        trace!("Overlay after write: {:?}", self.overlay);
+        // trace!("Overlay after write: {:?}", self.overlay);
         Ok(())
     }
 
@@ -450,10 +450,9 @@ impl ContextTrait for KvmContext {
         };
 
         trace!(
-            "Read from kvm context at offset: {}, size: {}, with overlay: {:?}",
+            "Read from kvm context at offset: {}, size: {}",
             offset,
             read_size,
-            self.overlay
         );
 
         if read_size == 0 {
@@ -512,10 +511,9 @@ impl ContextTrait for KvmContext {
 
         // check if the offset is into an overlayed object
         trace!(
-            "Trying to get chunk at offset: {} with length {} from overlay: {:?}",
+            "Trying to get chunk at offset: {} with length {}",
             offset,
             length,
-            self.overlay
         );
         let page_start = round_down_to_page(offset);
         let (_, page_arc) = self
@@ -751,109 +749,58 @@ pub fn transfer_into(
     // if occupation check was fine, can overwrite here (may happen because of planned overwrite or
     // because of page rounding)
 
-    // if let ContextType::Kvm(kvm_source_context) = &source.context {
-    //     if size < PAGE_SIZE {
-    //         let mut bytes_written = 0;
-    //         while bytes_written < size {
-    //             let chunk =
-    //                 source.get_chunk_ref(source_offset + bytes_written, size - bytes_written)?;
-    //             debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
-    //             destination.write(destination_offset + bytes_written, chunk)?;
-    //             bytes_written += chunk.len();
-    //         }
-    //     } else if source_offset % PAGE_SIZE != destination_offset % PAGE_SIZE {
-    //         trace!("starting to transfer large item with non equal offset");
-    //         // check if not both have the same distance to the next page, if so, need to copy regularly
-    //         // TODO remove interface for exact control on transfer item, so location can be controlled by transfer function
-    //         // if that is true, can force destination_offset to be same allignment
-    //         let mut bytes_written = 0;
-    //         while bytes_written < size {
-    //             let chunk =
-    //                 source.get_chunk_ref(source_offset + bytes_written, size - bytes_written)?;
-    //             debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
-    //             destination.write(destination_offset + bytes_written, chunk)?;
-    //             bytes_written += chunk.len();
-    //         }
-    //     } else {
-    //         // insert the parts that can be remapped and copy the rest
-    //         let rounded_start = destination_offset.next_multiple_of(PAGE_SIZE);
-    //         let rounded_end = round_down_to_page(destination_offset + size);
-    //         let rounded_size = rounded_end - rounded_start;
-    //         let source_rounded_start = source_offset.next_multiple_of(PAGE_SIZE);
-    //         let source_rounded_end = source_rounded_start + rounded_size;
+    if let ContextType::Kvm(kvm_source_context) = &source.context {
+        // check conditions for mapping to be possible
+        if size >= PAGE_SIZE && source_offset % PAGE_SIZE == destination_offset % PAGE_SIZE {
+            // insert the parts that can be remapped and copy the rest
+            let rounded_start = destination_offset.next_multiple_of(PAGE_SIZE);
+            let rounded_end = round_down_to_page(destination_offset + size);
+            let rounded_size = rounded_end - rounded_start;
+            let source_rounded_start = source_offset.next_multiple_of(PAGE_SIZE);
+            let source_rounded_end = source_rounded_start + rounded_size;
 
-    //         // copy front and back parts
-    //         let mut header_bytes = 0;
-    //         let header_length = rounded_start - destination_offset;
-    //         while header_bytes < header_length {
-    //             let chunk = source
-    //                 .get_chunk_ref(source_offset + header_bytes, header_length - header_bytes)?;
-    //             debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
-    //             destination.write(destination_offset + header_bytes, chunk)?;
-    //             header_bytes += chunk.len();
-    //         }
+            // copy front and back parts
+            let mut header_bytes = 0;
+            let header_length = rounded_start - destination_offset;
+            while header_bytes < header_length {
+                let chunk = source
+                    .get_chunk_ref(source_offset + header_bytes, header_length - header_bytes)?;
+                debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
+                destination.write(destination_offset + header_bytes, chunk)?;
+                header_bytes += chunk.len();
+            }
 
-    //         let mut trailer_bytes = 0;
-    //         let trailer_length = (destination_offset + size) - rounded_end;
-    //         while trailer_bytes < trailer_length {
-    //             let chunk = source.get_chunk_ref(
-    //                 source_rounded_end + trailer_bytes,
-    //                 trailer_length - trailer_bytes,
-    //             )?;
-    //             debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
-    //             destination.write(rounded_end + trailer_bytes, chunk)?;
-    //             trailer_bytes += chunk.len();
-    //         }
+            let mut trailer_bytes = 0;
+            let trailer_length = (destination_offset + size) - rounded_end;
+            while trailer_bytes < trailer_length {
+                let chunk = source.get_chunk_ref(
+                    source_rounded_end + trailer_bytes,
+                    trailer_length - trailer_bytes,
+                )?;
+                debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
+                destination.write(rounded_end + trailer_bytes, chunk)?;
+                trailer_bytes += chunk.len();
+            }
 
-    //         // TODO: may want to keep track on range level with a single file, then we simplify the overlay handling
-    //         if rounded_size != 0 {
-    //             let mut overlayed_bytes = 0;
-    //             // in case the original context has multiple overlays in the transferred range
-    //             for (source_overlay_end, (source_overlay_start, source_item_option)) in
-    //                 kvm_source_context.overlay.range(source_rounded_start..)
-    //             {
-    //                 if overlayed_bytes >= rounded_size
-    //                     || *source_overlay_start >= source_rounded_end
-    //                 {
-    //                     break;
-    //                 }
-    //                 assert!(
-    //                     *source_overlay_start <= source_rounded_start + overlayed_bytes,
-    //                     "Expect to always find an overlay that starts before the start of the transfer,\
-    //                     source overlay: {:?}, source_rounded_start: {}, overlayed_bytes {}",
-    //                     kvm_source_context.overlay, source_rounded_start, overlayed_bytes
-    //                 );
+            let mut remapped_bytes = 0;
+            destination.overlay.extend(
+                kvm_source_context
+                    .overlay
+                    .range(source_rounded_start..source_rounded_end)
+                    .map(|(_, (_, page))| {
+                        let result = (
+                            rounded_start + remapped_bytes,
+                            (PageType::CoW, page.clone()),
+                        );
+                        remapped_bytes += PAGE_SIZE;
+                        result
+                    }),
+            );
 
-    //                 let new_end = min(*source_overlay_end + 1, source_rounded_end);
-    //                 let new_bytes = new_end - source_rounded_start + overlayed_bytes;
-    //                 // if this already has been zero copied from another context, use the reference to that context, to avoid dependency chains
-    //                 let new_item = if let Some(OverlayItem {
-    //                     offset,
-    //                     context: nested_context,
-    //                 }) = source_item_option
-    //                 {
-    //                     let new_offset = offset + source_rounded_start - *source_overlay_start;
-    //                     OverlayItem {
-    //                         context: nested_context.clone(),
-    //                         offset: new_offset,
-    //                     }
-    //                 } else {
-    //                     OverlayItem {
-    //                         context: source.clone(),
-    //                         offset: source_rounded_start + overlayed_bytes,
-    //                     }
-    //                 };
-    //                 destination.insert_into_overlay(
-    //                     rounded_start + overlayed_bytes,
-    //                     rounded_start + overlayed_bytes + new_bytes,
-    //                     Some(new_item),
-    //                 );
-    //                 overlayed_bytes += new_bytes;
-    //             }
-    //             debug_assert_eq!(overlayed_bytes, rounded_size);
-    //         }
-    //     }
-    // } else {
+            debug_assert_eq!(rounded_size, remapped_bytes);
+            return Ok(());
+        }
+    }
     trace!("Transfer into KVM context from other type of context");
     let mut bytes_written = 0;
     while bytes_written < size {
@@ -862,7 +809,6 @@ pub fn transfer_into(
         destination.write(destination_offset + bytes_written, chunk)?;
         bytes_written += chunk.len();
     }
-    // }
-    trace!("Overlay after transfer {:?}", destination.overlay);
+
     Ok(())
 }

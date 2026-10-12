@@ -290,11 +290,23 @@ impl EngineLoop for KvmLoop {
             dump_regs(&self.vcpu);
         }
 
+        let test_page = kvm_context.overlay.get(&73728).unwrap().1.clone();
+        // 12288
+        log::warn!(
+            "test_page address: {}, content: {}",
+            *test_page,
+            test_page.get_slice(kvm_context.domain_slice)[0],
+        );
+
         // start running the function
         // TODO: on unexpected break, mark function as failure
         loop {
             let reason = self.vcpu.run().unwrap();
             match reason {
+                // the expected way to exit a function with the new interface
+                VcpuExit::IoOut(32, _) => {
+                    break;
+                }
                 #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(14, _) => {
                     // ATTENTION: uncomment out 14 in x86_64 page handler so it exits to here
@@ -307,9 +319,19 @@ impl EngineLoop for KvmLoop {
                     dump_regs(&self.vcpu);
                     break;
                 }
-                // the expected way to exit a function with the new interface
-                VcpuExit::IoOut(32, _) => {
+                VcpuExit::IoOut(1, _) => {
+                    debug!("Exit at end of asm");
+                    dump_regs(&self.vcpu);
                     break;
+                }
+                // #[cfg(feature = "backend_debug")]
+                VcpuExit::IoOut(point, value) => {
+                    let val = value[0];
+                    debug!("Exit from handler at point {:?}", point);
+                    dump_regs(&self.vcpu);
+                    if point == 35 && val == 5 {
+                        break;
+                    }
                 }
                 VcpuExit::SystemEvent(_type, _data) => {
                     debug!("System Event, type: {}", _type);
@@ -326,6 +348,13 @@ impl EngineLoop for KvmLoop {
                 }
             }
         }
+
+        // check if address at 69632 is 0
+        log::warn!(
+            "test_page address: {}, content: {}",
+            *test_page,
+            test_page.get_slice(kvm_context.domain_slice)[0],
+        );
 
         // let dirty_log = self.vm.get_dirty_log(0, kvm_context.storage.len()).unwrap();
 
