@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package dandelion_frontend;
+
+message DandelionRequest {
+    oneof target {
+        string name = 1;
+        string composition = 2;
+    }
+    repeated InputSet sets = 3;
+}
+
+message DandelionDeserializeResponse {
+    repeated InputSet sets = 1;
+    optional string timestamps = 2;
+}
+
+message InputSet {
+    string identifier = 1;
+    repeated InputItem items = 2;
+}
+
+message InputItem {
+    string identifier = 1;
+    uint32 key = 2;
+    uint64 payload_length = 3;
+}
+
+message RegisterFunction {
+    string name = 1;
+    uint64 context_size = 2;
+    string engine_type = 3;
+    string local_path = 4;
+    uint64 binary_length = 5;
+    repeated RegistrationInputSet input_sets = 6;
+    repeated string output_sets = 7;
+    repeated uint64 min_set_bytes = 8;
+}
+
+message RegistrationInputSet {
+    string identifier = 1;
+    StaticInputItems static_items = 2;
+}
+
+message StaticInputItems {
+    repeated StaticInputItem items = 1;
+}
+
+message StaticInputItem {
+    string identifier = 1;
+    uint64 payload_length = 2;
+}
+
+message RegisterChain {
+    string composition = 1;
+}
+
+message StatusResponse {
+    string message = 1;
+}
