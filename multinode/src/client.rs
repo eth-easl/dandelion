@@ -1073,7 +1073,6 @@ async fn remote_queue_client_logic(
                                 invocation_id
                             );
                         }
-                        work_from_remote += 1;
                         let function_arc = Arc::new(function_id);
                         let recorder = Recorder::new(function_arc.clone(), start_instance);
                         let inputs =

@@ -19,6 +19,8 @@ use std::{
 static DEBT_ALIVE: u8 = 0b0000_0001;
 static PROMISE_ALIVE: u8 = 0b0000_0010;
 static ABORT_SET: u8 = 0b0000_0100;
+// set as long as the debt still holds a reference to the data (cleared after DEBT_ALIVE and the wake)
+static DEBT_REF: u8 = 0b0000_1000;
 
 type AbortHandle = Box<dyn FnOnce() + Send + 'static>;
 
@@ -121,7 +123,7 @@ impl PromiseBuffer {
                 PromiseError::DroppedDebt
             ))),
             waker: AtomicWaker::new(),
-            flags: AtomicU8::new(DEBT_ALIVE | PROMISE_ALIVE),
+            flags: AtomicU8::new(DEBT_ALIVE | DEBT_REF | PROMISE_ALIVE),
         });
         *data = default;
 
@@ -189,7 +191,8 @@ impl Drop for Promise {
         self.abort_internal();
         let data = unsafe { &(&*self.data).data };
         let previous_flags = data.flags.fetch_and(!PROMISE_ALIVE, Ordering::SeqCst);
-        if (previous_flags & DEBT_ALIVE) == 0 {
+        // only free once the debt has completely finished using the data (including the wake)
+        if (previous_flags & DEBT_REF) == 0 {
             self.origin.drop_promise_data(self.data);
         }
     }
@@ -228,12 +231,15 @@ impl Debt {
 impl Drop for Debt {
     fn drop(&mut self) {
         let data = unsafe { &(&*self.data).data };
-        // mark debt as dropped
-        let previous_flags = data.flags.fetch_and(!DEBT_ALIVE, Ordering::SeqCst);
+        // mark debt as dropped, this publishes the result to the promise
+        data.flags.fetch_and(!DEBT_ALIVE, Ordering::SeqCst);
 
         // call waker, if the promise has been dropped the waker should be able to deal with a delayed signal
         data.waker.wake();
 
+        // Release the reference to the data only after the wake. Once DEBT_ALIVE is cleared the promise
+        // can resolve and be dropped concurrently, so it must not free the data while we still use it.
+        let previous_flags = data.flags.fetch_and(!DEBT_REF, Ordering::SeqCst);
         if previous_flags & PROMISE_ALIVE == 0 {
             self.origin.as_ref().drop_promise_data(self.data);
         }
