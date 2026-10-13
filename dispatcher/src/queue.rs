@@ -334,9 +334,7 @@ impl WorkQueue {
             {
                 let (total_items, total_size) =
                     _input_sets.iter().fold((0, 0), |(number, size), set| {
-                        set.as_ref()
-                            .map(|set| (number + set.len(), size + set.size()))
-                            .unwrap_or((number, size))
+                        (number + set.len(), size + set.total_size)
                     });
                 recorder.record_input(total_items as u64, total_size as u64);
             }
@@ -532,9 +530,7 @@ impl WorkQueue {
                     {
                         let (total_items, total_size) =
                             input_sets.iter().fold((0, 0), |(number, size), set| {
-                                set.as_ref()
-                                    .map(|set| (number + set.len(), size + set.size()))
-                                    .unwrap_or((number, size))
+                                (number + set.len(), size + set.total_size)
                             });
                         // Record queue start here, as we want do to it before taking the lock.
                         recorder.record_input(total_items as u64, total_size as u64);

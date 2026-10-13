@@ -49,10 +49,10 @@ struct Inner {
 pub(crate) struct Function {
     composition_idx: usize,
     inner: Mutex<Inner>,
-    min_set_bytes: Vec<usize>, // TODO: might want a metadata reference here?
-    // TODO: consider changing this to a template type, that the dispatcher then fills in.
-    // Would allow to change the type to do for example metadata memoization.
-    // For example using a Weak to the registry's function struct allows fast reuse and detection for when it goes stale.
+    // TODO: Replace the min_set_bytes and function_id fields with a reference to the FunctionType
+    //       resolved from the registry once when the Composition is built. This requires moving
+    //       some of the definitions into the commons crate (Metadata, FunctionType, FunctionAlternatives, ...)
+    min_set_bytes: Vec<usize>,
     function_id: FunctionId,
     join_order: Arc<Vec<usize>>,
 }

@@ -797,6 +797,8 @@ impl Dispatcher {
                     .clone();
 
                 let metadata = func_info.metadata;
+                #[cfg(feature = "log_function_stdio")]
+                let stdio_index = metadata.output_sets.iter().position(|name| name == "stdio");
                 // run on engine
                 trace!(
                         "Running function {} with input sets {:?} and output sets {:?} and alternatives: {:?}",
@@ -826,7 +828,7 @@ impl Dispatcher {
                 recorder.record(RecordPoint::FutureReturn);
 
                 #[cfg(feature = "log_function_stdio")]
-                log_io_sets(&sets, &function_id)?;
+                log_io_sets(&sets, stdio_index, &function_id)?;
 
                 Ok(sets)
             }
@@ -849,35 +851,34 @@ impl Dispatcher {
 }
 
 #[cfg(feature = "log_function_stdio")]
-fn log_io_sets(sets: &Vec<Arc<Vec<DataItem>>>, function_id: &FunctionId) -> DandelionResult<()> {
-    use memory::context::ContextTrait;
+fn log_io_sets(
+    sets: &Vec<Arc<Vec<DataItem>>>,
+    stdio_index: Option<usize>,
+    function_id: &FunctionId,
+) -> DandelionResult<()> {
+    use memory::{context::ContextTrait, data::ItemData};
 
-    if let Some(io_set) = sets
-        .iter()
-        .filter_map(|set_option| set_option.as_ref())
-        .find(|set| set.get_name() == "stdio")
-    {
-        for (item, data) in io_set {
-            use machine_interface::composition::ItemData;
-            let context = match data {
-                ItemData::LocalData(context) => context,
+    if let Some(io_set) = stdio_index.and_then(|index| sets.get(index)) {
+        for item in io_set.iter() {
+            let local = match &item.data {
+                ItemData::Local(local) => local,
                 _ => {
                     debug!("Cannot print stdio data for non local items");
                     continue;
                 }
             };
-            if item.ident == "stderr" && item.data.size > 0 {
-                let mut stderr_output: Vec<u8> = vec![0; item.data.size];
-                context.context.read(item.data.offset, &mut stderr_output)?;
+            if item.ident == "stderr" && local.pos.size > 0 {
+                let mut stderr_output: Vec<u8> = vec![0; local.pos.size];
+                local.ctx.read(local.pos.offset, &mut stderr_output)?;
                 log::warn!(
                     "Function '{}' result contains stderr output:\n{}",
                     function_id,
                     std::str::from_utf8(stderr_output.as_slice()).expect("Invalid stderr buffer")
                 );
             }
-            if item.ident == "stdout" && item.data.size > 0 {
-                let mut stdout_output: Vec<u8> = vec![0; item.data.size];
-                context.context.read(item.data.offset, &mut stdout_output)?;
+            if item.ident == "stdout" && local.pos.size > 0 {
+                let mut stdout_output: Vec<u8> = vec![0; local.pos.size];
+                local.ctx.read(local.pos.offset, &mut stdout_output)?;
                 debug!(
                     "Function '{}' output:\n{}",
                     function_id,
