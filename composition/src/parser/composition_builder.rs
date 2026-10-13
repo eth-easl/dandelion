@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use dandelion_commons::FunctionId;
+use dandelion_commons::{dandelion_err, CompositionError, DandelionError, FunctionId};
 use memory::data::Metadata;
 
 use crate::{
@@ -40,7 +40,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
     ) -> Result<(), ErrorDiagnostic> {
         self.registry
             .check_declaration(decl.v.name, &decl.v.params, &decl.v.returns)
-            .map_err(|err| ErrorDiagnostic::new(decl.span.clone(), err.to_string()))?;
+            .map_err(|err| ErrorDiagnostic::new(decl.span.clone(), err))?;
         self.declared_functions.insert(decl.v.name, &decl.v);
         Ok(())
     }
@@ -53,16 +53,23 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         let fdecl = &self.declared_functions.get(&fappl.v.name).ok_or_else(|| {
             ErrorDiagnostic::new(
                 fappl.span.clone(),
-                format!("Unknown function '{}'.", fappl.v.name),
+                dandelion_err!(DandelionError::Composition(
+                    CompositionError::UnknownFunction(format!(
+                        "Unknown function '{}'.",
+                        fappl.v.name
+                    ))
+                )),
             )
         })?;
         if fdecl.params.len() < fappl.v.args.len() || fdecl.returns.len() < fappl.v.rets.len() {
             return Err(ErrorDiagnostic::new(
                 fappl.span.clone(),
-                format!(
-                    "Function declaration and application mismatch for function {}.",
-                    fappl.v.name
-                ),
+                dandelion_err!(DandelionError::Composition(
+                    CompositionError::InvalidFunctionApplication(format!(
+                        "Function declaration and application mismatch for function {}.",
+                        fappl.v.name
+                    ))
+                )),
             ));
         }
         let num_params = fdecl.params.len();
@@ -83,10 +90,10 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 let data_set_id = data_set_ids.get(&arg.v.ident).ok_or_else(|| {
                     ErrorDiagnostic::new(
                         arg.span.clone(),
-                        format!(
+                        dandelion_err!(DandelionError::Composition(CompositionError::UndefinedDataSet(format!(
                             "Could not find data set {} used as input for argument {} in function {}.",
                             arg.v.ident, arg.v.name, fappl.v.name
-                        ),
+                        )))),
                     )
                 })?;
                 arg_spans[arg_set_idx] = Some(arg.span.clone());
@@ -98,10 +105,12 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             } else {
                 return Err(ErrorDiagnostic::new(
                     arg.span.clone(),
-                    format!(
+                    dandelion_err!(DandelionError::Composition(
+                        CompositionError::InvalidFunctionApplication(format!(
                         "Argument {} does not match any of the declared arguments for function {}.",
                         arg.v.name, fappl.v.name
-                    ),
+                    ))
+                    )),
                 ));
             }
         }
@@ -130,10 +139,12 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                     .ok_or_else(|| {
                         ErrorDiagnostic::new(
                             fappl.span.clone(),
-                            format!(
-                                "Join order for {} contains unknown argument name {}.",
-                                fappl.v.name, arg_name
-                            ),
+                            dandelion_err!(DandelionError::Composition(
+                                CompositionError::InvalidFunctionApplication(format!(
+                                    "Join order for {} contains unknown argument name {}.",
+                                    fappl.v.name, arg_name
+                                ))
+                            )),
                         )
                     })?;
                 // best span available for this argument slot, falling back to the whole
@@ -148,7 +159,12 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 if processed_sets[arg_set_idx] {
                     return Err(ErrorDiagnostic::new(
                         arg_span(),
-                        format!("Joining argument '{}' twice.", arg_name),
+                        dandelion_err!(DandelionError::Composition(
+                            CompositionError::InvalidSecondJoin(format!(
+                                "Joining argument '{}' twice.",
+                                arg_name
+                            ))
+                        )),
                     ));
                 }
                 processed_sets[arg_set_idx] = true;
@@ -165,9 +181,9 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                         Sharding::Keyed(ref mut strategy) => {
                             if let Some(is_any) = curr_join_chain_any {
                                 if is_any {
-                                    return Err(ErrorDiagnostic::new(arg_span(), format!(
+                                    return Err(ErrorDiagnostic::new(arg_span(), dandelion_err!(DandelionError::Composition(CompositionError::InvalidJoinSharding(format!(
                                         "Mixing keyed and anyKeyed shardings: Encountered keyed while processing any chain for index {}.", arg_set_idx
-                                    )));
+                                    ))))));
                                 }
                             }
                             curr_join_chain_any = Some(false);
@@ -179,9 +195,9 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                         Sharding::AnyKeyed(ref mut strategy) => {
                             if let Some(is_any) = curr_join_chain_any {
                                 if !is_any {
-                                    return Err(ErrorDiagnostic::new(arg_span(), format!(
+                                    return Err(ErrorDiagnostic::new(arg_span(), dandelion_err!(DandelionError::Composition(CompositionError::InvalidJoinSharding(format!(
                                         "Mixing keyed and anyKeyed shardings: Encountered anyKeyed while processing non-any chain for index {}.", arg_set_idx
-                                    )));
+                                    ))))));
                                 }
                             }
                             curr_join_chain_any = Some(true);
@@ -190,9 +206,9 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                                 *strategy = curr_strategy;
                             }
                         }
-                        _ => return Err(ErrorDiagnostic::new(arg_span(), format!(
+                        _ => return Err(ErrorDiagnostic::new(arg_span(), dandelion_err!(DandelionError::Composition(CompositionError::InvalidJoinSharding(format!(
                             "Joining set with non-keyed sharding (set_index: {}, sharding: {:?}.", arg_set_idx, input.sharding
-                        ))),
+                        )))))),
                     }
                 }
             }
@@ -230,20 +246,22 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 let data_set_id = data_set_ids.get(&ret.v.ident).ok_or_else(|| {
                     ErrorDiagnostic::new(
                         ret.span.clone(),
-                        format!(
+                        dandelion_err!(DandelionError::Composition(CompositionError::UndefinedDataSet(format!(
                             "Could not find data set {} used as output for return {} in function {}.",
                             ret.v.ident, ret.v.name, fappl.v.name
-                        ),
+                        )))),
                     )
                 })?;
                 outputs[ret_set_idx] = Some(*data_set_id);
             } else {
                 return Err(ErrorDiagnostic::new(
                     ret.span.clone(),
-                    format!(
-                        "Return {} does not match any of the declared returns for function {}.",
-                        ret.v.name, fappl.v.name
-                    ),
+                    dandelion_err!(DandelionError::Composition(
+                        CompositionError::InvalidFunctionApplication(format!(
+                            "Return {} does not match any of the declared returns for function {}.",
+                            ret.v.name, fappl.v.name
+                        ))
+                    )),
                 ));
             }
         }
@@ -263,7 +281,12 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         if self.registry.id_exists(comp.v.name) || self.composition_ids.contains(&comp.v.name) {
             return Err(ErrorDiagnostic::new(
                 comp.span.clone(),
-                format!("Composition identifier '{}' is already taken.", comp.v.name),
+                dandelion_err!(DandelionError::Composition(
+                    CompositionError::DuplicateIdentifier(format!(
+                        "Composition identifier '{}' is already taken.",
+                        comp.v.name
+                    ))
+                )),
             ));
         }
         self.composition_ids.insert(comp.v.name);
@@ -277,7 +300,12 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 Entry::Occupied(_) => {
                     return Err(ErrorDiagnostic::new(
                         comp.span.clone(),
-                        format!("Duplicate set name '{}'.", input_set_name),
+                        dandelion_err!(DandelionError::Composition(
+                            CompositionError::DuplicateSetName(format!(
+                                "Duplicate set name '{}'.",
+                                input_set_name
+                            ))
+                        )),
                     ))
                 }
             };
@@ -319,7 +347,12 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                                 } else {
                                     return Err(ErrorDiagnostic::new(
                                         ret.span.clone(),
-                                        format!("Duplicate set name '{}'.", ret.v.ident),
+                                        dandelion_err!(DandelionError::Composition(
+                                            CompositionError::DuplicateSetName(format!(
+                                                "Duplicate set name '{}'.",
+                                                ret.v.ident
+                                            ))
+                                        )),
                                     ));
                                 }
                             }
@@ -449,11 +482,13 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                         };
                         return Err(ErrorDiagnostic::new(
                             span,
-                            format!(
-                                "Composition '{}' contains a cycle: {}.",
-                                composition_name,
-                                cycle.join(" -> ")
-                            ),
+                            dandelion_err!(DandelionError::Composition(
+                                CompositionError::CyclicComposition(format!(
+                                    "Composition '{}' contains a cycle: {}.",
+                                    composition_name,
+                                    cycle.join(" -> ")
+                                ))
+                            )),
                         ));
                     }
                     Visit::Done => {}

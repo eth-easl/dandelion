@@ -121,6 +121,28 @@ impl DError {
     }
 }
 
+impl DError {
+    /// The human readable message of the contained error, without origin information.
+    pub fn message(&self) -> String {
+        self.error.message()
+    }
+}
+
+impl DandelionError {
+    /// The human readable message of the error. For variants carrying a message this is only the
+    /// inner message, otherwise the debug representation of the variant.
+    pub fn message(&self) -> String {
+        match self {
+            DandelionError::Composition(err) => err.message(),
+            DandelionError::FunctionRegistry(err) => err.message(),
+            DandelionError::Parsing(msg)
+            | DandelionError::MalformedSystemFuncArg(msg)
+            | DandelionError::InvalidSystemFuncArg(msg) => msg.clone(),
+            _ => format!("{:?}", self),
+        }
+    }
+}
+
 impl PartialEq<DError> for DandelionError {
     fn eq(&self, other: &DError) -> bool {
         self.eq(&other.error)
@@ -274,6 +296,20 @@ pub enum FunctionRegistryError {
     LocalLoadingReceive,
 }
 
+impl FunctionRegistryError {
+    /// The inner message of the error, or the debug representation for variants without one.
+    pub fn message(&self) -> String {
+        match self {
+            FunctionRegistryError::DuplicateInsert(msg)
+            | FunctionRegistryError::TypeConflictInsert(msg)
+            | FunctionRegistryError::InvalidSystemInsert(msg)
+            | FunctionRegistryError::InvalidUserInsert(msg)
+            | FunctionRegistryError::UnknownFunction(msg) => msg.clone(),
+            _ => format!("{:?}", self),
+        }
+    }
+}
+
 /// Errors related to function compositions
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompositionError {
@@ -295,6 +331,26 @@ pub enum CompositionError {
     InvalidSecondJoin(String),
     /// Set joins (non cross join) either an all/each sharding or an anyKeyed with a keyed sharding.
     InvalidJoinSharding(String),
+    /// A function in the composition (transitively) consumes one of its own outputs.
+    CyclicComposition(String),
+}
+
+impl CompositionError {
+    /// The inner message of the error, or the debug representation for variants without one.
+    pub fn message(&self) -> String {
+        match self {
+            CompositionError::ParsingError => format!("{:?}", self),
+            CompositionError::DuplicateIdentifier(msg)
+            | CompositionError::InvalidFunctionDeclaration(msg)
+            | CompositionError::UnknownFunction(msg)
+            | CompositionError::InvalidFunctionApplication(msg)
+            | CompositionError::UndefinedDataSet(msg)
+            | CompositionError::DuplicateSetName(msg)
+            | CompositionError::InvalidSecondJoin(msg)
+            | CompositionError::InvalidJoinSharding(msg)
+            | CompositionError::CyclicComposition(msg) => msg.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -15,6 +15,10 @@ fn expect_parse_error(src: &str, registry: &TestRegistry, expected_substring: &s
         msg.contains(expected_substring),
         "error message did not contain {expected_substring:?}:\n{msg}"
     );
+    assert!(
+        !msg.contains('\x1b'),
+        "error message contains ANSI escape codes:\n{msg}"
+    );
 }
 
 #[test]
@@ -36,10 +40,36 @@ fn declaration_mismatched_with_the_registry_is_rejected() {
     "#;
     // The registry knows a `Foo` with a different signature than the one declared above.
     let registry = TestRegistry::new().with_function("Foo", &["Other"], &["B"]);
+    expect_parse_error(
+        src,
+        &registry,
+        "registered signature for 'Foo' does not match its declaration",
+    );
+    // The report header carries the registry error without its origin, the span label only its
+    // inner message.
     let Err(err) = CompositionTemplate::parse(src, &registry) else {
         panic!("expected a parse error");
     };
-    assert!(matches!(err.error, DandelionError::Parsing(_)));
+    let DandelionError::Parsing(msg) = &err.error else {
+        panic!("expected a Parsing error, got {:?}", err.error);
+    };
+    let mut lines = msg.lines();
+    let header = lines.next().expect("diagnostic has a header");
+    assert!(
+        header.contains("Parsing("),
+        "header does not contain the error:\n{msg}"
+    );
+    assert!(
+        !header.contains(".rs:"),
+        "header contains the error origin:\n{msg}"
+    );
+    assert!(
+        lines.any(|line| {
+            line.ends_with("registered signature for 'Foo' does not match its declaration")
+                && !line.contains("Parsing(")
+        }),
+        "no span label with only the inner message:\n{msg}"
+    );
 }
 
 #[test]

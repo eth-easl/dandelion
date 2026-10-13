@@ -7,7 +7,7 @@ use crate::{
 };
 use ariadne::{Color, Config, Label, Report, ReportKind, Source};
 use chumsky::{prelude::*, Parser as ChumskyParser};
-use dandelion_commons::FunctionId;
+use dandelion_commons::{dandelion_err, DError, DandelionError, FunctionId};
 use memory::data::Metadata;
 use std::ops::Range;
 
@@ -348,38 +348,46 @@ impl<'src, R: Registry> Parser<'src, R> {
 
 pub(crate) struct ErrorDiagnostic {
     span: Span,
-    message: String,
+    error: DError,
 }
 
 impl ErrorDiagnostic {
-    fn new(span: Span, message: String) -> Self {
-        ErrorDiagnostic { span, message }
+    fn new(span: Span, error: DError) -> Self {
+        ErrorDiagnostic { span, error }
     }
 
     fn from_syntax_error(e: Rich<'_, char>) -> Self {
         ErrorDiagnostic {
             span: e.span().into_range(),
-            message: e.to_string(),
+            error: dandelion_err!(DandelionError::Parsing(e.to_string())),
         }
     }
-}
 
-/// Renders a list of diagnostics into a single string carrying ANSI color escapes.
-pub(crate) fn render_diagnostics(src: &str, diagnostics: &[ErrorDiagnostic]) -> String {
-    let source = Source::from(src);
-    let mut buf = Vec::new();
-    for diagnostic in diagnostics {
-        Report::build(ReportKind::Error, diagnostic.span.clone())
-            .with_config(Config::default())
-            .with_message(&diagnostic.message)
+    /// Renders the diagnostic for logging, with ANSI colors and the origin of the error.
+    pub(crate) fn render_log(&self, src: &str) -> String {
+        self.render(src, &self.error.to_string(), true)
+    }
+
+    /// Renders the diagnostic as plain text for the request response, without the origin of the error.
+    pub(crate) fn render_response(&self, src: &str) -> String {
+        self.render(src, &self.error.error.to_string(), false)
+    }
+
+    fn render(&self, src: &str, header: &str, color: bool) -> String {
+        // name shown for the source in the report location (e.g. `composition:2:1`)
+        const SOURCE_NAME: &str = "composition";
+        let mut buf = Vec::new();
+        Report::build(ReportKind::Error, (SOURCE_NAME, self.span.clone()))
+            .with_config(Config::default().with_color(color))
+            .with_message(header)
             .with_label(
-                Label::new(diagnostic.span.clone())
-                    .with_message(&diagnostic.message)
+                Label::new((SOURCE_NAME, self.span.clone()))
+                    .with_message(self.error.message())
                     .with_color(Color::Red),
             )
             .finish()
-            .write(&source, &mut buf)
+            .write((SOURCE_NAME, Source::from(src)), &mut buf)
             .expect("writing to an in-memory buffer never fails");
+        String::from_utf8(buf).expect("ariadne only ever emits valid utf-8")
     }
-    String::from_utf8(buf).expect("ariadne only ever emits valid utf-8")
 }

@@ -318,7 +318,7 @@ async fn service(
             warn!("Failed to serve request: {}", err);
             // for all other requests set response status to something not ok and write the error in the response body
             let mut response = Response::new(DandelionBody::from_vec(
-                format!("Failed to serve request: {}", err).into_bytes(),
+                format!("Failed to serve request: {}", err.message()).into_bytes(),
             ));
             *response.status_mut() = match err.error {
                 DandelionError::RequestError(FrontendError::InvalidRequest(_)) => {

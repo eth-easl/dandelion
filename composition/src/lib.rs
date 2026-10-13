@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::{
     function::Function,
-    parser::{render_diagnostics, Parser},
+    parser::{ErrorDiagnostic, Parser},
     set::CompositionSet,
     sharding::Sharding,
 };
@@ -63,9 +63,19 @@ impl CompositionTemplate {
     ) -> DandelionResult<Vec<(FunctionId, Self, Metadata)>> {
         let parser = Parser::new(registry);
         parser.parse(raw).map_err(|diagnostics| {
-            let err_str = render_diagnostics(raw, &diagnostics);
-            warn!("Composition parsing failed: {}", err_str);
-            dandelion_err!(DandelionError::Parsing(err_str))
+            let render = |render_fn: fn(&ErrorDiagnostic, &str) -> String| {
+                diagnostics
+                    .iter()
+                    .map(|diagnostic| render_fn(diagnostic, raw))
+                    .collect::<String>()
+            };
+            warn!(
+                "Composition parsing failed: \n{}",
+                render(ErrorDiagnostic::render_log)
+            );
+            dandelion_err!(DandelionError::Parsing(render(
+                ErrorDiagnostic::render_response
+            )))
         })
     }
 }
