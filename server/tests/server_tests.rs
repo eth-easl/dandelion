@@ -2,9 +2,10 @@
 mod server_tests {
 
     use byteorder::{LittleEndian, ReadBytesExt};
-    use dandelion_server::{DandelionDeserializeResponse, DandelionRequest, InputItem, InputSet};
+    use dandelion_server::protocol::PROTOCOL_VERSION;
+    use prost::Message;
+    use proto::dandelion_request::Target;
     use reqwest::blocking::Client;
-    use serde::Serialize;
     use serial_test::serial;
     use std::{
         io::{pipe, BufRead, BufReader, Cursor, PipeReader, PipeWriter, Read, Write},
@@ -12,29 +13,9 @@ mod server_tests {
         thread::spawn,
     };
 
-    #[derive(Serialize)]
-    struct RegisterFunction {
-        name: String,
-        context_size: u64,
-        engine_type: String,
-        binary: Vec<u8>,
-        input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
-        output_sets: Vec<String>,
-    }
-
-    #[derive(Serialize)]
-    struct RegisterFunctionLocal {
-        name: String,
-        context_size: u64,
-        engine_type: String,
-        local_path: String,
-        binary: Vec<u8>,
-        input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
-        output_sets: Vec<String>,
-    }
-    #[derive(Serialize)]
-    struct RegisterChain {
-        composition: String,
+    #[allow(dead_code)]
+    mod proto {
+        include!(concat!(env!("OUT_DIR"), "/dandelion_frontend.rs"));
     }
 
     struct ServerKiller {
@@ -144,6 +125,42 @@ mod server_tests {
         }
     }
 
+    fn encode(metadata: &impl Message, payload: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        prost::encoding::encode_varint(PROTOCOL_VERSION, &mut body);
+        metadata.encode_length_delimited(&mut body).unwrap();
+        body.extend_from_slice(payload);
+        body
+    }
+
+    fn decode<M: Message + Default>(mut body: &[u8]) -> (M, &[u8]) {
+        assert_eq!(
+            prost::encoding::decode_varint(&mut body).unwrap(),
+            PROTOCOL_VERSION
+        );
+        let metadata = M::decode_length_delimited(&mut body).unwrap();
+        (metadata, body)
+    }
+
+    fn status_message(body: &[u8]) -> String {
+        decode::<proto::StatusResponse>(body).0.message
+    }
+
+    fn invocation_body(target: Target, set_name: &str, item_name: &str, data: &[u8]) -> Vec<u8> {
+        let metadata = proto::DandelionRequest {
+            target: Some(target),
+            sets: vec![proto::InputSet {
+                identifier: set_name.into(),
+                items: vec![proto::InputItem {
+                    identifier: item_name.into(),
+                    key: 0,
+                    payload_length: data.len() as u64,
+                }],
+            }],
+        };
+        encode(&metadata, data)
+    }
+
     fn send_matrix_request(
         endpoint: &str,
         function_name: String,
@@ -182,33 +199,22 @@ mod server_tests {
         for _ in 0..matrix_dim * matrix_dim {
             data.extend_from_slice(&u64::to_le_bytes(1));
         }
-        let mat_request = DandelionRequest {
-            name: function_name,
-            sets: vec![InputSet {
-                identifier: String::from(""),
-                items: vec![InputItem {
-                    identifier: String::from(""),
-                    key: 0,
-                    data: &data,
-                }],
-            }],
-        };
+        let mat_request = invocation_body(Target::Name(function_name), "", "", &data);
 
         let resp = client
             .post(endpoint)
             .version(http_version)
-            .body(bson::to_vec(&mat_request).unwrap())
+            .body(mat_request)
             .send()
             .unwrap();
         assert!(resp.status().is_success());
 
         let body = resp.bytes().unwrap();
-        let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
+        let (response, response_data) = decode::<proto::DandelionDeserializeResponse>(&body);
         #[cfg(feature = "timestamp")]
-        println!("{}", response.timestamps);
+        println!("{:?}", response.timestamps);
         assert_eq!(1, response.sets.len());
         assert_eq!(1, response.sets[0].items.len());
-        let response_data = response.sets[0].items[0].data;
         assert_eq!(
             (matrix_dim * matrix_dim + 1) as usize * size_of::<u64>(),
             response_data.len()
@@ -255,28 +261,27 @@ mod server_tests {
         };
 
         let function_name = format!("matmul_{}", version_string);
-        let register_request = if local {
-            bson::to_vec(&RegisterFunctionLocal {
-                name: function_name.clone(),
-                context_size: 0x802_0000,
-                local_path: matmul_path,
-                binary: Vec::new(),
-                engine_type,
-                input_sets: vec![(String::from("InMats"), None)],
-                output_sets: vec![String::from("OutMats")],
-            })
-            .unwrap()
+        let (local_path, binary) = if local {
+            (matmul_path, Vec::new())
         } else {
-            bson::to_vec(&RegisterFunction {
+            (String::new(), std::fs::read(matmul_path).unwrap())
+        };
+        let register_request = encode(
+            &proto::RegisterFunction {
                 name: function_name.clone(),
                 context_size: 0x802_0000,
-                binary: std::fs::read(matmul_path).unwrap(),
+                min_set_bytes: vec![],
+                local_path,
+                binary_length: binary.len() as u64,
                 engine_type,
-                input_sets: vec![(String::from("InMats"), None)],
+                input_sets: vec![proto::RegistrationInputSet {
+                    identifier: String::from("InMats"),
+                    static_items: None,
+                }],
                 output_sets: vec![String::from("OutMats")],
-            })
-            .unwrap()
-        };
+            },
+            &binary,
+        );
         let registration_resp = client
             .post("http://localhost:8080/register/function")
             .version(http_version)
@@ -284,9 +289,13 @@ mod server_tests {
             .send()
             .unwrap();
         assert!(registration_resp.status().is_success());
+        assert_eq!(
+            status_message(&registration_resp.bytes().unwrap()),
+            "Function registered"
+        );
 
         let chain_name = format!("chain_{}", version_string);
-        let chain_request = RegisterChain {
+        let chain_request = proto::RegisterChain {
             composition: format!(
                 r#"
                 function {function} (InMats) => (OutMats);
@@ -303,10 +312,47 @@ mod server_tests {
         let chain_resp = client
             .post("http://localhost:8080/register/composition")
             .version(http_version)
-            .body(bson::to_vec(&chain_request).unwrap())
+            .body(encode(&chain_request, &[]))
             .send()
             .unwrap();
         assert!(chain_resp.status().is_success());
+        assert_eq!(
+            status_message(&chain_resp.bytes().unwrap()),
+            "Function registered"
+        );
+
+        let matrix = [1u64.to_le_bytes(), 1u64.to_le_bytes()].concat();
+        let inline = invocation_body(
+            Target::Composition(
+                chain_request
+                    .composition
+                    .replace(&chain_name, &format!("inline_{version_string}")),
+            ),
+            "CompInMats",
+            "matrix",
+            &matrix,
+        );
+        let response = client
+            .post("http://localhost:8080/hot/matmul")
+            .version(http_version)
+            .body(inline)
+            .send()
+            .unwrap();
+        assert!(response.status().is_success());
+        let body = response.bytes().unwrap();
+        assert_eq!(
+            decode::<proto::DandelionDeserializeResponse>(&body).1,
+            matrix.as_slice()
+        );
+
+        let response = client
+            .post("http://localhost:8080/hot/matmul")
+            .version(http_version)
+            .body(encode(&proto::DandelionRequest::default(), &[]))
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert!(status_message(&response.bytes().unwrap()).contains("Missing invocation target"));
 
         send_matrix_request(
             "http://localhost:8080/hot/matmul",
@@ -528,7 +574,7 @@ mod server_tests {
         let servers = start_multinode_servers();
         let client = multinode_client();
 
-        let composition_request = RegisterChain {
+        let composition_request = proto::RegisterChain {
             composition: String::from(
                 r#"
                 function matmul(matrix_in) => (matrix_out);
@@ -544,7 +590,7 @@ mod server_tests {
         let composition_resp = client
             .post("http://localhost:8080/register/composition")
             .version(reqwest::Version::HTTP_11)
-            .body(bson::to_vec(&composition_request).unwrap())
+            .body(encode(&composition_request, &[]))
             .send()
             .unwrap();
         assert!(composition_resp.status().is_success());
