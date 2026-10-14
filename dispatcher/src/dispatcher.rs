@@ -377,8 +377,8 @@ impl Dispatcher {
 
     /// returns a vector of pairs of a index and a composition set
     /// the index describes which output set the composition belongs to.
-    pub async fn queue_function<'dispatcher>(
-        &'dispatcher self,
+    pub async fn queue_function(
+        &self,
         composition_id: usize,
         function_id: FunctionId,
         input_sets: Vec<DataSet>,

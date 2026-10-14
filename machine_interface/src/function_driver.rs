@@ -89,6 +89,6 @@ pub trait Driver: Send + Sync {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn MemoryDomain>,
+        static_domain: &dyn MemoryDomain,
     ) -> DandelionResult<functions::Function>;
 }

@@ -227,10 +227,14 @@ impl MmapMem {
         self.ptr
     }
 
+    /// # Safety
+    /// The caller must ensure no mutable access to the mapping exists for the lifetime of the slice.
     pub unsafe fn as_slice(&self) -> &[u8] {
         std::slice::from_raw_parts(self.as_ptr(), self.size())
     }
 
+    /// # Safety
+    /// The caller must ensure no other access to the mapping exists for the lifetime of the slice.
     pub unsafe fn as_slice_mut(&mut self) -> &mut [u8] {
         std::slice::from_raw_parts_mut(self.as_ptr(), self.size())
     }

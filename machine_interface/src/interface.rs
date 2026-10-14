@@ -126,8 +126,8 @@ struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
 pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Context,
     system_data_offset: usize,
-    input_set_names: &Vec<(String, Option<DataSet>)>,
-    output_set_names: &Vec<String>,
+    input_set_names: &[(String, Option<DataSet>)],
+    output_set_names: &[String],
 ) -> DandelionResult<()> {
     // prepare information to set up input sets, output sets and input buffers
     let input_buffer_number = context
@@ -154,15 +154,18 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         return err_dandelion!(DandelionError::OutOfMemory);
     }
     // start writing input set info structs
-    for c in 0..context.content.len() {
+    // TODO: removed the set identifier -> to completely remove it here we might need to change
+    //       the dlibc?
+    for (c, (name, _)) in input_set_names
+        .iter()
+        .enumerate()
+        .take(context.content.len())
+    {
         // get name and length
         let buffer_len = context.content[c]
             .as_ref()
             .map(|set| set.items.len())
             .unwrap_or(0);
-        // TODO: removed the set identifier -> to completely remove it here we might need to change
-        //       the dlibc?
-        let name = &input_set_names[c].0;
         let string_offset = if !name.is_empty() {
             context.get_free_space_and_write_slice(name.as_bytes())? as usize
         } else {
@@ -367,12 +370,12 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
             return err_dandelion!(DandelionError::OutOfMemory);
         }
         // let mut total_size = 0;
-        for buffer_index in first_buffer..one_past_last_buffer {
-            let buffer_ident_offset = usize_ptr!(output_buffers[buffer_index].ident);
-            let buffer_ident_length = usize!(output_buffers[buffer_index].ident_len);
-            let data_offset = usize_ptr!(output_buffers[buffer_index].data);
-            let data_length = usize!(output_buffers[buffer_index].data_len);
-            let key = usize!(output_buffers[buffer_index].key);
+        for output_buffer in &output_buffers[first_buffer..one_past_last_buffer] {
+            let buffer_ident_offset = usize_ptr!(output_buffer.ident);
+            let buffer_ident_length = usize!(output_buffer.ident_len);
+            let data_offset = usize_ptr!(output_buffer.data);
+            let data_length = usize!(output_buffer.data_len);
+            let key = usize!(output_buffer.key);
             let ident_string = if ident_length > 0 {
                 let mut buffer_ident = vec![0u8; buffer_ident_length];
                 context.read(buffer_ident_offset, &mut buffer_ident)?;

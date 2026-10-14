@@ -354,7 +354,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
 
     fn resolve_multiple_data<'meta>(
         &'meta self,
-        metadata: &'meta Vec<(usize, DataItem)>,
+        metadata: &'meta [(usize, DataItem)],
     ) -> Pin<Box<dyn Future<Output = DandelionResult<Vec<(usize, DataItem)>>> + Send + 'meta>> {
         Box::pin(async move {
             // collect all remote references, all of them are expected to be on the same node

@@ -22,8 +22,8 @@ pub trait EngineLoop {
         &mut self,
         config: FunctionConfig,
         context: Context,
-        input_sets: &Vec<(String, Option<DataSet>)>,
-        output_sets: &Vec<String>,
+        input_sets: &[(String, Option<DataSet>)],
+        output_sets: &[String],
     ) -> DandelionResult<(i32, Vec<Arc<Vec<DataItem>>>)>;
     fn get_engine_type(&self) -> EngineType;
 }
@@ -189,7 +189,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
 
                 recorder.record(RecordPoint::LoadStart);
                 let mut function_context =
-                    match function.load(&alternative.domain, alternative.context_size) {
+                    match function.load(&**alternative.domain, alternative.context_size) {
                         Ok(con) => con,
                         Err(err) => {
                             drop(recorder);

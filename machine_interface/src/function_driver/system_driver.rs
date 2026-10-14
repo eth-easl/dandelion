@@ -120,7 +120,7 @@ pub trait RemoteDataClient: Send + Sync {
     fn resolve_multiple_data<'meta>(
         &'meta self,
         // Metadata for data that needs to be fetched
-        metadata: &'meta Vec<(usize, DataItem)>,
+        metadata: &'meta [(usize, DataItem)],
     ) -> Pin<Box<dyn Future<Output = DandelionResult<Vec<(usize, DataItem)>>> + Send + 'meta>>;
 
     fn delete_remote_data(

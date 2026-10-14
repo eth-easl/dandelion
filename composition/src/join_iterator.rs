@@ -29,6 +29,7 @@ pub(crate) struct SetAllIterator {
 }
 
 impl SetAllIterator {
+    #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new(
         left: Option<Box<dyn JoinIterator>>,
         set: DataSet,
@@ -78,6 +79,7 @@ pub(crate) struct SetEachIterator {
 }
 
 impl SetEachIterator {
+    #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new(
         left: Option<Box<dyn JoinIterator>>,
         set: DataSet,
@@ -156,7 +158,7 @@ pub(crate) struct SetKeyIterator {
     write_idx: usize,
 }
 
-fn key_set_intersect(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<usize>)>) {
+fn key_set_intersect(curr_keys: &mut Vec<u32>, new_key_groups: &[(u32, Range<usize>)]) {
     let mut write_idx = 0;
     let mut j = 0;
 
@@ -176,7 +178,7 @@ fn key_set_intersect(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<
     curr_keys.truncate(write_idx);
 }
 
-fn key_set_union(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<usize>)>) {
+fn key_set_union(curr_keys: &mut Vec<u32>, new_key_groups: &[(u32, Range<usize>)]) {
     if new_key_groups.is_empty() {
         return;
     } else if curr_keys.is_empty() {
@@ -561,6 +563,7 @@ impl AnyIterator {
     /// joining), the corresponding minimum set size, and the maximum possible number of partitions.
     /// If the iterator is empty, i.e. won't produce any sets, it returns the left `JoinIterator`
     /// (and zeros for the other values).
+    #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new(
         left: Option<Box<dyn JoinIterator>>,
         sets: Vec<DataSet>,
@@ -594,8 +597,7 @@ impl AnyIterator {
         }
 
         if let Some(mut it) = inner_join_it {
-            let mut total_sizes = Vec::new();
-            total_sizes.reserve(num_sets);
+            let mut total_sizes = Vec::with_capacity(num_sets);
             let mut inner_sharding = Vec::new();
 
             // generate all sets
@@ -705,7 +707,7 @@ impl JoinIterator for AnyIterator {
                     }
 
                     // create the set group for all other sets
-                    for set_idx in 0..num_sets {
+                    for (set_idx, group_set) in set_group.iter_mut().enumerate() {
                         let mut accum = DataSetAccumulator::new();
                         if set_idx == self.largest_set_idx {
                             continue;
@@ -713,7 +715,7 @@ impl JoinIterator for AnyIterator {
                         for i in start_idx..curr_idx {
                             accum.push_set(mem::take(&mut self.set_groups[i][set_idx]));
                         }
-                        set_group[set_idx] = accum.collect();
+                        *group_set = accum.collect();
                     }
                     new_set_groups.push(set_group);
                 }

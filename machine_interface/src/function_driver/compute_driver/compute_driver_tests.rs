@@ -27,7 +27,7 @@ fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, engine_type: Engine
     let elf_path = String::new();
     let domain = Dom::init(dom_init).expect("Should be able to get domain");
     engine_type
-        .parse_function(elf_path, &domain)
+        .parse_function(elf_path, &*domain)
         .expect("Empty string should return error");
 }
 
@@ -105,7 +105,7 @@ fn engine_caching<Dom: MemoryDomain>(
 
     let function = Arc::new(
         engine_type
-            .parse_function(filename.to_string(), &domain)
+            .parse_function(filename.to_string(), &**domain)
             .expect("Should be able to parse function"),
     );
 

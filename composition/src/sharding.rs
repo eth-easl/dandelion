@@ -28,17 +28,11 @@ pub(crate) enum Sharding {
 
 impl Sharding {
     pub(crate) fn is_blocking(&self) -> bool {
-        match self {
-            Sharding::Each | Sharding::AnyEach => false,
-            _ => true,
-        }
+        !matches!(self, Sharding::Each | Sharding::AnyEach)
     }
 
     pub(crate) fn requires_sorting(&self) -> bool {
-        match self {
-            Sharding::Keyed(_) | Sharding::AnyKeyed(_) => true,
-            _ => false,
-        }
+        matches!(self, Sharding::Keyed(_) | Sharding::AnyKeyed(_))
     }
 }
 

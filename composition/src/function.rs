@@ -23,10 +23,7 @@ enum InputSet {
 
 impl InputSet {
     fn is_complete(&self) -> bool {
-        match self {
-            InputSet::Complete(_) => true,
-            _ => false,
-        }
+        matches!(self, InputSet::Complete(_))
     }
 
     fn get_set(&self) -> DataSet {
@@ -124,9 +121,9 @@ impl Function {
     ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
 
-        inner.inputs[set_idx]
-            .as_mut()
-            .map(|(set, _, _, _)| *set = InputSet::Complete(data_set));
+        if let Some((set, _, _, _)) = inner.inputs[set_idx].as_mut() {
+            *set = InputSet::Complete(data_set);
+        }
 
         let mut blocking = false;
         let mut complete = true;

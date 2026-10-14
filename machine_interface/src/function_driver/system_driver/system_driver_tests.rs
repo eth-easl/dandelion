@@ -42,7 +42,7 @@ impl Drop for HttpServer {
     }
 }
 
-fn read_status(response_buffer: &Vec<u8>) -> String {
+fn read_status(response_buffer: &[u8]) -> String {
     // find first '\n'
     let status_end = response_buffer
         .iter()

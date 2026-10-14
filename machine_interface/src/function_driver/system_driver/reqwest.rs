@@ -47,8 +47,8 @@ struct HttpRequest {
 }
 
 enum MemcachedMethod {
-    SET,
-    GET,
+    Set,
+    Get,
 }
 
 /// Stores requestInformation for memcached request
@@ -93,11 +93,11 @@ impl Request for HttpRequest {
         ))?);
 
         let version = match request_iter.next() {
-            Some(version_string) if version_string == "HTTP/0.9" => HttpVersion::HTTP_09,
-            Some(version_string) if version_string == "HTTP/1.0" => HttpVersion::HTTP_10,
-            Some(version_string) if version_string == "HTTP/1.1" => HttpVersion::HTTP_11,
-            Some(version_string) if version_string == "HTTP/2.0" => HttpVersion::HTTP_2,
-            Some(version_string) if version_string == "HTTP/3.0" => HttpVersion::HTTP_3,
+            Some("HTTP/0.9") => HttpVersion::HTTP_09,
+            Some("HTTP/1.0") => HttpVersion::HTTP_10,
+            Some("HTTP/1.1") => HttpVersion::HTTP_11,
+            Some("HTTP/2.0") => HttpVersion::HTTP_2,
+            Some("HTTP/3.0") => HttpVersion::HTTP_3,
             Some(version_string) => {
                 return err_dandelion!(DandelionError::InvalidSystemFuncArg(format!(
                     "Unkown http version: {}",
@@ -188,8 +188,8 @@ impl Request for MemcachedRequest {
 
         let method_item = request_iter.next();
         let method = match method_item {
-            Some(method_string) if method_string == "MEMCACHED_GET" => MemcachedMethod::GET,
-            Some(method_string) if method_string == "MEMCACHED_SET" => MemcachedMethod::SET,
+            Some("MEMCACHED_GET") => MemcachedMethod::Get,
+            Some("MEMCACHED_SET") => MemcachedMethod::Set,
             Some(method_string) => {
                 return err_dandelion!(DandelionError::InvalidSystemFuncArg(format!(
                     "Unsupported Method: {}",
@@ -360,7 +360,7 @@ async fn memcached_request(
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
     // Default item size limit is 1MB. If item is larger, we ignore it
     let (preamble, response_body) = match method {
-        MemcachedMethod::SET => {
+        MemcachedMethod::Set => {
             // Assemble value to set
             // TODO Make timeout a parameter
 
@@ -382,7 +382,7 @@ async fn memcached_request(
                 }
             }
         }
-        MemcachedMethod::GET => {
+        MemcachedMethod::Get => {
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
             let debug_identifier = memcached_identifier.clone();
             let result = tokio::task::spawn_blocking(move || {
@@ -699,7 +699,7 @@ impl Driver for ReqwestDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn memory::context::MemoryDomain>,
+        static_domain: &dyn memory::context::MemoryDomain,
     ) -> DandelionResult<Function> {
         if !function_path.is_empty() {
             return err_dandelion!(DandelionError::CalledSystemFuncParser);

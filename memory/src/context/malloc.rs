@@ -49,9 +49,7 @@ impl ContextTrait for MallocContext {
         let storage_slice = unsafe { std::slice::from_raw_parts(self.storage.as_ref(), length) };
 
         // read values, sanitize if necessary
-        for index in 0..read_size {
-            read_memory[index] = storage_slice[offset + index];
-        }
+        read_memory.copy_from_slice(&storage_slice[offset..offset + read_size]);
         Ok(())
     }
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {

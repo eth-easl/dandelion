@@ -33,14 +33,10 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn load(
-        &self,
-        domain: &Box<dyn MemoryDomain>,
-        ctx_size: usize,
-    ) -> DandelionResult<Context> {
+    pub fn load(&self, domain: &dyn MemoryDomain, ctx_size: usize) -> DandelionResult<Context> {
         match &self.config {
             FunctionConfig::ElfConfig(_) => {
-                load_static(domain.as_ref(), &self.context, &self.requirements, ctx_size)
+                load_static(domain, &self.context, &self.requirements, ctx_size)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
         }
@@ -113,7 +109,7 @@ impl FunctionAlternative {
         recorder.record(dandelion_commons::records::RecordPoint::ParsingStart);
         let function = Arc::new(
             self.engine
-                .parse_function(self.path.clone(), &self.domain)?,
+                .parse_function(self.path.clone(), &**self.domain)?,
         );
         recorder.record(dandelion_commons::records::RecordPoint::ParsingEnd);
         if caching {

@@ -65,7 +65,7 @@ impl EngineType {
     pub fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn memory::context::MemoryDomain>,
+        static_domain: &dyn memory::context::MemoryDomain,
     ) -> DandelionResult<Function> {
         match self {
             EngineType::System => crate::function_driver::system_driver::reqwest::ReqwestDriver {}

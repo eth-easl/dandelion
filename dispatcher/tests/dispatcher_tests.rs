@@ -26,6 +26,7 @@ mod dispatcher_tests {
         Arc::new(0.to_string())
     }
 
+    #[allow(clippy::extra_unused_type_parameters)]
     fn setup_dispatcher<Dom: MemoryDomain>(
         name: &str,
         in_set_names: Vec<(String, Option<DataSet>)>,

@@ -41,8 +41,8 @@ impl EngineLoop for CheriLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
-        input_sets: &Vec<(String, Option<DataSet>)>,
-        output_sets: &Vec<String>,
+        input_sets: &[(String, Option<DataSet>)],
+        output_sets: &[String],
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
@@ -114,7 +114,7 @@ impl Driver for CheriDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn MemoryDomain>,
+        static_domain: &dyn MemoryDomain,
     ) -> DandelionResult<Function> {
         let function = load_u8_from_file(function_path)?;
         let elf = elf_parser::ParsedElf::new(&function)?;

@@ -196,6 +196,7 @@ fn encode_response(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 enum ReadMode {
     /// index of the next item and how much to read in serial until hit next item
     ToItem(usize, usize),

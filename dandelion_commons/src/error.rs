@@ -147,10 +147,6 @@ impl PartialEq<DError> for DandelionError {
     fn eq(&self, other: &DError) -> bool {
         self.eq(&other.error)
     }
-
-    fn ne(&self, other: &DError) -> bool {
-        self.ne(&other.error)
-    }
 }
 
 /// Construct an error from the given error
