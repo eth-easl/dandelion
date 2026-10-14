@@ -256,6 +256,37 @@ impl Dispatcher {
         Ok((local_results, recorder))
     }
 
+    /// Reserve local set IDs first, then disjoint ranges for every nested call in declaration
+    /// order. Scheduling order and repeated use of the same registered composition cannot
+    /// change these ranges, so replay after a restart produces the same I/O identities.
+    fn composition_io_ranges(
+        &self,
+        composition: &Composition,
+    ) -> DandelionResult<(usize, Vec<usize>)> {
+        let mut next_offset = composition
+            .dependencies
+            .iter()
+            .flat_map(|dependency| dependency.output_set_ids.iter().flatten().copied())
+            .chain(composition.output_map.keys().copied())
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .expect("Composition I/O namespace exhausted");
+        let mut offsets = vec![0; composition.dependencies.len()];
+        for (index, dependency) in composition.dependencies.iter().enumerate() {
+            if let FunctionType::Composition(info) =
+                self.function_registry.get_function(&dependency.function)?
+            {
+                offsets[index] = next_offset;
+                let (width, _) = self.composition_io_ranges(&info.composition)?;
+                next_offset = next_offset
+                    .checked_add(width)
+                    .expect("Composition I/O namespace exhausted");
+            }
+        }
+        Ok((next_offset, offsets))
+    }
+
     /// Queue a composition for execution.
     /// Returns a Vec of sets with the index corresponding to the set index in the composition definition
     ///
@@ -274,6 +305,11 @@ impl Dispatcher {
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         // build up ready sets
         trace!("queue composition");
+        let io_offsets = if P::NEEDS_COMPOSITION_NAMESPACE {
+            self.composition_io_ranges(&composition)?.1
+        } else {
+            vec![0; composition.dependencies.len()]
+        };
         // local state of functions that still need to run
         // TODO: make nicer data structure to hold there and the compositions
         // Can use ? Sized, to create structs with fixed arrays where the size is known at runtime.
@@ -373,7 +409,7 @@ impl Dispatcher {
                 args.join_info.1,
                 args.output_mapping,
                 caching,
-                io_policy,
+                io_policy.nested(io_offsets[args.function_index]),
                 recorder.clone(),
             )));
         }
@@ -452,7 +488,7 @@ impl Dispatcher {
                                 args.join_info.1,
                                 args.output_mapping,
                                 caching,
-                                io_policy,
+                                io_policy.nested(io_offsets[args.function_index]),
                                 recorder.clone(),
                             )));
                             None

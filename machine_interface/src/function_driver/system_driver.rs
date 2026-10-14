@@ -97,6 +97,13 @@ pub struct CoordinatedIoData {
 }
 
 pub trait IoReferencePolicy: Copy {
+    const NEEDS_COMPOSITION_NAMESPACE: bool = false;
+
+    /// Enter a nested call's deterministic range of composition set IDs.
+    fn nested(self, _offset: usize) -> Self {
+        self
+    }
+
     /// Returns the lazy/reference data and, when recovery substituted a completed output, its
     /// restored item size.
     fn wrap(
@@ -133,6 +140,7 @@ pub fn async_io_policy(_run_id: RunId) -> AsyncIoPolicy {
 #[derive(Debug, Clone, Copy)]
 pub struct RecoverableIo {
     pub run_id: RunId,
+    composition_offset: usize,
 }
 
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
@@ -140,17 +148,36 @@ pub type AsyncIoPolicy = RecoverableIo;
 
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 pub fn async_io_policy(run_id: RunId) -> AsyncIoPolicy {
-    RecoverableIo { run_id }
+    RecoverableIo {
+        run_id,
+        composition_offset: 0,
+    }
 }
 
 #[cfg(feature = "at-least-once")]
 impl IoReferencePolicy for RecoverableIo {
+    const NEEDS_COMPOSITION_NAMESPACE: bool = true;
+
+    fn nested(self, offset: usize) -> Self {
+        Self {
+            composition_offset: self
+                .composition_offset
+                .checked_add(offset)
+                .expect("Composition I/O namespace exhausted"),
+            ..self
+        }
+    }
+
     fn wrap(
         self,
         request: IoData,
         item: &DataItem,
         composition_set_id: usize,
     ) -> (ItemData, Option<usize>) {
+        let composition_set_id = self
+            .composition_offset
+            .checked_add(composition_set_id)
+            .expect("Composition I/O namespace exhausted");
         #[cfg(not(feature = "exactly-once"))]
         if let Some(output) = recovery_log::recovered_io_item_location(
             self.run_id,
@@ -190,8 +217,6 @@ impl IoReferencePolicy for RecoverableIo {
 /// Converts a system-function invocation into lazy output references. Both output references for
 /// an input item share one `OnceCell`, so resolving either header or body executes the operation
 /// once locally. The policy type selects the reference representation at compile time.
-/// Lazy references do not carry recorders: output consumers and background checkpoints can
-/// run concurrently, while Recorder requires exclusive access to each timestamp slot.
 pub fn convert_to_references<P: IoReferencePolicy>(
     function: SystemFunction,
     mut inputs: Vec<Option<CompositionSet>>,

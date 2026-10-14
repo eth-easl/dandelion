@@ -42,8 +42,8 @@ static RECOVERED_IO_OUTPUTS: OnceLock<
 #[derive(Debug, Clone)]
 pub struct IoCompletionRecord {
     pub run_id: RunId,
-    /// One used composition output-set id uniquely identifies the IO function
-    /// within an invocation.
+    /// Composition output-set id, shifted by the nested call's offset, so it identifies the IO
+    /// function uniquely within a run_id scope (including nested compositions).
     pub composition_set_id: usize,
     pub function: SystemFunction,
     pub outputs: Vec<IoCompletionOutputSet>,
