@@ -7,7 +7,7 @@ use crate::{
     memory_domain::Context,
     DataItem, Position,
 };
-use dandelion_commons::{records::Recorder, FunctionId, RunId};
+use dandelion_commons::{records::Recorder, RunId};
 use dandelion_commons::{try_with_capacity, DandelionResult};
 #[cfg(feature = "at-least-once")]
 pub use recovery_log::{
@@ -65,24 +65,6 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
 
 pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 
-/// Stable recorder ID for one logical lazy-I/O coordination key.
-pub fn io_recorder_id(
-    function: SystemFunction,
-    composition_set_id: usize,
-    item_identifier: &str,
-    item_key: u32,
-) -> FunctionId {
-    let identifier_hex: String = item_identifier
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    Arc::new(format!(
-        "IO:{}:{}:{}:{:016x}",
-        function, composition_set_id, identifier_hex, item_key
-    ))
-}
-
 #[derive(Debug, Clone)]
 pub struct IoData {
     pub original_position: Position,
@@ -93,9 +75,6 @@ pub struct IoData {
     pub resolved: Arc<OnceCell<DandelionResult<Vec<Arc<Context>>>>>,
     pub function: SystemFunction,
     pub set_index: usize,
-    /// The child recorder for this logical I/O. It is absent after crossing a node boundary
-    /// until timestamp transport is added.
-    pub recorder: Option<Recorder>,
 }
 
 #[cfg(feature = "at-least-once")]
@@ -211,12 +190,14 @@ impl IoReferencePolicy for RecoverableIo {
 /// Converts a system-function invocation into lazy output references. Both output references for
 /// an input item share one `OnceCell`, so resolving either header or body executes the operation
 /// once locally. The policy type selects the reference representation at compile time.
+/// Lazy references do not carry recorders: output consumers and background checkpoints can
+/// run concurrently, while Recorder requires exclusive access to each timestamp slot.
 pub fn convert_to_references<P: IoReferencePolicy>(
     function: SystemFunction,
     mut inputs: Vec<Option<CompositionSet>>,
     io_policy: P,
     composition_set_id: usize,
-    mut recorder: Recorder,
+    _recorder: Recorder,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
     // check that the function id contains string correcpsonding to system function
     debug_assert_eq!(
@@ -235,15 +216,10 @@ pub fn convert_to_references<P: IoReferencePolicy>(
         let mut output_items = (0..output_count)
             .map(|_| try_with_capacity!(Vec, input_set.len()))
             .collect::<DandelionResult<Vec<_>>>()?;
-        let mut io_recorders = try_with_capacity!(Vec, input_set.len())?;
 
         for (item, data) in input_set {
             let resolved = Arc::new(OnceCell::new());
             let mut original_data = Some(data);
-            let io_recorder = Recorder::new_from_parent(
-                io_recorder_id(function, composition_set_id, &item.ident, item.key),
-                &recorder,
-            );
             for (set_index, items) in output_items.iter_mut().enumerate() {
                 let data = if set_index + 1 == output_count {
                     original_data
@@ -262,7 +238,6 @@ pub fn convert_to_references<P: IoReferencePolicy>(
                         resolved: resolved.clone(),
                         function,
                         set_index,
-                        recorder: Some(io_recorder.clone()),
                     },
                     &item,
                     composition_set_id,
@@ -279,7 +254,6 @@ pub fn convert_to_references<P: IoReferencePolicy>(
                     output_data,
                 ));
             }
-            io_recorders.push(io_recorder);
         }
 
         for (set_index, items) in output_items.into_iter().enumerate() {
@@ -287,7 +261,6 @@ pub fn convert_to_references<P: IoReferencePolicy>(
             output_vec[set_index] =
                 CompositionSet::from_sorted_items(input_set_name.clone(), items, 0, item_number);
         }
-        recorder.add_children(vec![Some(io_recorders)]);
     }
     Ok(output_vec)
 }

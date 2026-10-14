@@ -205,7 +205,6 @@ fn try_item_data_dtop(
                 resolved: _,
                 function,
                 set_index,
-                recorder: _,
             } = io_data;
             let mut register_item = item.clone();
             register_item.data = original_position;
@@ -238,7 +237,6 @@ fn try_item_data_dtop(
                 resolved: _,
                 function,
                 set_index,
-                recorder: _,
             } = coordinated.request;
             let mut register_item = item.clone();
             register_item.data = original_position;
@@ -300,7 +298,6 @@ fn item_data_and_ref(
                 resolved: _,
                 function,
                 set_index,
-                recorder: _,
             } = io_data;
             let mut register_item = item.clone();
             register_item.data = *original_position;
@@ -337,7 +334,6 @@ fn item_data_and_ref(
                 resolved: _,
                 function,
                 set_index,
-                recorder: _,
             } = &coordinated.request;
             let mut register_item = item.clone();
             register_item.data = *original_position;
@@ -427,7 +423,6 @@ fn item_data_ptod(
                     original_data: Box::new(item_data_ptod(*input_data.unwrap(), delete_sender).0),
                     function: system_function_ptod(function).unwrap(),
                     set_index: set_index as usize,
-                    recorder: None,
                 }),
                 0,
             );
@@ -470,7 +465,6 @@ fn item_data_ptod(
                             ),
                             function: system_function_ptod(function).unwrap(),
                             set_index: set_index as usize,
-                            recorder: None,
                         },
                     },
                 ),

@@ -460,21 +460,13 @@ async fn execute_io<'a>(
     client: HttpClient,
     input_position: Position,
     input_context: Arc<Context>,
-    mut recorder: Option<dandelion_commons::records::Recorder>,
 ) -> &'a DandelionResult<Vec<Arc<Context>>> {
     resolved
         .get_or_init(move || async move {
-            if let Some(recorder) = recorder.as_mut() {
-                recorder.record(RecordPoint::IoExternalStart);
-            }
-            let result = match function {
+            match function {
                 SystemFunction::HTTP => http_request(client, input_position, input_context).await,
                 SystemFunction::MEMCACHED => memcached_request(input_position, input_context).await,
-            };
-            if let Some(recorder) = recorder.as_mut() {
-                recorder.record(RecordPoint::IoExternalEnd);
             }
-            result
         })
         .await
 }
@@ -496,31 +488,17 @@ async fn resolve_io_item(
         resolved,
         function,
         set_index,
-        mut recorder,
     } = io_data;
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoInputResolveStart);
-    }
     let input = resolve_original_io_data(original_position, *original_data, client.clone()).await;
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoInputResolveEnd);
-    }
     let (input_position, input_context) = input?;
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoExternalWaitStart);
-    }
     let outputs = execute_io(
         function,
         resolved.as_ref(),
         client,
         input_position,
         input_context,
-        recorder.clone(),
     )
     .await;
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoExternalWaitEnd);
-    }
     let context = match outputs {
         Ok(contexts) => contexts[set_index].clone(),
         Err(error) => return Err(error.clone()),
@@ -549,7 +527,6 @@ async fn resolve_checkpointed_io_item(
         resolved,
         function,
         set_index,
-        mut recorder,
     } = request;
     let IoCoordination {
         run_id,
@@ -559,38 +536,22 @@ async fn resolve_checkpointed_io_item(
         owner_node_id,
     } = coordination;
 
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoInputResolveStart);
-    }
     let input = resolve_original_io_data(original_position, *original_data, client.clone()).await;
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoInputResolveEnd);
-    }
     let (input_position, input_context) = input?;
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoExternalWaitStart);
-    }
     let outputs = execute_io(
         function,
         resolved.as_ref(),
         client,
         input_position,
         input_context,
-        recorder.clone(),
     )
     .await;
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoExternalWaitEnd);
-    }
     let contexts = match outputs {
         Ok(contexts) => contexts,
         Err(error) => return Err(error.clone()),
     };
 
     // Checkpointing is deliberately detached from result consumption in at-least-once mode.
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoCheckpointEnqueueStart);
-    }
     if let Ok(remote_client) = crate::composition::get_remote_data_client() {
         let owner_node_id = owner_node_id.unwrap_or_else(|| remote_client.local_node_id());
         let completion = IoCoordinationCompletion {
@@ -618,28 +579,16 @@ async fn resolve_checkpointed_io_item(
                     })
                     .collect(),
             ),
-            recorder: recorder.clone(),
+            recorder: None,
         };
-        let mut checkpoint_recorder = recorder.clone();
         tokio::spawn(async move {
-            if let Some(recorder) = checkpoint_recorder.as_mut() {
-                recorder.record(RecordPoint::IoCheckpointTaskStart);
-            }
             if let Err(error) = remote_client.publish_io_completion(completion).await {
                 warn!(
                     "Failed to checkpoint at-least-once I/O completion: {}",
                     error
                 );
             }
-            if let Some(recorder) = checkpoint_recorder.as_mut() {
-                recorder.record(RecordPoint::IoCheckpointTaskEnd);
-                #[cfg(feature = "timestamp")]
-                log::debug!("completed background I/O checkpoint task: {}", recorder);
-            }
         });
-    }
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoCheckpointEnqueueEnd);
     }
 
     let context = contexts[set_index].clone();
@@ -676,7 +625,6 @@ async fn resolve_io_item_exactly_once(
         resolved,
         function,
         set_index,
-        mut recorder,
     } = request;
     let IoCoordination {
         run_id,
@@ -705,9 +653,6 @@ async fn resolve_io_item_exactly_once(
     // Elect a winner (or reuse a finished result). No client means run uncoordinated.
     let resolution = match (&remote_client, coordination_owner) {
         (Some(remote_client), Some(owner_node_id)) => {
-            if let Some(recorder) = recorder.as_mut() {
-                recorder.record(dandelion_commons::records::RecordPoint::IoResolveStart);
-            }
             let resolution = remote_client
                 .resolve_io(IoResolveRequest {
                     owner_node_id,
@@ -716,9 +661,6 @@ async fn resolve_io_item_exactly_once(
                     original_data: original_remote,
                 })
                 .await;
-            if let Some(recorder) = recorder.as_mut() {
-                recorder.record(dandelion_commons::records::RecordPoint::IoResolveEnd);
-            }
             Some(resolution?)
         }
         _ => None,
@@ -726,17 +668,6 @@ async fn resolve_io_item_exactly_once(
 
     // Duplicate: fetch the winner's output instead of running the I/O.
     if let Some(IoResolveOutcome::Completed { data }) = resolution {
-        #[cfg(feature = "timestamp")]
-        if let Some(recorder) = recorder.as_mut() {
-            let wait_start = recorder
-                .get_timestamp(dandelion_commons::records::RecordPoint::IoResolveStart)
-                .as_micros() as u64;
-            recorder.set_timestamp(
-                dandelion_commons::records::RecordPoint::IoDuplicateWaitStart,
-                wait_start,
-            );
-            recorder.record(dandelion_commons::records::RecordPoint::IoDuplicateWaitEnd);
-        }
         let remote_client = remote_client.expect("completed remote I/O requires a data client");
         return remote_client
             .resolve_remote_data(data)
@@ -744,17 +675,6 @@ async fn resolve_io_item_exactly_once(
             .map(|(context, position)| (position, context));
     }
     if let Some(IoResolveOutcome::Failed(error)) = resolution {
-        #[cfg(feature = "timestamp")]
-        if let Some(recorder) = recorder.as_mut() {
-            let wait_start = recorder
-                .get_timestamp(dandelion_commons::records::RecordPoint::IoResolveStart)
-                .as_micros() as u64;
-            recorder.set_timestamp(
-                dandelion_commons::records::RecordPoint::IoDuplicateWaitStart,
-                wait_start,
-            );
-            recorder.record(dandelion_commons::records::RecordPoint::IoDuplicateWaitEnd);
-        }
         return Err(coordination_error(error));
     }
 
@@ -764,9 +684,6 @@ async fn resolve_io_item_exactly_once(
         Some(IoResolveOutcome::Completed { .. } | IoResolveOutcome::Failed(_)) => unreachable!(),
     };
     // Winner (or uncoordinated): get input bytes, then run the external I/O.
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoInputResolveStart);
-    }
     let input_result = match resolved_input {
         Some(IoResolveInput::Inline { context, position }) => Ok((position, context)),
         Some(IoResolveInput::Remote { data, .. }) => {
@@ -780,9 +697,6 @@ async fn resolve_io_item_exactly_once(
         }
         None => resolve_original_io_data(original_position, *original_data, client.clone()).await,
     };
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoInputResolveEnd);
-    }
     let (input_position, input_context) = match input_result {
         Ok(input) => input,
         Err(error) => {
@@ -810,21 +724,14 @@ async fn resolve_io_item_exactly_once(
         }
     };
 
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoExternalWaitStart);
-    }
     let outputs = execute_io(
         function,
         resolved.as_ref(),
         client,
         input_position,
         input_context,
-        recorder.clone(),
     )
     .await;
-    if let Some(recorder) = recorder.as_mut() {
-        recorder.record(RecordPoint::IoExternalWaitEnd);
-    }
 
     if won_coordination {
         let (remote_client, owner_node_id) = (
@@ -859,7 +766,7 @@ async fn resolve_io_item_exactly_once(
                 owner_node_id,
                 key: coordination_key,
                 outcome,
-                recorder: recorder.clone(),
+                recorder: None,
             })
             .await?;
     }
