@@ -496,27 +496,47 @@ macro_rules! domainTests {
             }
             #[test_log::test]
             fn test_transfer_single() {
-                let source = acquire::<$domain>($init, 1);
-                let destination = acquire::<$domain>($init, 1);
+                let domain = init_domain::<$domain>($init);
+                let source = domain
+                    .acquire_context(1)
+                    .expect("Context should be allocatable");
+                let destination = domain
+                    .acquire_context(1)
+                    .expect("Context should be allocatable");
                 transfer(source, destination);
             }
             #[test_log::test]
             fn test_transfer_page() {
-                let source = acquire::<$domain>($init, 4096);
-                let destination = acquire::<$domain>($init, 4096);
+                let domain = init_domain::<$domain>($init);
+                let source = domain
+                    .acquire_context(4096)
+                    .expect("Context should be allocatable");
+                let destination = domain
+                    .acquire_context(4096)
+                    .expect("Context should be allocatable");
                 transfer(source, destination);
             }
             #[test_log::test]
             fn test_transfer_dataitem_item() {
-                let source = acquire::<$domain>($init, 4096);
-                let destination = acquire::<$domain>($init, 4096);
+                let domain = init_domain::<$domain>($init);
+                let source = domain
+                    .acquire_context(4096)
+                    .expect("Context should be allocatable");
+                let destination = domain
+                    .acquire_context(4096)
+                    .expect("Context should be allocatable");
                 transfer_item(source, destination, 0, 128, 2, Ok(()));
             }
             #[test_log::test]
             fn test_write_after_transfer() {
                 let context_size = 11 * $chunk;
-                let source = acquire::<$domain>($init, context_size);
-                let destination = acquire::<$domain>($init, context_size);
+                let domain = init_domain::<$domain>($init);
+                let source = domain
+                    .acquire_context(context_size)
+                    .expect("Context should be allocatable");
+                let destination = domain
+                    .acquire_context(context_size)
+                    .expect("Context should be allocatable");
                 write_after_transfer(source, destination, $chunk);
             }
         }

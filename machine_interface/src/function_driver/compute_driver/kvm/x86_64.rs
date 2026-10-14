@@ -10,7 +10,7 @@ use crate::{
 use dandelion_commons::DandelionResult;
 use kvm_bindings::{kvm_fpu, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs, Msrs};
 use kvm_ioctls::{VcpuFd, VmFd};
-use log::{debug, info, trace};
+use log::{debug, trace};
 use std::{num::NonZeroUsize, os::raw::c_void, slice};
 
 // CR0 bits
@@ -200,23 +200,17 @@ impl ResetState {
         vcpu: &VcpuFd,
         entry_point: u64,
         kvm_context: &mut Box<KvmContext>,
-        mut stack_pointer: usize,
-    ) -> DandelionResult<PageFaultMetadata> {
+        stack_pointer: usize,
+    ) -> DandelionResult<()> {
         let mut sregs = self.sregs;
         let xregs = self.xregs;
-        let interrupt_end = stack_pointer;
-        let code_start = (entry_point as usize).next_multiple_of(PAGE_SIZE) - PAGE_SIZE;
-        info!("Entry point: {}, code start {}", entry_point, code_start);
         set_interrupt_table(&mut sregs);
-        let interrupt_start = stack_pointer;
-        let page_fault_metadata;
+        set_page_table(&mut sregs, kvm_context, stack_pointer)?;
+
+        // code to set up assembly to debug
+        let code_start = (entry_point as usize).next_multiple_of(PAGE_SIZE) - PAGE_SIZE;
+        debug!("Entry point: {}, code start {}", entry_point, code_start);
         set_debug_asm(kvm_context, code_start);
-        (stack_pointer, page_fault_metadata) = set_page_table(
-            &mut sregs,
-            kvm_context,
-            stack_pointer,
-            (interrupt_start, interrupt_end),
-        )?;
 
         vcpu.set_sregs(&sregs).unwrap();
         vcpu.set_xcrs(&xregs).unwrap();
@@ -255,7 +249,76 @@ impl ResetState {
         .unwrap();
         assert_eq!(1, vcpu.set_msrs(&msrs).unwrap());
 
-        Ok(page_fault_metadata)
+        Ok(())
+    }
+}
+
+// Assumes we never have more than one p3 table
+const _: () = assert!(SYSTEM_VIRTUAL_BASE < TABLE_SIZE * HUGE_PAGE);
+// TODO could memoize the p1 base
+pub struct PageMapeIterator<'memory> {
+    p3_base: usize,
+    p3_index: usize,
+    p2_index: usize,
+    p1_index: usize,
+    memory: &'memory [u64],
+}
+
+impl<'memory> PageMapeIterator<'memory> {
+    pub fn new(memory: &'memory [u64], vcpu: &VcpuFd) -> Self {
+        let p4_physical = vcpu.get_sregs().unwrap().cr3 as usize & !(PAGE_SIZE - 1);
+        let p4_base = p4_physical / size_of::<u64>();
+        // read entry at index 0, since we expect only one p4 entry
+        let p3_base = (memory[p4_base] as usize & !(PAGE_SIZE - 1)) / size_of::<u64>();
+        PageMapeIterator {
+            p3_base,
+            p3_index: 0,
+            p2_index: 0,
+            p1_index: 0,
+            memory,
+        }
+    }
+}
+
+impl<'memory> Iterator for PageMapeIterator<'memory> {
+    type Item = (usize, bool, u64);
+    fn next(&mut self) -> Option<Self::Item> {
+        // make sure we don't index the system pages
+        while self.p3_index * HUGE_PAGE < SYSTEM_VIRTUAL_BASE {
+            let p3_entry = self.memory[self.p3_base + self.p3_index];
+            if p3_entry & PDE64_PRESENT != 0 {
+                let p2_base = (p3_entry as usize & !(PAGE_SIZE - 1)) / size_of::<u64>();
+                while self.p2_index < TABLE_SIZE {
+                    let p2_entry = self.memory[p2_base + self.p2_index];
+                    if p2_entry & PDE64_PRESENT != 0 {
+                        let p1_base = (p2_entry as usize & !(PAGE_SIZE - 1)) / size_of::<u64>();
+                        while self.p1_index < TABLE_SIZE {
+                            let p1_entry = self.memory[p1_base + self.p1_index];
+                            if p1_entry & PDE64_PRESENT != 0 {
+                                debug!(
+                                    "p3_index: {}, p2_index: {}, p2_entry: {}, p1_index: {}",
+                                    self.p3_index, self.p2_index, p2_entry, self.p1_index
+                                );
+                                let virtual_address = self.p3_index * HUGE_PAGE
+                                    + self.p2_index * LARGE_PAGE
+                                    + self.p1_index * PAGE_SIZE;
+                                let is_owned = p1_entry & PDE64_RW != 0;
+                                let physical_address = p1_entry & !(PAGE_SIZE as u64 - 1);
+                                self.p1_index += 1;
+                                return Some((virtual_address, is_owned, physical_address));
+                            }
+                            self.p1_index += 1;
+                        }
+                    }
+                    // either p2 not present or was present but not of the entries yielded a result so go to the next one
+                    self.p2_index += 1;
+                    self.p1_index = 0;
+                }
+            }
+            self.p3_index += 1;
+            self.p2_index = 0;
+        }
+        None
     }
 }
 
@@ -496,100 +559,7 @@ pub fn set_debug_asm(kvm_context: &mut Box<KvmContext>, code_start: usize) {
     let code_size = (default_handler as *const ()).addr() - (asm_start as *const ()).addr();
     let source = unsafe { slice::from_raw_parts(asm_start as *const u8, code_size) };
     debug!("ASM SOURCE: {:?}", source.to_vec());
-    kvm_context.write(code_start, source);
-}
-
-pub struct PageFaultMetadata {
-    /// Address of the singular p4 table, only first entry set
-    // #[cfg(feature = "backend_debug")]
-    // p4_address: usize,
-    /// Address of the singular p3 table, only first entry set
-    // #[cfg(feature = "backend_debug")]
-    // p3_address: usize,
-    /// Base address for the tables with p2 and p1 tables
-    // #[cfg(feature = "backend_debug")]
-    // table_base: usize,
-    /// The highest address for which page faults should be resolved.
-    /// If the fault lies above, the function tried to access memory that was not mapped on purpose
-    stack_start: usize,
-}
-
-impl PageFaultMetadata {
-    pub fn get_stack_start(&self) -> usize {
-        self.stack_start
-    }
-}
-
-fn get_p2(current_page_entry: usize) -> (usize, usize) {
-    let p2_base = (current_page_entry / (TABLE_SIZE * TABLE_SIZE)) * (TABLE_SIZE + 1) * TABLE_SIZE;
-    let p2_entry = (current_page_entry / TABLE_SIZE) % TABLE_SIZE;
-    (p2_base, p2_entry)
-}
-
-fn get_address_and_flags(entry: u64) -> (usize, u64) {
-    ((entry & !PAGE_MASK) as usize, entry & PAGE_MASK)
-}
-
-fn set_range(
-    table_array: &mut [u64],
-    table_base: usize,
-    virtual_start: usize,
-    virtual_end: usize,
-    protection_flags: u64,
-    mut base_physical: usize,
-    previous_past_last_page: usize,
-) -> usize {
-    // in check which page tables entries need to be set
-    let mut current_page_entry = virtual_start >> PAGE_SHIFT;
-    let past_last_page = virtual_end >> PAGE_SHIFT;
-    // Ensure assumption that there is never overlap between the previous and the current range
-    debug_assert!(previous_past_last_page <= current_page_entry);
-
-    // if the p2 table for the first page has not been set up, need to do it now
-    // it has been set up, if the previous last page was in the same large page,
-    // which is the case if the previous last page rounded up to the next large page end is not smaller
-    // or if we won't set it up in the loop anyway, <= since the previous last page is set to 1 past_last_page
-    if previous_past_last_page.next_multiple_of(TABLE_SIZE) <= current_page_entry
-        && !current_page_entry.is_multiple_of(TABLE_SIZE)
-    {
-        let (p2_base, p2_entry) = get_p2(current_page_entry);
-        let p1_offset = p2_base + (1 + p2_entry) * TABLE_SIZE;
-        table_array[p2_base + p2_entry] =
-            PDE64_ALL_ALLOWED | (table_base + p1_offset * size_of::<u64>()) as u64;
-        table_array[p1_offset..p1_offset + (current_page_entry % TABLE_SIZE)].fill(0);
-    }
-    while current_page_entry < past_last_page {
-        // check if we are entering a region under a new p2 entry
-        let (p2_base, p2_entry) = get_p2(current_page_entry);
-        let p1_offset = current_page_entry % TABLE_SIZE;
-        if p1_offset == 0 {
-            if current_page_entry + TABLE_SIZE <= past_last_page {
-                table_array[p2_base + p2_entry] =
-                    protection_flags | PDE64_IS_PAGE | base_physical as u64;
-                base_physical += LARGE_PAGE;
-                current_page_entry += TABLE_SIZE;
-                continue;
-            } else {
-                table_array[p2_base + p2_entry] = PDE64_ALL_ALLOWED
-                    | (table_base + (p2_base + (1 + p2_entry) * TABLE_SIZE) * size_of::<u64>())
-                        as u64;
-            }
-        }
-        let p1_base = p2_base + (1 + p2_entry) * TABLE_SIZE;
-        table_array[p1_base + p1_offset] = protection_flags | base_physical as u64;
-        // update variables used across loops
-        base_physical += PAGE_SIZE;
-        current_page_entry += 1;
-    }
-    // need to make sure that any p1 table that was started is filled with 0 to the end
-    // current page entry is now at past_last_page, need to check before accessing, in case it is at the end of the
-    // table array
-    if !current_page_entry.is_multiple_of(TABLE_SIZE) {
-        let last_index =
-            current_page_entry + TABLE_SIZE * (1 + current_page_entry / (TABLE_SIZE * TABLE_SIZE));
-        table_array[last_index..last_index.next_multiple_of(TABLE_SIZE)].fill(0);
-    }
-    past_last_page
+    kvm_context.write(code_start, source).unwrap();
 }
 
 /// present_pages: a vec with start and end (address of last byte still written, so start + size -1) of all memory that does not need to be zeroed on first access.
@@ -599,8 +569,7 @@ fn set_page_table(
     sregs: &mut kvm_sregs,
     kvm_context: &mut Box<KvmContext>,
     stack_start: usize,
-    interrupt_range: (usize, usize),
-) -> DandelionResult<(usize, PageFaultMetadata)> {
+) -> DandelionResult<()> {
     // allocate top level table containing 512 entries for 512 GB ranges, total of 256 TB
     // naming:
     // - p4 is the top level page table overseeing 256TB, each entry being a p3 table which each oversees 512GB
@@ -633,43 +602,28 @@ fn set_page_table(
     // set up the p4 table, which only has 1 entry at the start, the single p3 table
     trace!("P4 address: {}, P3 address: {}", *p4_physical, *p3_physical);
 
-    let p4_table = p4_physical.get_slice(kvm_context.domain_slice);
+    let p4_table = p4_physical.get_slice();
     p4_table[0] = PDE64_ALL_ALLOWED | *p3_physical;
     p4_table[1..].fill(0);
 
     // always only allocate a single p3 table, since we do not expect functions to have more than 512GB of memory
-    let p3_table = p3_physical.get_slice(kvm_context.domain_slice);
+    let p3_table = p3_physical.get_slice();
     p3_table[p2_table_number..].fill(0);
 
-    trace!(
-        "after zeroing p3 table base physical: {}",
-        u8_slice_to_u64_slice(kvm_context.domain_slice)[0],
-    );
-    trace!(
-        "value at 65536: {}",
-        u8_slice_to_u64_slice(kvm_context.domain_slice)[65536 / 8]
-    );
     // set up the p3 table, which points at all the p2 tables
     for p3_entry in 0..p2_table_number {
         // allocate a new p2 table
         let p2_physical = kvm_context.get_page()?;
-        println!("new p2 physical: {}", *p2_physical);
-        let p2_table = p2_physical.get_slice(kvm_context.domain_slice);
+        let p2_table = p2_physical.get_slice();
         p2_table.fill(0);
-        p3_physical.get_slice(kvm_context.domain_slice)[p3_entry] =
-            PDE64_ALL_ALLOWED | *p2_physical;
+        p3_physical.get_slice()[p3_entry] = PDE64_ALL_ALLOWED | *p2_physical;
     }
     // can assume that all p2 tables are zero initialized after this loop
-
-    trace!(
-        "after setting p3 entries base physical: {}",
-        u8_slice_to_u64_slice(kvm_context.domain_slice)[0],
-    );
 
     // add the table with the global data in the last entry
     // find index based on the GiB at which SYSTEM_VIRTUAL_BASE is located at
     let table_entry = SYSTEM_VIRTUAL_BASE / (1 << 30);
-    p3_physical.get_slice(kvm_context.domain_slice)[table_entry] = PDE64_ALL_ALLOWED
+    p3_physical.get_slice()[table_entry] = PDE64_ALL_ALLOWED
         | PDE64_GLOBAL
         | (SYSTEM_VIRTUAL_BASE + HANDLER_CODE + handler_code_size().next_multiple_of(PAGE_SIZE))
             as u64;
@@ -686,17 +640,9 @@ fn set_page_table(
         let (_, page_slice) = kvm_context.add_page(page)?;
         page_slice.fill(0);
     }
-    trace!("filled in stack");
 
     // go through overlay and add all pages in the p2 tables
     for (virtual_address, (page_type, physical_address)) in kvm_context.overlay.iter() {
-        if matches!(page_type, PageType::CoW) {
-            trace!(
-                "Virtual CoW page at virtual address: {}, physicall address {}",
-                virtual_address,
-                **physical_address
-            );
-        }
         // flags to set for the page
         let flags = match page_type {
             PageType::Page => PDE64_ALL_ALLOWED,
@@ -708,509 +654,34 @@ fn set_page_table(
         let p2_index = (virtual_address >> LARGE_PAGE_SHIFT) & (TABLE_SIZE - 1);
         let p1_index = (virtual_address >> PAGE_SHIFT) & (TABLE_SIZE - 1);
 
-        let p2_address =
-            p3_physical.get_slice(kvm_context.domain_slice)[p3_index] as usize & !(PAGE_SIZE - 1);
+        let p2_address = p3_physical.get_slice()[p3_index] as usize & !(PAGE_SIZE - 1);
         let p2_base = p2_address / size_of::<u64>();
         // read p2 entry
-        let p2_entry = u8_slice_to_u64_slice(kvm_context.domain_slice)[p2_base + p2_index];
-
-        if matches!(page_type, PageType::CoW) {
-            trace!("p2 entry: {}", p2_entry);
-        }
+        let p2_entry = kvm_context.backing_memory.get_mut_u64()[p2_base + p2_index];
 
         // check if p2 entry points to valid p1 table, if not insert table
         if p2_entry & PDE64_PRESENT == 0 {
             let new_p1 = kvm_context.get_page()?;
-            if matches!(page_type, PageType::CoW) {
-                trace!(
-                "adding p2 entry for address: {}, p3 index: {}, p2 index: {}, p1 index: {} at {}",
-                virtual_address,
-                p3_index,
-                p2_index,
-                p1_index,
-                *new_p1
-            );
-            }
-            u8_slice_to_u64_slice(kvm_context.domain_slice)[p2_base + p2_index] =
+            kvm_context.backing_memory.get_mut_u64()[p2_base + p2_index] =
                 PDE64_ALL_ALLOWED | *new_p1;
-            new_p1.get_slice(kvm_context.domain_slice).fill(0);
-            new_p1.get_slice(kvm_context.domain_slice)[p1_index] = flags | **physical_address;
+            new_p1.get_slice().fill(0);
+            new_p1.get_slice()[p1_index] = flags | **physical_address;
         } else {
             let p1_base = (p2_entry as usize & !(PAGE_SIZE - 1)) / size_of::<u64>();
-            if matches!(page_type, PageType::CoW) {
-                trace!("adding p1 entry for address: {}, p3 adress {}, p3 index: {}, p2 address: {}, p2 index: {}, p1 base: {}, p1 index; {}, physical: {}",
-                virtual_address, *p3_physical, p3_index, p2_address, p2_index, p1_base, p1_index, **physical_address);
-            }
             debug_assert_eq!(
                 0,
-                u8_slice_to_u64_slice(kvm_context.domain_slice)[p1_base + p1_index]
+                kvm_context.backing_memory.get_mut_u64()[p1_base + p1_index]
             );
-            u8_slice_to_u64_slice(kvm_context.domain_slice)[p1_base + p1_index] =
+            kvm_context.backing_memory.get_mut_u64()[p1_base + p1_index] =
                 flags | **physical_address;
         }
     }
 
-    // check how many p2 and p1 tables we need and allocate them
-    // let p1_table_number = p2_table_number * TABLE_SIZE;
-    // stack_start -= (p2_table_number + p1_table_number) << PAGE_SHIFT;
-    // let table_base = stack_start;
-    // have a joint table for p2 and p1 tables with 1 p2 table followed by the 512 p1 tables it could point to
-    // makes it easier to find the p1 table in the asm page fault handler if we need to install it,
-    // since we can just offset from the p2, which is always present
-
-    // set up all the tables for easy access
-    // let (guest_mem, p4_raw) = guest_mem.split_at_mut(mapping_offset + p4_address);
-    // let p4_table = u8_slice_to_u64_slice(&mut p4_raw[0..PAGE_SIZE]);
-    // p4_table.fill(0);
-    // let (guest_mem, p3_raw) = guest_mem.split_at_mut(mapping_offset + p3_address);
-    // let p3_table = u8_slice_to_u64_slice(&mut p3_raw[0..PAGE_SIZE]);
-    // let (guest_mem, table_raw) = guest_mem.split_at_mut(mapping_offset + table_base);
-    // let table_array =
-    // u8_slice_to_u64_slice(&mut table_raw[0..(p2_table_number + p1_table_number) << PAGE_SHIFT]);
-
-    // point the p3 table to all p2 tables
-    // {
-    //     let mut p2_address = mapping_offset + table_base;
-    //     for (p3_index, p3_entry) in p3_table[0..p2_table_number].iter_mut().enumerate() {
-    //         *p3_entry = PDE64_ALL_ALLOWED | (p2_address) as u64;
-    //         let start_index = p3_index * (TABLE_SIZE + 1) * TABLE_SIZE;
-    //         table_array[start_index..start_index + TABLE_SIZE].fill(0);
-    //         p2_address += (TABLE_SIZE + 1) * PAGE_SIZE;
-    //     }
-    //     p3_table[p2_table_number..].fill(0);
-
-    //     // add the table with the global data in the last entry
-    //     // find index based on the GiB at which SYSTEM_VIRTUAL_BASE is located at
-    //     let table_entry = SYSTEM_VIRTUAL_BASE / (1 << 30);
-    //     p3_table[table_entry] = PDE64_ALL_ALLOWED
-    //         | PDE64_GLOBAL
-    //         | (SYSTEM_VIRTUAL_BASE + HANDLER_CODE + handler_code_size().next_multiple_of(PAGE_SIZE))
-    //             as u64;
-    // };
-    // can assume that all p2 tables are zero initialized after this loop
-
-    // start installing entries for all already present pages
-    // let mut previous_past_last_page = 0;
-    // the page starting at address 0 is expected to never be written
-    // if !present_pages.is_empty() {
-    //     debug_assert_ne!(0, present_pages[0].0 >> PAGE_SHIFT);
-    //     if let Some((_, virtual_end, _)) = present_pages.last() {
-    //         if stack_start <= *virtual_end {
-    //             return err_dandelion!(DandelionError::ContextFull);
-    //         }
-    //     }
-    // }
-    // for (guest_virtual_start, guest_virtual_end, origin_option) in present_pages {
-    //     let (protection_flags, base_physical) = if let Some(guest_physical) = origin_option {
-    //         // map to page at differnt space in guest, that is there and needs to be copy on write
-    //         panic!("Should not have things that need remapping");
-    //         (PDE64_PRESENT | PDE64_USER, guest_physical)
-    //     } else {
-    //         // map directly, since content is already there
-    //         (PDE64_ALL_ALLOWED, guest_virtual_start)
-    //     };
-    //     debug!(
-    //         "mapping new address range mapped {} to {}",
-    //         guest_virtual_start,
-    //         guest_virtual_end + 1
-    //     );
-    //     previous_past_last_page = set_range(
-    //         table_array,
-    //         mapping_offset + table_base,
-    //         guest_virtual_start,
-    //         guest_virtual_end + 1,
-    //         protection_flags,
-    //         mapping_offset + base_physical,
-    //         previous_past_last_page,
-    //     );
-    // }
-
-    // need to set page for stack
-    // let stack_page_start = stack_start & !(LARGE_PAGE - 1);
-    // guest_mem[stack_page_start..stack_start].fill(0);
-    // previous_past_last_page = set_range(
-    //     table_array,
-    //     mapping_offset + table_base,
-    //     stack_page_start,
-    //     stack_start,
-    //     PDE64_ALL_ALLOWED,
-    //     mapping_offset + stack_page_start,
-    //     previous_past_last_page,
-    // );
-
-    // the page tables also need to be accessable to root mode
-    // previous_past_last_page = set_range(
-    //     table_array,
-    //     mapping_offset + table_base,
-    //     table_base,
-    //     p4_address + PAGE_SIZE,
-    //     PDE64_PRESENT | PDE64_RW,
-    //     mapping_offset + table_base,
-    //     previous_past_last_page,
-    // );
-
-    // need to make the page table handler accessable to root mode
-    // previous_past_last_page = set_range(
-    //     table_array,
-    //     mapping_offset + table_base,
-    //     interrupt_range.0,
-    //     interrupt_range.1,
-    //     PDE64_PRESENT | PDE64_RW,
-    //     mapping_offset + interrupt_range.0,
-    //     previous_past_last_page,
-    // );
-
-    // make the read only mappings also avaliable at their physical locations for root mode
-    // set_range(
-    //     table_array,
-    //     mapping_offset + table_base,
-    //     interrupt_range.1,
-    //     last_address,
-    //     PDE64_PRESENT,
-    //     mapping_offset + interrupt_range.1,
-    //     previous_past_last_page,
-    // );
-
-    // go through tree and see if it is set up the way we expect
-    // #[cfg(debug_assertions)]
-    // {
-    //     // try to resolve every page up to the stack pointer
-    //     let mut page_address = 0;
-    //     while page_address < last_address {
-    //         // get all table entries
-    //         let mut debug_info = format!(
-    //             "table_base: {}\npage address: {}\n",
-    //             table_base, page_address,
-    //         );
-    //         let p4_entry = get_entry_from_address(page_address, PML4_SHIFT);
-    //         assert_eq!(0, p4_entry, "{}", debug_info);
-    //         let p3_entry = get_entry_from_address(page_address, HUGE_PAGE_SHIFT);
-    //         let p2_entry = get_entry_from_address(page_address, LARGE_PAGE_SHIFT);
-    //         let p1_entry = get_entry_from_address(page_address, PAGE_SHIFT);
-
-    //         debug_info.push_str(
-    //             format!(
-    //                 "p3 entry: {}, p2_entry: {} p1_entry: {}\n",
-    //                 p3_entry, p2_entry, p1_entry
-    //             )
-    //             .as_str(),
-    //         );
-
-    //         let (p3_address_local, p3_flags) = get_address_and_flags(p4_table[p4_entry]);
-    //         assert_eq!(
-    //             mapping_offset + p3_address,
-    //             p3_address_local,
-    //             "{}",
-    //             debug_info
-    //         );
-    //         assert_eq!(
-    //             PDE64_PRESENT | PDE64_RW | PDE64_USER,
-    //             p3_flags,
-    //             "{}",
-    //             debug_info
-    //         );
-
-    //         let (p2_address_local, p2_flags) = get_address_and_flags(p3_table[p3_entry]);
-    //         let expected_address =
-    //             mapping_offset + table_base + (p3_entry * (TABLE_SIZE + 1)) * PAGE_SIZE;
-    //         assert_eq!(expected_address, p2_address_local, "{}", debug_info);
-    //         assert_eq!(
-    //             PDE64_PRESENT | PDE64_RW | PDE64_USER,
-    //             p2_flags,
-    //             "{}",
-    //             debug_info
-    //         );
-    //         debug_info.push_str(
-    //             format!(
-    //                 "p2_address: {}, with p2_flags: {} for large page: {}\n",
-    //                 p2_address_local,
-    //                 p2_flags,
-    //                 p3_entry * HUGE_PAGE + p2_entry * LARGE_PAGE,
-    //             )
-    //             .as_str(),
-    //         );
-
-    //         let p2_index = p3_entry * (TABLE_SIZE + 1) * TABLE_SIZE + p2_entry;
-    //         let (p1_address_local, p1_flags) = get_address_and_flags(table_array[p2_index]);
-    //         debug_info.push_str(
-    //             format!(
-    //                 "p1_address_local: {}, with p1_flags: {}\n",
-    //                 p1_address_local, p1_flags
-    //             )
-    //             .as_str(),
-    //         );
-    //         if p1_flags & PDE64_PRESENT != 0 {
-    //             if p1_flags & PDE64_IS_PAGE != 0 {
-    //                 if p1_flags & PDE64_RW == 0 || p1_flags & PDE64_USER == 0 {
-    //                     // copy on write large page or system page
-    //                     assert!(p1_address_local > stack_start, "{}", debug_info);
-    //                 } else {
-    //                     // directly mapped large page
-    //                     let large_page_address =
-    //                         (mapping_offset + page_address) & !(LARGE_PAGE - 1);
-    //                     assert_eq!(large_page_address, p1_address_local, "{}", debug_info);
-    //                 }
-    //             } else {
-    //                 // if it is not a page, go lower
-    //                 assert!(p1_flags & PDE64_RW != 0, "{}", debug_info);
-    //                 let p1_index = TABLE_SIZE
-    //                     + p3_entry * (TABLE_SIZE + 1) * TABLE_SIZE
-    //                     + p2_entry * TABLE_SIZE
-    //                     + p1_entry;
-    //                 let (page_address_local, page_flags_local) =
-    //                     get_address_and_flags(table_array[p1_index]);
-
-    //                 debug_info.push_str(
-    //                     format!(
-    //                         "paged_address_local: {}, page_flags_local: {}\n",
-    //                         page_address_local, page_flags_local
-    //                     )
-    //                     .as_str(),
-    //                 );
-    //                 if page_flags_local & PDE64_PRESENT != 0 {
-    //                     if page_flags_local & PDE64_RW == 0 || page_flags_local & PDE64_USER == 0 {
-    //                         assert!(page_address_local >= stack_start, "{}", debug_info);
-    //                     } else {
-    //                         assert_eq!(
-    //                             mapping_offset + page_address,
-    //                             page_address_local,
-    //                             "{}",
-    //                             debug_info
-    //                         );
-    //                     }
-    //                 }
-    //             }
-    //         } else {
-    //             assert_eq!(0, p1_address_local, "{}", debug_info);
-    //             assert_eq!(0, p1_flags, "{}", debug_info);
-    //         }
-    //         page_address += PAGE_SIZE;
-    //     }
-    // }
     let cr3 = *p4_physical | USER_PCID;
-    info!("CR3: {}, (0x{:x})", cr3, cr3);
+    trace!("CR3: {}, (0x{:x})", cr3, cr3);
     sregs.cr3 = cr3;
-    Ok((
-        stack_start,
-        PageFaultMetadata {
-            #[cfg(feature = "backend_debug")]
-            // p4_address: p4_physical,
-            #[cfg(feature = "backend_debug")]
-            // p3_address: p3_physical,
-            stack_start,
-        },
-    ))
+    Ok(())
 }
-
-/// The mask to get the entry into a table with 512 entries of 8 bytes each
-/// Need to zero out everything above 4096 (512 * 8) and the 3 bits at the end indexing into the 8 bytes
-const ENTRY_MASK: usize = 512 - 1;
-fn get_entry_from_address(address: usize, shift: usize) -> usize {
-    (address >> shift) & ENTRY_MASK
-}
-
-// #[cfg(feature = "backend_debug")]
-// pub fn check_page_fault_handling(
-//     vcpu: &VcpuFd,
-//     metadata: &PageFaultMetadata,
-//     guest_mem: &mut [u8],
-// ) {
-//     dump_regs(vcpu);
-//     let regs = vcpu.get_regs().unwrap();
-//     let sregs = vcpu.get_sregs().unwrap();
-//     // the faulting address is in cr2, cr3 holds the root table address
-//     let faulting_address = sregs.cr2 as usize;
-//     let p4_address = sregs.cr3 as usize;
-//     let page_base_address = faulting_address & !(PAGE_SIZE - 1);
-
-//     debug!("Starting to handle page fault at {}", faulting_address);
-//     assert!(faulting_address < PAGE_SIZE || metadata.stack_start <= faulting_address);
-//     assert_ne!(p4_address, metadata.p4_address);
-
-//     // get all table entries
-//     let p4_entry = get_entry_from_address(faulting_address, PML4_SHIFT);
-//     assert_eq!(0, p4_entry);
-//     let p3_entry = get_entry_from_address(faulting_address, HUGE_PAGE_SHIFT);
-//     let p2_entry = get_entry_from_address(faulting_address, LARGE_PAGE_SHIFT);
-//     let p1_entry = get_entry_from_address(faulting_address, PAGE_SHIFT);
-
-//     // Asserts for the exit of the debug assembly
-//     // r10 and r11 should contain addresses for the entries of the p4 and p3 entries
-//     assert_eq!(regs.r10, (metadata.p4_address) as u64);
-//     assert_eq!(
-//         regs.r11,
-//         (metadata.p3_address + p3_entry * size_of::<u64>()) as u64
-//     );
-//     // r12 and r13 hold the indices into the p2 and p1 tables respectively
-//     assert_eq!(regs.r12, (p2_entry * size_of::<u64>()) as u64);
-//     assert_eq!(regs.r13, (p1_entry * size_of::<u64>()) as u64);
-//     // r14 and p15 hold the p2 and p1 base address respecively
-//     let p2_offset = (p3_entry * (TABLE_SIZE + 1) * TABLE_SIZE) * size_of::<u64>();
-//     assert_eq!(
-//         regs.r14,
-//         (metadata.table_base + p2_offset * size_of::<u64>()) as u64
-//     );
-//     let p1_offset = ((p3_entry * (TABLE_SIZE + 1) + 1 + p2_entry) * TABLE_SIZE) * size_of::<u64>();
-//     debug!(
-//         "table_base: {}, p2 address: {}",
-//         metadata.table_base, regs.r14
-//     );
-//     assert_eq!(regs.r15, (metadata.table_base + p1_offset) as u64);
-
-//     // go through the page table and check it is correct
-//     let (p3_address, p3_flags) = get_address_and_flags(
-//         u8_slice_to_u64_slice(&mut guest_mem[p4_address..p4_address + PAGE_SIZE])[p4_entry],
-//     );
-//     assert_eq!(p3_address, metadata.p3_address);
-//     assert_eq!(p3_flags & !PDE64_ACCESSED, PDE64_ALL_ALLOWED);
-
-//     let (p2_address, p2_flags) = get_address_and_flags(
-//         u8_slice_to_u64_slice(&mut guest_mem[p3_address..p3_address + PAGE_SIZE])[p3_entry],
-//     );
-//     let canonical_p2_start =
-//         metadata.table_base + (p3_entry * (TABLE_SIZE + 1) * TABLE_SIZE) * size_of::<u64>();
-//     assert_eq!(p2_address, canonical_p2_start);
-//     assert_eq!(p2_flags & !PDE64_ACCESSED, PDE64_ALL_ALLOWED);
-
-//     let (p1_address, p1_flags) = get_address_and_flags(
-//         u8_slice_to_u64_slice(&mut guest_mem[p2_address..p2_address + PAGE_SIZE])[p2_entry],
-//     );
-//     let canonical_p1_start = canonical_p2_start + ((p2_entry + 1) * TABLE_SIZE) * size_of::<u64>();
-//     assert_eq!(p1_address, canonical_p1_start);
-//     assert_eq!(
-//         p1_flags & !PDE64_ACCESSED,
-//         PDE64_ALL_ALLOWED,
-//         "r15 is holding: {}",
-//         regs.r15
-//     );
-
-//     let (page_address, page_flags) = get_address_and_flags(
-//         u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])[p1_entry],
-//     );
-//     assert_eq!(page_address, page_base_address);
-//     assert_eq!(
-//         page_flags & !(PDE64_ACCESSED | PDE64_DIRTY),
-//         PDE64_ALL_ALLOWED
-//     );
-
-//     // r8 should beholding the previous p2 entry, so check that also
-//     let handler_p1_address = regs.r8 & !(PAGE_SIZE as u64 - 1);
-//     let handler_p1_flags = regs.r8 & (PAGE_SIZE as u64 - 1);
-//     let handler_page_address = regs.r9 & !(PAGE_SIZE as u64 - 1);
-//     let handler_page_flags = regs.r9 & (PAGE_SIZE as u64 - 1);
-//     debug!(
-//         "handler p2 entry, address: {}, flags: {}",
-//         handler_p1_address, handler_p1_flags
-//     );
-//     debug!(
-//         "handler p1 entry, address: {}, flags: {}",
-//         handler_page_address, handler_page_flags
-//     );
-
-//     if handler_p1_flags & PDE64_PRESENT == 0 || handler_p1_flags & PDE64_IS_PAGE != 0 {
-//         // if it currently not present or is a LARGE_PAGE page, need to set up the p1 table
-//         trace!("Checking p2 fault handling");
-//         // check if actual page is reasonably set
-//         if handler_p1_flags & PDE64_PRESENT == 0 {
-//             // check that the remainder of the entries have been set to 0
-//             for p1_index in 0..p1_entry {
-//                 let set_value =
-//                     u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])
-//                         [p1_index];
-//                 assert_eq!(set_value, 0, "at index {}", p1_index);
-//             }
-//             let new_entry =
-//                 u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])[p1_entry];
-//             assert_eq!(
-//                 new_entry & !(PDE64_DIRTY | PDE64_ACCESSED),
-//                 PDE64_ALL_ALLOWED | page_base_address as u64
-//             );
-//             for p1_index in p1_entry + 1..TABLE_SIZE {
-//                 let set_value =
-//                     u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])
-//                         [p1_index];
-//                 assert_eq!(set_value, 0, "at index {}", p1_index);
-//             }
-//             for page_index in 0..TABLE_SIZE {
-//                 let set_value = u8_slice_to_u64_slice(
-//                     &mut guest_mem[page_base_address..page_base_address + PAGE_SIZE],
-//                 )[page_index];
-//                 assert_eq!(set_value, 0, "at index {}", page_index);
-//             }
-//         } else {
-//             let old_address = handler_p1_address as usize;
-//             assert_eq!(old_address % LARGE_PAGE, 0);
-//             // check the p1 table
-//             for p1_index in 0..p1_entry {
-//                 let set_val =
-//                     u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])
-//                         [p1_index];
-//                 assert_eq!(
-//                     set_val,
-//                     PDE64_USER
-//                         | PDE64_PRESENT
-//                         | (handler_p1_address + (p1_index * PAGE_SIZE) as u64),
-//                     "at index {}",
-//                     p1_index
-//                 );
-//             }
-//             let set_val =
-//                 u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])[p1_entry];
-//             assert_eq!(set_val, PDE64_ALL_ALLOWED | page_base_address as u64);
-//             for p1_index in p1_entry..TABLE_SIZE {
-//                 let set_val =
-//                     u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])
-//                         [p1_index];
-//                 assert_eq!(
-//                     set_val,
-//                     PDE64_USER
-//                         | PDE64_PRESENT
-//                         | (handler_p1_address + (p1_index * PAGE_SIZE) as u64),
-//                     "at index {}",
-//                     p1_index
-//                 );
-//             }
-//             for page_index in 0..TABLE_SIZE {
-//                 let set_value = u8_slice_to_u64_slice(
-//                     &mut guest_mem[page_base_address..page_base_address + PAGE_SIZE],
-//                 )[page_index];
-//                 let expected = u8_slice_to_u64_slice(
-//                     &mut guest_mem[old_address + p2_entry * PAGE_SIZE
-//                         ..old_address + p2_entry * PAGE_SIZE + PAGE_SIZE],
-//                 )[page_index];
-//                 assert_eq!(
-//                     set_value, expected,
-//                     "at index {} for base {}",
-//                     page_index, page_base_address
-//                 );
-//             }
-//         };
-//     } else {
-//         if handler_page_flags & PDE64_PRESENT == 0 {
-//             for page_index in 0..TABLE_SIZE {
-//                 let set_value = u8_slice_to_u64_slice(
-//                     &mut guest_mem[page_base_address..page_base_address + PAGE_SIZE],
-//                 )[page_index];
-//                 assert_eq!(
-//                     set_value, 0,
-//                     "at index {} for address: {}",
-//                     page_index, page_base_address
-//                 );
-//             }
-//         } else {
-//             let old_address = handler_page_address as usize;
-//             for page_index in 0..TABLE_SIZE {
-//                 let set_value = u8_slice_to_u64_slice(
-//                     &mut guest_mem[page_base_address..page_base_address + PAGE_SIZE],
-//                 )[page_index];
-//                 let expected =
-//                     u8_slice_to_u64_slice(&mut guest_mem[old_address..old_address + PAGE_SIZE])
-//                         [page_index];
-//                 assert_eq!(set_value, expected, "at index {}", page_index);
-//             }
-//         }
-//     };
-// }
 
 fn setup_long_mode(sregs: &mut kvm_sregs, xregs: &mut kvm_xcrs) {
     sregs.cr4 =

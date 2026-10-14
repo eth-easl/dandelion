@@ -1,6 +1,4 @@
-use super::x86_64::{
-    LARGE_PAGE, PAGE_SIZE, PDE64_ALL_ALLOWED, PDE64_IS_PAGE, PDE64_PRESENT, PDE64_USER,
-};
+use super::x86_64::{PAGE_SIZE, PDE64_ALL_ALLOWED, PDE64_PRESENT};
 use super::{GLOBAL_SYSTEM_MEMORY_SIZE, ROOT_PCID, SYSTEM_VIRTUAL_BASE};
 use core::arch::global_asm;
 
@@ -8,13 +6,13 @@ use core::arch::global_asm;
 macro_rules! FETCH_PAGE {
    () => {r#"
    mov rax, [0] # load the root of the free list
-   out 33, eax
+   # out 33, eax
 1: test rax, rax
    jz 0f # abort handling if head of free list is 0
    mov rbx, [rax] # load the next entry in the node
    lock cmpxchg [0], rbx
    jnz 1b # if 0, compare and exchange did not succeed, otherwise rax now contains the new page to be used
-   out 37, eax
+   # out 37, eax
 "#};
 }
 
@@ -37,7 +35,7 @@ macro_rules! ZERO_PAGE {
    add rbx, 256
    cmp rbx, {PAGE_SIZE} 
    jl 1b
-   out 38, eax
+   # out 38, eax
 "#};
 }
 
@@ -246,9 +244,8 @@ page_fault_exception_handler:
    "# need to set the page address in rax into the p1 entry
    add r13, rcx
    or rax, {PDE64_ALL_ALLOWED}
-   out 36, eax
    mov [r13], rax
-   out 39, eax
+   # out 36, eax
    jmp 9f
 3: # fix CoW page, first find old physical address, rcx holds the p2 entry
    # TODO: think if we need to do more checks here, (could check USER flag, to ensure is not root mapping)
@@ -260,7 +257,7 @@ page_fault_exception_handler:
    COPY_PAGE!(), // copy page from address in rbx to rax, using rcx and label 1
    "or rax, {PDE64_ALL_ALLOWED}
    mov [r13], rax # set the entry with the new page
-   out 34, eax
+   # out 34, eax
 9: 
    mov cr3, rdx # restore the user page table
    mov rax, cr2 # load the faulting address
@@ -313,11 +310,8 @@ user_exit_handler:
 fault_handlers_end:
    hlt", 
     PAGE_SIZE = const PAGE_SIZE,
-   //  LARGE_PAGE = const LARGE_PAGE,
     PDE64_PRESENT = const PDE64_PRESENT,
-   //  PDE64_USER = const PDE64_USER,
     PDE64_ALL_ALLOWED = const PDE64_ALL_ALLOWED,
-   //  PDE64_IS_PAGE = const PDE64_IS_PAGE,
     ROOT_CR3_UPPER = const ((SYSTEM_VIRTUAL_BASE + GLOBAL_SYSTEM_MEMORY_SIZE) as u64 + ROOT_PCID) >> 32,
     ROOT_CR3_LOWER = const ((SYSTEM_VIRTUAL_BASE + GLOBAL_SYSTEM_MEMORY_SIZE) as u64 + ROOT_PCID) & 0xFFFF_FFFF,
 );
