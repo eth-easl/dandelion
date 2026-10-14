@@ -1,12 +1,8 @@
 use crate::{
-    composition::{CompositionSet, ItemData},
     function_driver::{
         functions::{Function, FunctionConfig},
-        system_driver::{IoData, SystemFunction},
+        system_driver::{get_remote_data_client, IoData, SystemFunction},
         ComputeResource, Driver, EngineWorkQueue, WorkDone, WorkToDo,
-    },
-    memory_domain::{
-        bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
     },
     promise::Debt,
     Position,
@@ -19,6 +15,11 @@ use futures::{stream::FuturesUnordered, StreamExt};
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
 use log::{debug, error, trace, warn};
 use memcache::Client as MemcachedClient;
+use memory::{
+    context::{bytes::BytesContext, read_only::ReadOnlyContext, ContextTrait, ContextType},
+    DataSet, ItemData,
+};
+use memory::{data::LocalData, Context, DataItem};
 use reqwest::{header::HeaderMap, Client as HttpClient};
 use std::{
     collections::{btree_map::Entry, BTreeMap},
@@ -247,7 +248,7 @@ fn parse_request<RequestType: Request>(
 }
 
 async fn http_request(
-    client: HttpClient,
+    client: &HttpClient,
     position: Position,
     context: Arc<Context>,
 ) -> DandelionResult<Vec<Arc<Context>>> {
@@ -421,147 +422,112 @@ async fn memcached_request(
     Ok(vec![header_context, body_context])
 }
 
-async fn resolve_io_item(
-    io_data: IoData,
-    client: HttpClient,
-) -> DandelionResult<(Position, Arc<Context>)> {
-    let IoData {
-        original_position,
-        original_data,
-        resolved,
-        function,
-        set_index,
-    } = io_data;
-    // first need to check if original data was local or we still need to fetch that.
-    let (input_position, input_context) = match *original_data {
-        ItemData::LocalData(context) => (original_position, context),
-        ItemData::RemoteData(remote_data) => {
-            let client = crate::composition::get_remote_data_client()?;
-            let (context, position) = client.resolve_remote_data(remote_data).await?;
-            (position, context)
-        }
-        ItemData::IoData(nested_io_data) => {
-            let (position, context) =
-                Box::pin(resolve_io_item(nested_io_data, client.clone())).await?;
-            (position, context)
-        }
+pub(crate) async fn resolve_io_item(
+    io_data: &IoData,
+    client: &HttpClient,
+) -> DandelionResult<LocalData> {
+    let set_idx = io_data.set_index;
+    let init_io = io_data.clone();
+
+    let outputs = io_data
+        .resolved
+        .get_or_init(|| async move {
+            let input = match io_data.original_data.as_ref() {
+                ItemData::Local(local) => local.clone(),
+                ItemData::Io(io) => Box::pin(resolve_io_item(io, client)).await?,
+                ItemData::Remote(remote) => {
+                    let client = get_remote_data_client()?;
+                    let (ctx, pos) = client.resolve_remote_data((remote).clone()).await?;
+                    LocalData { ctx, pos }
+                }
+            };
+            match init_io.function {
+                SystemFunction::HTTP => http_request(client, input.pos, input.ctx).await,
+                SystemFunction::MEMCACHED => memcached_request(input.pos, input.ctx).await,
+            }
+        })
+        .await;
+
+    let context = match outputs {
+        Ok(contexts) => contexts[set_idx].clone(),
+        Err(err) => return Err(err.clone()),
     };
-    match function {
-        SystemFunction::HTTP => {
-            let outputs = resolved
-                .get_or_init(move || http_request(client, input_position, input_context))
-                .await;
-            let context = match outputs {
-                Ok(context_vec) => context_vec[set_index].clone(),
-                Err(err) => return Err(err.clone()),
-            };
-            Ok((
-                Position {
-                    offset: 0,
-                    size: context.size,
-                },
-                context,
-            ))
-        }
-        SystemFunction::MEMCACHED => {
-            let outputs = resolved
-                .get_or_init(move || memcached_request(input_position, input_context))
-                .await;
-            let context = match outputs {
-                Ok(context_vec) => context_vec[set_index].clone(),
-                Err(err) => return Err(err.clone()),
-            };
-            Ok((
-                Position {
-                    offset: 0,
-                    size: context.size,
-                },
-                context,
-            ))
-        }
-    }
+    let size = context.size();
+    Ok(LocalData {
+        ctx: context,
+        pos: Position { offset: 0, size },
+    })
 }
 
 async fn resolve_all_sets(
     client: HttpClient,
-    input_sets: Vec<Option<CompositionSet>>,
+    input_sets: Vec<DataSet>,
     semaphore: Arc<Semaphore>,
     ticket: OwnedSemaphorePermit,
-    result_sender: impl FnOnce(DandelionResult<Vec<Option<CompositionSet>>>) + 'static + Send,
+    // TODO: this these functions should all return local sets, reintroduce local sets
+    result_sender: impl FnOnce(DandelionResult<Vec<Arc<Vec<DataItem>>>>) + 'static + Send,
 ) {
     // drop ticket so at least one will be available for the new tasks we spawn
     drop(ticket);
 
     let input_set_number = input_sets.len();
-    let mut output_sets = Vec::with_capacity(input_set_number);
-    output_sets.resize(input_set_number, None);
     let mut sets_vec = Vec::with_capacity(input_set_number);
-    sets_vec.resize(input_set_number, Vec::new());
-    let mut set_names = Vec::with_capacity(input_set_number);
-    set_names.resize(input_set_number, None);
     let mut io_futures = FuturesUnordered::new();
     let mut remote_futures = FuturesUnordered::new();
 
     // collect items that need to be fetched from one node
     let mut fetching_nodes = BTreeMap::new();
 
-    for (set_index, set_option) in input_sets.into_iter().enumerate() {
-        if let Some(set) = set_option {
-            set_names[set_index] = Some(set.get_name().clone());
-            if set.is_local() {
-                output_sets[set_index] = Some(set);
-                continue;
-            }
-            for (mut item, data) in set.into_iter() {
-                match data {
-                    ItemData::LocalData(_) => {
-                        // a not entirely local set, directly push the items that are already local
-                        sets_vec[set_index].push((item, data));
-                    }
-                    ItemData::IoData(io_data) => {
-                        let permit = semaphore.clone().acquire_owned().await.unwrap();
-                        let client_clone = client.clone();
-                        io_futures.push(spawn(async move {
-                            let (position, context) =
-                                resolve_io_item(io_data, client_clone).await?;
-                            item.data = position;
-                            drop(permit);
-                            Ok((set_index, item, ItemData::LocalData(context)))
-                        }));
-                    }
-                    ItemData::RemoteData(remote_data) => {
-                        let node_id = remote_data.node_id;
-                        match fetching_nodes.entry(node_id) {
-                            Entry::Vacant(vacant) => {
-                                vacant.insert((vec![(set_index, item)], vec![remote_data]));
-                            }
-                            Entry::Occupied(mut occupied) => {
-                                occupied.get_mut().0.push((set_index, item));
-                                occupied.get_mut().1.push(remote_data);
-                            }
+    for (set_index, set) in input_sets.into_iter().enumerate() {
+        let mut new_items = Vec::with_capacity(set.len());
+        for item in set.into_iter() {
+            match &item.data {
+                ItemData::Local(_) => {
+                    // a not entirely local set, directly push the items that are already local
+                    new_items.push(item.clone());
+                }
+                ItemData::Io(_) => {
+                    let permit = semaphore.clone().acquire_owned().await.unwrap();
+                    let item_clone = item.clone();
+                    // TODO: consider issues if we move to a single file wide client with an Init once.
+                    let client_clone = client.clone();
+                    io_futures.push(spawn(async move {
+                        let io_data = if let ItemData::Io(ref io_data) = item_clone.data {
+                            io_data
+                        } else {
+                            unreachable!()
                         };
-                    }
+                        let resolved = resolve_io_item(io_data, &client_clone).await?;
+                        let new_item =
+                            DataItem::new_local(item_clone.ident.clone(), item_clone.key, resolved);
+                        drop(permit);
+                        Ok((set_index, new_item))
+                    }));
+                }
+                ItemData::Remote(remote_data) => {
+                    let node_id = remote_data.node_id;
+                    match fetching_nodes.entry(node_id) {
+                        Entry::Vacant(vacant) => {
+                            vacant.insert(vec![(set_index, item.clone())]);
+                        }
+                        Entry::Occupied(mut occupied) => {
+                            occupied.get_mut().push((set_index, item.clone()));
+                        }
+                    };
                 }
             }
         }
+        sets_vec.push(new_items);
     }
 
     // perform grouped fetching for all data from each node
-    for (mut item_metadata, remote_items) in fetching_nodes.into_values() {
+    for remote_items in fetching_nodes.into_values() {
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         remote_futures.push(spawn(async move {
-            let client = crate::composition::get_remote_data_client()?;
-            let new_context = client
-                .resolve_multiple_data(&mut item_metadata, remote_items)
-                .await?;
-            let items = item_metadata
-                .into_iter()
-                .map(|(set_index, item)| {
-                    (set_index, item, ItemData::LocalData(new_context.clone()))
-                })
-                .collect::<Vec<_>>();
+            let client = crate::function_driver::system_driver::get_remote_data_client()?;
+            let new_items = client.resolve_multiple_data(&remote_items).await?;
             drop(permit);
-            Ok(items)
+            Ok(new_items)
         }));
     }
 
@@ -572,7 +538,7 @@ async fn resolve_all_sets(
         while let Some(item_result) = io_futures.next().await {
             let item_tuple = item_result.unwrap();
             match item_tuple {
-                Ok((set_index, item, data)) => sets_vec[set_index].push((item, data)),
+                Ok((set_index, item)) => sets_vec[set_index].push(item),
                 Err(err) => {
                     result_sender(Err(err));
                     return;
@@ -588,28 +554,14 @@ async fn resolve_all_sets(
                     return;
                 }
                 Ok(items) => {
-                    for (set_index, item, data) in items {
-                        sets_vec[set_index].push((item, data));
+                    for (set_index, item) in items {
+                        sets_vec[set_index].push(item);
                     }
                 }
             }
         }
 
-        for (set_index, (output_set, item_vec)) in output_sets.iter_mut().zip(sets_vec).enumerate()
-        {
-            if output_set.is_some() {
-                debug_assert!(item_vec.is_empty());
-            } else {
-                if !item_vec.is_empty() {
-                    // if there are items with the set index, it must have had a name
-                    *output_set = CompositionSet::from_item_list(
-                        set_names[set_index].take().unwrap(),
-                        item_vec,
-                    )
-                }
-            }
-        }
-        result_sender(Ok(output_sets));
+        result_sender(Ok(sets_vec.into_iter().map(Arc::new).collect()));
         drop(ticket);
     });
 }
@@ -659,18 +611,22 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                             // failures permanently inflate the count and can starve the io queue
                             // of taking any more prefetch work.
                             Err(err) => debt.fulfill(Err(err)),
-                            Ok(sets) => queue_clone.requeu_engine_args(
-                                WorkToDo::FunctionArguments {
-                                    function_id,
-                                    function_alternatives,
-                                    input_sets: sets,
-                                    metadata,
-                                    caching,
-                                    recorder,
-                                },
-                                debt,
-                                composition_id,
-                            ),
+                            Ok(sets) => {
+                                let input_sets =
+                                    sets.into_iter().map(DataSet::from_items).collect();
+                                queue_clone.reenqueue_engine_args(
+                                    WorkToDo::FunctionArguments {
+                                        function_id,
+                                        function_alternatives,
+                                        input_sets,
+                                        metadata,
+                                        caching,
+                                        recorder,
+                                    },
+                                    debt,
+                                    composition_id,
+                                )
+                            }
                         };
                     },
                 )
@@ -685,19 +641,19 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                     ticket,
                     |sets_result| {
                         match sets_result {
-                            Ok(sets) => debt.fulfill(Ok(WorkDone::CompositionSet(sets))),
+                            Ok(sets) => debt.fulfill(Ok(WorkDone::DataItems(sets))),
                             Err(err) => debt.fulfill(Err(err)),
                         };
                     },
                 )
                 .await;
             }
-            WorkToDo::RemoteToDelete { remote_data } => {
+            WorkToDo::RemoteToDelete { node_id, data_id } => {
                 tokio::spawn(async move {
-                    match crate::composition::get_remote_data_client() {
+                    match crate::function_driver::system_driver::get_remote_data_client() {
                         Ok(client) => {
                             let result = client
-                                .delete_remote_data(remote_data)
+                                .delete_remote_data(node_id, data_id)
                                 .await
                                 .map(|_| WorkDone::RemoteDeleted);
                             debt.fulfill(result);
@@ -743,19 +699,18 @@ impl Driver for ReqwestDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &dyn crate::memory_domain::MemoryDomain,
+        static_domain: &dyn memory::context::MemoryDomain,
     ) -> DandelionResult<Function> {
         if !function_path.is_empty() {
-            err_dandelion!(DandelionError::CalledSystemFuncParser)
-        } else {
-            Ok(Function {
-                requirements: crate::DataRequirementList {
-                    input_requirements: vec![],
-                    static_requirements: vec![],
-                },
-                context: Arc::new(static_domain.acquire_context(0)?),
-                config: FunctionConfig::SysConfig(SystemFunction::HTTP),
-            })
+            return err_dandelion!(DandelionError::CalledSystemFuncParser);
         }
+        Ok(Function {
+            requirements: crate::DataRequirementList {
+                input_requirements: vec![],
+                static_requirements: vec![],
+            },
+            context: Arc::new(static_domain.acquire_context(0)?),
+            config: FunctionConfig::SysConfig(SystemFunction::HTTP),
+        })
     }
 }

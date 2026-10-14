@@ -1,14 +1,18 @@
 use crate::{
-    composition::CompositionSet,
     function_driver::{
         functions::FunctionAlternative, test_queue::TestQueue, ComputeResource, Metadata, WorkToDo,
     },
     machine_config::EngineType,
-    memory_domain::{read_only::ReadOnlyContext, ContextTrait, MemoryDomain, MemoryResource},
-    DataItem, DataSet, Position,
+    Position,
 };
-use core::panic;
 use dandelion_commons::{records::Recorder, DandelionError, FunctionId};
+use memory::{
+    context::{
+        read_only::ReadOnlyContext, ContextDataItem, ContextDataSet, ContextTrait, MemoryDomain,
+        MemoryResource,
+    },
+    DataSet,
+};
 use std::{sync::Arc, time::Instant};
 
 const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
@@ -23,7 +27,7 @@ fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, engine_type: Engine
     let elf_path = String::new();
     let domain = Dom::init(dom_init).expect("Should be able to get domain");
     engine_type
-        .parse_function(elf_path, domain.as_ref())
+        .parse_function(elf_path, &*domain)
         .expect("Empty string should return error");
 }
 
@@ -101,7 +105,7 @@ fn engine_caching<Dom: MemoryDomain>(
 
     let function = Arc::new(
         engine_type
-            .parse_function(filename.to_string(), domain.as_ref().as_ref())
+            .parse_function(filename.to_string(), &**domain)
             .expect("Should be able to parse function"),
     );
 
@@ -144,9 +148,8 @@ fn engine_matmul_single<Dom: MemoryDomain>(
     // add inputs
     let in_data = vec![1i64, 2i64];
     let mut input_context = ReadOnlyContext::from_boxed(in_data.into_boxed_slice()).unwrap();
-    input_context.content.push(Some(DataSet {
-        ident: "".to_string(),
-        buffers: vec![DataItem {
+    input_context.content.push(Some(ContextDataSet {
+        items: vec![ContextDataItem {
             ident: "".to_string(),
             data: Position {
                 offset: 0,
@@ -154,8 +157,9 @@ fn engine_matmul_single<Dom: MemoryDomain>(
             },
             key: 0,
         }],
+        total_size: 16,
     }));
-    let input_sets = CompositionSet::from_context(input_context);
+    let input_sets = DataSet::from_context(input_context);
 
     let metadata = Arc::new(Metadata {
         input_sets: vec![("".to_string(), None)],
@@ -178,22 +182,22 @@ fn engine_matmul_single<Dom: MemoryDomain>(
         caching: false,
         recorder,
     });
-    let mut result_sets = tokio::runtime::Builder::new_current_thread()
+    let result_sets = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
         .block_on(promise)
         .expect("Engine should run ok with basic function")
-        .get_composition();
+        .get_data_items();
     // check that result is 4
     assert_eq!(1, result_sets.len());
-    let result_set = result_sets[0].take().unwrap().into_local();
+    let result_set = &result_sets[0];
     assert_eq!(1, result_set.len());
-    let (output_item, context) = result_set.into_iter().next().unwrap();
-    let position = output_item.data;
-    assert_eq!(16, position.size, "Checking for size of output");
-    let mut read_buffer = vec![0i64; position.size / 8];
-    context
-        .read(position.offset, &mut read_buffer)
+    let output_item = result_set[0].local_ref().unwrap();
+    assert_eq!(16, output_item.pos.size, "Checking for size of output");
+    let mut read_buffer = vec![0i64; output_item.pos.size / 8];
+    output_item
+        .ctx
+        .read(output_item.pos.offset, &mut read_buffer)
         .expect("Should succeed in reading");
     assert_eq!(1, read_buffer[0]);
     assert_eq!(4, read_buffer[1]);
@@ -234,9 +238,8 @@ fn engine_matmul_size_sweep<Dom: MemoryDomain>(
         }
         let item_size = mat_vec.len() * core::mem::size_of::<i64>();
         let mut input_context = ReadOnlyContext::from_boxed(mat_vec.into_boxed_slice()).unwrap();
-        input_context.content = vec![Some(DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
+        input_context.content = vec![Some(ContextDataSet {
+            items: vec![ContextDataItem {
                 ident: "".to_string(),
                 data: Position {
                     offset: 0,
@@ -244,8 +247,9 @@ fn engine_matmul_size_sweep<Dom: MemoryDomain>(
                 },
                 key: 0,
             }],
+            total_size: item_size,
         })];
-        let input_sets = CompositionSet::from_context(input_context);
+        let input_sets = DataSet::from_context(input_context);
 
         let metadata = Arc::new(Metadata {
             input_sets: vec![("".to_string(), None)],
@@ -268,26 +272,26 @@ fn engine_matmul_size_sweep<Dom: MemoryDomain>(
             caching: false,
             recorder,
         });
-        let mut result_sets = tokio::runtime::Builder::new_current_thread()
+        let result_sets = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
             .expect("Engine should run ok with basic function")
-            .get_composition();
+            .get_data_items();
 
         assert_eq!(1, result_sets.len());
-        let result_set = result_sets[0].take().unwrap().into_local();
+        let result_set = &result_sets[0];
         assert_eq!(1, result_set.len());
-        let (output_item, output_context) = result_set.into_iter().next().unwrap();
-        let position = output_item.data;
+        let output_item = result_set[0].local_ref().unwrap();
         assert_eq!(
             (mat_size * mat_size + 1) * 8,
-            position.size,
+            output_item.pos.size,
             "Checking for size of output"
         );
-        let mut output = vec![0i64; position.size / 8];
-        output_context
-            .read(position.offset, &mut output)
+        let mut output = vec![0i64; output_item.pos.size / 8];
+        output_item
+            .ctx
+            .read(output_item.pos.offset, &mut output)
             .expect("Should succeed in reading");
         let expected = self::get_expected_mat(mat_size);
         assert_eq!(mat_size as i64, output[0]);
@@ -317,10 +321,9 @@ fn engine_stdio<Dom: MemoryDomain>(
     let env_offset = in_data.len();
     in_data.push_str(env_content);
 
-    content.push(Some(DataSet {
-        ident: "stdio".to_string(),
-        buffers: vec![
-            DataItem {
+    content.push(Some(ContextDataSet {
+        items: vec![
+            ContextDataItem {
                 ident: "stdin".to_string(),
                 data: Position {
                     offset: stdin_offset,
@@ -328,7 +331,7 @@ fn engine_stdio<Dom: MemoryDomain>(
                 },
                 key: 0,
             },
-            DataItem {
+            ContextDataItem {
                 ident: "argv".to_string(),
                 data: Position {
                     offset: argv_offset,
@@ -336,7 +339,7 @@ fn engine_stdio<Dom: MemoryDomain>(
                 },
                 key: 0,
             },
-            DataItem {
+            ContextDataItem {
                 ident: "environ".to_string(),
                 data: Position {
                     offset: env_offset,
@@ -345,13 +348,14 @@ fn engine_stdio<Dom: MemoryDomain>(
                 key: 0,
             },
         ],
+        total_size: in_data.len() - stdin_offset,
     }));
 
     let mut input_context =
         ReadOnlyContext::from_boxed(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
             .unwrap();
     input_context.content = content;
-    let input_sets = CompositionSet::from_context(input_context);
+    let input_sets = DataSet::from_context(input_context);
 
     let metadata = Arc::new(Metadata {
         input_sets: vec![("stdio".to_string(), None)],
@@ -374,32 +378,33 @@ fn engine_stdio<Dom: MemoryDomain>(
         caching: false,
         recorder,
     });
-    let mut result_sets = tokio::runtime::Builder::new_current_thread()
+    let result_sets = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
         .block_on(promise)
         .expect("Engine should run ok with basic function")
-        .get_composition();
+        .get_data_items();
 
     // check there is exactly one set called stdio
     assert_eq!(1, result_sets.len());
-    let io_set = result_sets[0].take().unwrap().into_local();
-    assert_eq!("stdio", io_set.get_name());
+    let io_set = &result_sets[0];
     assert_eq!(2, io_set.len());
     let mut stdout_vec = Vec::<u8>::new();
     let mut stderr_vec = Vec::<u8>::new();
-    for (item, context) in &io_set {
-        match item.ident.as_str() {
+    for data_item in io_set.iter() {
+        let identifyer = data_item.ident.clone();
+        let item = data_item.local_ref().unwrap();
+        match identifyer.as_str() {
             "stdout" => {
-                stdout_vec = vec![0; item.data.size];
-                context
-                    .read(item.data.offset, &mut stdout_vec)
+                stdout_vec = vec![0; item.pos.size];
+                item.ctx
+                    .read(item.pos.offset, &mut stdout_vec)
                     .expect("stdout read should succeed")
             }
             "stderr" => {
-                stderr_vec = vec![0; item.data.size];
-                context
-                    .read(item.data.offset, &mut stderr_vec)
+                stderr_vec = vec![0; item.pos.size];
+                item.ctx
+                    .read(item.pos.offset, &mut stderr_vec)
                     .expect("stderr read should succeed")
             }
             unexpected_name => panic!(
@@ -434,9 +439,8 @@ fn engine_fileio<Dom: MemoryDomain>(
     let mut in_data = String::new();
     let mut content = Vec::new();
     let in_file_content = "Test file 0\n line 2\n";
-    content.push(Some(DataSet {
-        ident: "in".to_string(),
-        buffers: vec![DataItem {
+    content.push(Some(ContextDataSet {
+        items: vec![ContextDataItem {
             ident: "in_file".to_string(),
             data: Position {
                 offset: in_data.len(),
@@ -444,6 +448,7 @@ fn engine_fileio<Dom: MemoryDomain>(
             },
             key: 0,
         }],
+        total_size: in_data.len(),
     }));
     in_data.push_str(in_file_content);
 
@@ -459,11 +464,11 @@ fn engine_fileio<Dom: MemoryDomain>(
     let in_file4_content = "Test file 4 \n line 2\n";
     let in_file4_offset = in_data.len();
     in_data.push_str(in_file4_content);
+    let set_size = in_data.len() - in_file1_offset;
 
-    content.push(Some(DataSet {
-        ident: "in_nested".to_string(),
-        buffers: vec![
-            DataItem {
+    content.push(Some(ContextDataSet {
+        items: vec![
+            ContextDataItem {
                 ident: "in_file".to_string(),
                 data: Position {
                     offset: in_file1_offset,
@@ -471,7 +476,7 @@ fn engine_fileio<Dom: MemoryDomain>(
                 },
                 key: 0,
             },
-            DataItem {
+            ContextDataItem {
                 ident: "in_folder/in_file".to_string(),
                 data: Position {
                     offset: in_file2_offset,
@@ -479,7 +484,7 @@ fn engine_fileio<Dom: MemoryDomain>(
                 },
                 key: 0,
             },
-            DataItem {
+            ContextDataItem {
                 ident: "in_folder/in_file_two".to_string(),
                 data: Position {
                     offset: in_file3_offset,
@@ -487,7 +492,7 @@ fn engine_fileio<Dom: MemoryDomain>(
                 },
                 key: 0,
             },
-            DataItem {
+            ContextDataItem {
                 ident: "in_folder/in_folder_two/in_file".to_string(),
                 data: Position {
                     offset: in_file4_offset,
@@ -496,13 +501,14 @@ fn engine_fileio<Dom: MemoryDomain>(
                 key: 0,
             },
         ],
+        total_size: set_size,
     }));
 
     let mut input_context =
         ReadOnlyContext::from_boxed(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
             .unwrap();
     input_context.content = content;
-    let input_sets = CompositionSet::from_context(input_context);
+    let input_sets = DataSet::from_context(input_context);
 
     let metadata = Arc::new(Metadata {
         input_sets: vec![("in".to_string(), None), ("in_nested".to_string(), None)],
@@ -529,36 +535,31 @@ fn engine_fileio<Dom: MemoryDomain>(
         caching: false,
         recorder,
     });
-    let mut result_sets = tokio::runtime::Builder::new_current_thread()
+    let result_sets = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
         .block_on(promise)
         .expect("Engine should run ok with basic function")
-        .get_composition();
+        .get_data_items();
     assert_eq!(3, result_sets.len());
 
     // check out set
-    let set1 = result_sets[1].take().unwrap().into_local();
+    let set1 = &result_sets[1];
     assert_eq!(1, set1.len());
-    let (item, context) = set1.into_iter().next().unwrap();
-    assert_eq!("out_file", item.ident);
-    let mut read_buffer = vec![0; item.data.size];
-    context
-        .read(item.data.offset, &mut read_buffer)
+    assert_eq!("out_file", set1[0].ident);
+    let item = set1[0].local_ref().unwrap();
+    let mut read_buffer = vec![0; item.pos.size];
+    item.ctx
+        .read(item.pos.offset, &mut read_buffer)
         .expect("should be able to read");
     assert_eq!(
         in_file_content,
         std::str::from_utf8(&read_buffer).expect("output content should be string")
     );
 
-    let output_set = result_sets[2].take().unwrap().into_local();
+    let output_set = &result_sets[2];
     assert_eq!(4, output_set.len());
-    for (item, context) in output_set {
-        let mut read_buffer = vec![0; item.data.size];
-        context
-            .read(item.data.offset, &mut read_buffer)
-            .expect("should be able to read");
-        let content_string = std::str::from_utf8(&read_buffer).expect("content should be string");
+    for item in output_set.iter() {
         let expected_string = match item.ident.as_str() {
             "out_file" => in_file1_content,
             "out_folder/out_file" => in_file2_content,
@@ -566,6 +567,13 @@ fn engine_fileio<Dom: MemoryDomain>(
             "out_folder/out_folder_two/out_file" => in_file4_content,
             _ => panic!("unexpeced output identifier {}", item.ident),
         };
+        let local_item = item.local_ref().unwrap();
+        let mut read_buffer = vec![0; local_item.pos.size];
+        local_item
+            .ctx
+            .read(local_item.pos.offset, &mut read_buffer)
+            .expect("should be able to read");
+        let content_string = std::str::from_utf8(&read_buffer).expect("content should be string");
         assert_eq!(expected_string, content_string);
     }
 }
@@ -647,11 +655,8 @@ macro_rules! driverTests {
 
 #[cfg(feature = "cheri")]
 mod cheri {
-    use crate::{
-        function_driver::ComputeResource,
-        machine_config::EngineType,
-        memory_domain::{cheri::CheriMemoryDomain, MemoryResource},
-    };
+    use crate::{function_driver::ComputeResource, machine_config::EngineType};
+    use memory::context::{cheri::CheriMemoryDomain, MemoryResource};
     driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; EngineType::Cheri;
     core_affinity::get_core_ids()
        .and_then(
@@ -668,20 +673,17 @@ mod cheri {
 
 #[cfg(feature = "mmu")]
 mod mmu {
-    use crate::{
-        function_driver::ComputeResource,
-        machine_config::EngineType,
-        memory_domain::{mmu::MmuMemoryDomain, MemoryResource},
-    };
+    use crate::{function_driver::ComputeResource, machine_config::EngineType};
+    use memory::context::{mmu::MmuMemoryDomain, MemoryResource};
     #[cfg(target_arch = "x86_64")]
     driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::Shared { size: (1<<30) }; EngineType::Process;
     core_affinity::get_core_ids()
-       .map(
+       .and_then(
             |core_vec|
-            core_vec
+            Some(core_vec
                 .into_iter()
                 .map(|id| ComputeResource::CPU(id.id as u8))
-                .collect()).expect("Should have at least one core");
+                .collect())).expect("Should have at least one core");
     vec![
         ComputeResource::CPU(255),
         ComputeResource::GPU(0)
@@ -689,12 +691,12 @@ mod mmu {
     #[cfg(target_arch = "aarch64")]
     driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::Shared { size: (1<<30) }; EngineType::Process;
     core_affinity::get_core_ids()
-        .map(
+        .and_then(
             |core_vec|
-            core_vec
+            Some(core_vec
                 .into_iter()
                 .map(|id| ComputeResource::CPU(id.id as u8))
-                .collect()).expect("Should have at least one core");
+                .collect())).expect("Should have at least one core");
     vec![
         ComputeResource::CPU(255),
         ComputeResource::GPU(0),
@@ -703,17 +705,11 @@ mod mmu {
 
 #[cfg(feature = "kvm")]
 mod kvm {
-    use crate::{
-        function_driver::ComputeResource,
-        machine_config::EngineType,
-        memory_domain::{kvm::KvmMemoryDomain, MemoryResource},
-    };
+    use crate::{function_driver::ComputeResource, machine_config::EngineType};
+    use memory::context::{kvm::KvmMemoryDomain, MemoryResource};
     #[cfg(target_arch = "x86_64")]
     driverTests!(elf_kvm_x86_64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; EngineType::Kvm;
-    core_affinity::get_core_ids()
-       .map(
-            |core_vec|
-            core_vec
+    core_affinity::get_core_ids().map(|core_vec| core_vec
                 .into_iter()
                 .map(|id| ComputeResource::CPU(id.id as u8))
                 .collect()).expect("Should have at least one core");
@@ -724,12 +720,12 @@ mod kvm {
     #[cfg(target_arch = "aarch64")]
     driverTests!(elf_kvm_aarch64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; EngineType::Kvm;
     core_affinity::get_core_ids()
-        .map(
+        .and_then(
             |core_vec|
-            core_vec
+            Some(core_vec
                 .into_iter()
                 .map(|id| ComputeResource::CPU(id.id as u8))
-                .collect()).expect("Should have at least one core");
+                .collect())).expect("Should have at least one core");
     vec![
         ComputeResource::CPU(255),
         ComputeResource::GPU(0),

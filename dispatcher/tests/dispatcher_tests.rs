@@ -5,16 +5,19 @@ mod dispatcher_tests {
 
     mod combination_tests;
 
-    use dandelion_commons::FunctionId;
+    use composition::AnyShardingMode;
+    use dandelion_commons::{records::Recorder, FunctionId};
     use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
-        composition::{AnyShardingMode, CompositionSet, ItemData},
-        function_driver::{ComputeResource, Metadata},
+        function_driver::ComputeResource,
         machine_config::{DomainType, EngineType},
-        memory_domain::{ContextTrait, MemoryResource},
-        DataItem,
     };
-    use std::{collections::BTreeMap, sync::Arc};
+    use memory::{
+        context::{ContextTrait, MemoryDomain, MemoryResource},
+        data::Metadata,
+        DataItem, DataSet,
+    };
+    use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
     const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
@@ -23,9 +26,10 @@ mod dispatcher_tests {
         Arc::new(0.to_string())
     }
 
-    fn setup_dispatcher(
+    #[allow(clippy::extra_unused_type_parameters)]
+    fn setup_dispatcher<Dom: MemoryDomain>(
         name: &str,
-        in_set_names: Vec<(String, Option<CompositionSet>)>,
+        in_set_names: Vec<(String, Option<DataSet>)>,
         out_set_names: Vec<String>,
         engine_type: EngineType,
         engine_resource: Vec<ComputeResource>,
@@ -37,10 +41,7 @@ mod dispatcher_tests {
         path.push(name);
         let path_string = path.to_str().expect("Path should be string").to_string();
         let metadata = Metadata {
-            input_sets: in_set_names
-                .into_iter()
-                .map(|(name, set_option)| (name, set_option.map(|set| set.into_local())))
-                .collect(),
+            input_sets: in_set_names,
             output_sets: out_set_names,
             min_set_bytes: vec![],
         };
@@ -75,12 +76,35 @@ mod dispatcher_tests {
         (dispatcher, function_id)
     }
 
-    fn check_matrix(data: &ItemData, item: &DataItem, rows: u64, expected: Vec<u64>) {
-        let context = match data {
-            ItemData::LocalData(context) => context,
-            _ => panic!("Should not get non local item data"),
-        };
-        let out_mat_position = item.data;
+    /// Parses `composition` (which must contain exactly one composition) and runs it to completion
+    /// on the given inputs, returning the (resolved) output sets.
+    fn run_composition(
+        dispatcher: &Dispatcher,
+        composition: &str,
+        inputs: Vec<DataSet>,
+    ) -> Vec<Arc<Vec<DataItem>>> {
+        let recorder = Recorder::new(zero_id(), Instant::now());
+        let result = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(dispatcher.queue_unregistered_composition(
+                composition.to_string(),
+                inputs,
+                false,
+                recorder,
+            ));
+        match result {
+            Ok((out_sets, _)) => out_sets,
+            Err(err) => panic!("Failed with: {:?}", err),
+        }
+    }
+
+    fn check_matrix(item: &DataItem, rows: u64, expected: Vec<u64>) {
+        let local = item
+            .local_ref()
+            .expect("Should not get non local item data");
+        let context = &local.ctx;
+        let out_mat_position = local.pos;
         let mut out_mat = Vec::<u64>::new();
         assert_eq!((expected.len() + 1) * 8, out_mat_position.size);
         out_mat.resize(expected.len() + 1, 0);
@@ -109,7 +133,7 @@ mod dispatcher_tests {
     }
 
     macro_rules! dispatcherTests {
-        ($name: ident; $init : expr; $engine_type : expr; $engine_resource: expr) => {
+        ($name: ident; $domain : ty; $init : expr; $engine_type : expr; $engine_resource: expr) => {
             use crate::dispatcher_tests::{
                 function_tests::{
                     composition_chain_large_matmac, composition_chain_matmul,
@@ -123,68 +147,83 @@ mod dispatcher_tests {
             #[test_log::test]
             fn test_single_domain_and_engine_basic() {
                 let name = format!("test_{}_basic", stringify!($name));
-                single_domain_and_engine_basic($init, &name, $engine_type, $engine_resource)
+                single_domain_and_engine_basic::<$domain>(
+                    $init,
+                    &name,
+                    $engine_type,
+                    $engine_resource,
+                )
             }
 
             #[test_log::test]
             fn test_single_domain_and_engine_matmul() {
                 let name = format!("test_{}_matmul", stringify!($name));
-                single_domain_and_engine_matmul($init, &name, $engine_type, $engine_resource)
+                single_domain_and_engine_matmul::<$domain>(
+                    $init,
+                    &name,
+                    $engine_type,
+                    $engine_resource,
+                )
             }
 
             #[test_log::test]
             fn test_composition_single_matmul() {
                 let name = format!("test_{}_matmul", stringify!($name));
-                composition_single_matmul($init, &name, $engine_type, $engine_resource)
+                composition_single_matmul::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
             #[test_log::test]
             fn test_composition_optional() {
                 let name = format!("test_{}_basic", stringify!($name));
-                composition_optional($init, &name, $engine_type, $engine_resource)
+                composition_optional::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
             #[test_log::test]
             fn test_composition_parallel() {
                 let name = format!("test_{}_matmul", stringify!($name));
-                composition_parallel_matmul($init, &name, $engine_type, $engine_resource)
+                composition_parallel_matmul::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
             #[test_log::test]
             fn test_composition_chain() {
                 let name = format!("test_{}_matmul", stringify!($name));
-                composition_chain_matmul($init, &name, $engine_type, $engine_resource)
+                composition_chain_matmul::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
             #[test_log::test]
             fn test_composition_diamond() {
                 let name = format!("test_{}_matmac", stringify!($name));
-                composition_diamond_matmac($init, &name, $engine_type, $engine_resource)
+                composition_diamond_matmac::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
             #[test_log::test]
             fn test_composition_chain_large_matmac() {
                 let name = format!("test_{}_matmac", stringify!($name));
-                composition_chain_large_matmac($init, &name, $engine_type, $engine_resource)
+                composition_chain_large_matmac::<$domain>(
+                    $init,
+                    &name,
+                    $engine_type,
+                    $engine_resource,
+                )
             }
 
             #[test_log::test]
             fn test_single_input_fixed() {
                 let name = format!("test_{}_matmac", stringify!($name));
-                single_input_fixed($init, &name, $engine_type, $engine_resource)
+                single_input_fixed::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
             #[test_log::test]
             fn test_multiple_input_fixed() {
                 let name = format!("test_{}_matmac", stringify!($name));
-                multiple_input_fixed($init, &name, $engine_type, $engine_resource)
+                multiple_input_fixed::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
             #[test_log::test]
             fn test_fetch_compute() {
                 use crate::dispatcher_tests::combination_tests::fetch_compute;
                 let name = format!("test_{}_matmul", stringify!($name));
-                fetch_compute($init, &name, $engine_type, $engine_resource)
+                fetch_compute::<$domain>($init, &name, $engine_type, $engine_resource)
             }
         };
     }
@@ -194,9 +233,9 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::MemoryResource,
         };
-        dispatcherTests!(elf_cheri; (DomainType::Cheri, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Cheri; vec![ComputeResource::CPU(1)]);
+        use memory::context::{cheri::CheriMemoryDomain, MemoryResource};
+        dispatcherTests!(elf_cheri; CheriMemoryDomain; (DomainType::Cheri, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Cheri; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "mmu")]
@@ -204,12 +243,12 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::MemoryResource,
         };
+        use memory::context::{mmu::MmuMemoryDomain, MemoryResource};
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(elf_mmu_x86_64; (DomainType::Process ,MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; (DomainType::Process ,MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(elf_mmu_aarch64; (DomainType::Process, MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; (DomainType::Process, MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "kvm")]
@@ -217,11 +256,11 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::MemoryResource,
         };
+        use memory::context::{kvm::KvmMemoryDomain, MemoryResource};
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(elf_kvm_x86_64; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_kvm_x86_64; KvmMemoryDomain; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(elf_kvm_aarch64; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_kvm_aarch64; KvmMemoryDomain; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
     }
 }

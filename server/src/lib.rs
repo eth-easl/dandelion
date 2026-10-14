@@ -1,12 +1,8 @@
 pub mod config;
 
-use dandelion_commons::{records::Recorder, DandelionError};
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 use hyper::body::Frame;
-use machine_interface::{
-    composition::LocalCompositionSet,
-    memory_domain::{Context, ContextTrait},
-    DataItem,
-};
+use memory::{context::ContextTrait, DataItem, LocalData};
 use serde::{Deserialize, Serialize};
 use std::{io::IoSlice, sync::Arc};
 
@@ -44,17 +40,18 @@ pub struct InputItem<'data> {
 struct ItemData {
     response_offset: usize,
     reponse_size: usize,
-    data_item: DataItem,
-    context: Arc<Context>,
+    local_data: LocalData,
 }
 
 fn encode_item(
-    data_item: DataItem,
-    context: Arc<Context>,
+    data_item: &DataItem,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
     array_index: usize,
-) -> usize {
+) -> DandelionResult<usize> {
+    // response items need to be local to be sent
+    let local_data = data_item.local_ref()?.clone();
+
     // add item to array with doc type and index into array as name
     response.push(3);
     response.extend_from_slice(format!("{}", array_index).as_bytes());
@@ -81,16 +78,14 @@ fn encode_item(
     response.push(5);
     response.extend_from_slice("data\0".as_bytes());
     // binary lenth, generic subtype subtype and then all data
-    let data_size = data_item.data.size as i32;
-    response.extend_from_slice(&data_size.to_le_bytes());
+    let item_size = local_data.pos.size;
+    response.extend_from_slice(&(item_size as i32).to_le_bytes());
     response.push(0);
 
-    let item_size = data_item.data.size;
     data_items.push(ItemData {
         response_offset: response.len(),
         reponse_size: item_size,
-        data_item,
-        context,
+        local_data,
     });
 
     // end doc and set length
@@ -98,19 +93,16 @@ fn encode_item(
     let doc_size = (response.len() - doc_start + item_size) as i32;
     response[doc_start..doc_start + 4].copy_from_slice(&doc_size.to_le_bytes());
 
-    item_size
+    Ok(item_size)
 }
 
 fn encode_sets(
-    sets: Vec<Option<LocalCompositionSet>>,
+    sets: Vec<Arc<Vec<DataItem>>>,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
-) -> usize {
+) -> DandelionResult<usize> {
     let mut all_items = 0;
-    // filter out empty sets
-    let non_empty_set = sets.into_iter().flatten();
-    // if list is empty need to push empty string
-    for (index, set) in non_empty_set.enumerate() {
+    for (index, set) in sets.into_iter().enumerate() {
         // add item to array with doc type and name equal to index into the array
         response.push(3);
         response.extend_from_slice(format!("{}", index).as_bytes());
@@ -122,7 +114,8 @@ fn encode_sets(
         // set identifier: string type, identifier e_name and actual set name as length, string, null byte
         response.push(2);
         response.extend_from_slice("identifier\0".as_bytes());
-        let set_name = set.get_name();
+        // TODO: sets no longer carry names, send them once we have them again
+        let set_name = "";
         response.extend_from_slice(&((set_name.len() + 1) as i32).to_le_bytes());
         response.extend_from_slice(set_name.as_bytes());
         response.push(0);
@@ -134,8 +127,8 @@ fn encode_sets(
         response.extend_from_slice(&0i32.to_le_bytes());
 
         let mut set_items_length = 0;
-        for (array_index, (data_item, context)) in set.into_iter().enumerate() {
-            set_items_length += encode_item(data_item, context, response, data_items, array_index);
+        for (array_index, data_item) in set.iter().enumerate() {
+            set_items_length += encode_item(data_item, response, data_items, array_index)?;
         }
         all_items += set_items_length;
 
@@ -149,13 +142,13 @@ fn encode_sets(
         let doc_size = (response.len() - doc_start + set_items_length) as i32;
         response[doc_start..doc_start + 4].copy_from_slice(&doc_size.to_le_bytes());
     }
-    all_items
+    Ok(all_items)
 }
 
 fn encode_response(
-    sets: Vec<Option<LocalCompositionSet>>,
+    sets: Vec<Arc<Vec<DataItem>>>,
     _timings: &Recorder,
-) -> (usize, Vec<u8>, Vec<ItemData>) {
+) -> DandelionResult<(usize, Vec<u8>, Vec<ItemData>)> {
     // lenght of dict, list of items closing 0 byte
     let mut response = Vec::<u8>::new();
     let mut data_items = Vec::new();
@@ -169,7 +162,7 @@ fn encode_response(
     response.extend_from_slice(&0i32.to_le_bytes());
 
     // encode sets
-    let all_items = encode_sets(sets, &mut response, &mut data_items);
+    let all_items = encode_sets(sets, &mut response, &mut data_items)?;
     log::trace!("Response contains items with total size of {}", all_items);
     // end array and set length
     response.push(0);
@@ -199,25 +192,26 @@ fn encode_response(
     let doc_length = (response.len() + all_items) as i32;
     response[0..4].copy_from_slice(&doc_length.to_le_bytes());
 
-    (all_items, response, data_items)
+    Ok((all_items, response, data_items))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 enum ReadMode {
     /// index of the next item and how much to read in serial until hit next item
-    Item(usize, usize),
+    ToItem(usize, usize),
     /// index of the item to read and how much to read until hit end of item
-    ItemEnd(usize, usize),
+    ToItemEnd(usize, usize),
     /// there are no more items, are reading rest of serial
-    End(usize),
+    ToEnd(usize),
 }
 
 impl ReadMode {
     fn len(&self) -> usize {
         match self {
-            ReadMode::Item(_, to_end) | ReadMode::ItemEnd(_, to_end) | ReadMode::End(to_end) => {
-                *to_end
-            }
+            ReadMode::ToItem(_, to_end)
+            | ReadMode::ToItemEnd(_, to_end)
+            | ReadMode::ToEnd(to_end) => *to_end,
         }
     }
 }
@@ -233,65 +227,61 @@ pub struct DandelionBuf {
 impl DandelionBuf {
     fn get_chunk(&self, read_mode: ReadMode) -> &[u8] {
         match read_mode {
-            ReadMode::End(to_end) => {
+            ReadMode::ToEnd(to_end) => {
                 let start = self.serial.len() - to_end;
                 &self.serial[start..self.serial.len()]
             }
-            ReadMode::Item(item_index, to_item) => {
+            ReadMode::ToItem(item_index, to_item) => {
                 let item_offset = self.items[item_index].response_offset;
                 &self.serial[item_offset - to_item..item_offset]
             }
-            ReadMode::ItemEnd(buf_item_index, to_end) => {
-                let ItemData {
-                    context,
-                    response_offset: _,
-                    reponse_size: _,
-                    data_item,
-                } = &self.items[buf_item_index];
-                let position = data_item.data;
-                let start = position.offset + (position.size - to_end);
-                context.get_chunk_ref(start, to_end).unwrap()
+            ReadMode::ToItemEnd(buf_item_index, to_end) => {
+                let LocalData { ctx, pos } = &self.items[buf_item_index].local_data;
+                let start = pos.offset + (pos.size - to_end);
+                ctx.get_chunk_ref(start, to_end).unwrap()
             }
         }
     }
-
     fn advance_descriptor(&self, read_mode: ReadMode, to_advance: usize) -> (usize, ReadMode) {
         let (advanced, new_mode) = match read_mode {
-            ReadMode::End(to_end) => {
+            ReadMode::ToEnd(to_end) => {
                 if to_end >= to_advance {
-                    (to_advance, ReadMode::End(to_end - to_advance))
+                    (to_advance, ReadMode::ToEnd(to_end - to_advance))
                 } else {
-                    (to_end, ReadMode::End(0))
+                    (to_end, ReadMode::ToEnd(0))
                 }
             }
-            ReadMode::Item(item_index, to_item) => {
+            ReadMode::ToItem(item_index, to_item) => {
                 if to_item > to_advance {
-                    (to_advance, ReadMode::Item(item_index, to_item - to_advance))
+                    (
+                        to_advance,
+                        ReadMode::ToItem(item_index, to_item - to_advance),
+                    )
                 } else {
                     (
                         to_item,
-                        ReadMode::ItemEnd(item_index, self.items[item_index].reponse_size),
+                        ReadMode::ToItemEnd(item_index, self.items[item_index].reponse_size),
                     )
                 }
             }
-            ReadMode::ItemEnd(item_index, to_end) => {
+            ReadMode::ToItemEnd(item_index, to_end) => {
                 if to_end > to_advance {
                     (
                         to_advance,
-                        ReadMode::ItemEnd(item_index, to_end - to_advance),
+                        ReadMode::ToItemEnd(item_index, to_end - to_advance),
                     )
                 } else {
                     let next_read = if item_index + 1 >= self.items.len() {
-                        ReadMode::End(self.serial.len() - self.items[item_index].response_offset)
+                        ReadMode::ToEnd(self.serial.len() - self.items[item_index].response_offset)
                     } else {
                         let next_index = item_index + 1;
                         let next_size = self.items[next_index].reponse_size;
                         if self.items[next_index].response_offset
                             == self.items[item_index].response_offset
                         {
-                            ReadMode::ItemEnd(next_index, next_size)
+                            ReadMode::ToItemEnd(next_index, next_size)
                         } else {
-                            ReadMode::Item(
+                            ReadMode::ToItem(
                                 next_index,
                                 self.items[next_index].response_offset
                                     - self.items[next_index - 1].response_offset,
@@ -314,7 +304,7 @@ impl bytes::Buf for DandelionBuf {
     fn advance(&mut self, cnt: usize) {
         if cnt > self.remaining {
             self.remaining = 0;
-            self.read_offset = ReadMode::End(0);
+            self.read_offset = ReadMode::ToEnd(0);
             return;
         }
         self.remaining -= cnt;
@@ -323,7 +313,7 @@ impl bytes::Buf for DandelionBuf {
             let (read_length, next_reader) = self.advance_descriptor(self.read_offset, to_advance);
             to_advance -= read_length;
             self.read_offset = next_reader;
-            if next_reader.len() == 0 && next_reader != ReadMode::End(0) {
+            if next_reader.len() == 0 && next_reader != ReadMode::ToEnd(0) {
                 continue;
             }
             if to_advance == 0 {
@@ -340,7 +330,7 @@ impl bytes::Buf for DandelionBuf {
         let mut slice_index = 0;
         let mut next_read = self.read_offset;
         let mut remaining = self.remaining;
-        while slice_index < dst.len() && next_read != ReadMode::End(0) && remaining > 0 {
+        while slice_index < dst.len() && next_read != ReadMode::ToEnd(0) && remaining > 0 {
             let chunk = self.get_chunk(next_read);
             if !chunk.is_empty() {
                 dst[slice_index] = IoSlice::new(chunk);
@@ -358,31 +348,30 @@ pub struct DandelionBody {
 }
 
 impl DandelionBody {
-    pub fn new(sets: Vec<Option<LocalCompositionSet>>, timing: &Recorder) -> Self {
-        let (total_item_size, serial, items) = encode_response(sets, timing);
+    pub fn new(sets: Vec<Arc<Vec<DataItem>>>, timing: &Recorder) -> DandelionResult<Self> {
+        let (total_item_size, serial, items) = encode_response(sets, timing)?;
         let read_offset = if !items.is_empty() {
             if items[0].response_offset > 0 {
-                ReadMode::Item(0, items[0].response_offset)
+                ReadMode::ToItem(0, items[0].response_offset)
             } else {
-                ReadMode::ItemEnd(0, items[0].reponse_size)
+                ReadMode::ToItemEnd(0, items[0].reponse_size)
             }
         } else {
-            ReadMode::End(serial.len())
+            ReadMode::ToEnd(serial.len())
         };
-        DandelionBody {
+        Ok(DandelionBody {
             buffer: Some(DandelionBuf {
                 read_offset,
                 remaining: total_item_size + serial.len(),
                 serial,
                 items,
             }),
-        }
+        })
     }
-
     pub fn from_vec(array: Vec<u8>) -> Self {
         DandelionBody {
             buffer: Some(DandelionBuf {
-                read_offset: ReadMode::End(array.len()),
+                read_offset: ReadMode::ToEnd(array.len()),
                 remaining: array.len(),
                 serial: array,
                 items: Vec::new(),
@@ -435,9 +424,9 @@ async fn test_dandelion_body_serialization_async(mut body: DandelionBody, expect
 
 #[test]
 fn test_dandelion_body_serialization() {
-    use machine_interface::{
-        composition::CompositionSet, memory_domain::read_only::ReadOnlyContext, DataItem, DataSet,
-        Position,
+    use memory::{
+        context::{read_only::ReadOnlyContext, ContextDataItem, ContextDataSet},
+        DataSet, Position,
     };
 
     let pattern = [0xCu8, 0xAu8, 0xFu8, 0xEu8];
@@ -452,7 +441,8 @@ fn test_dandelion_body_serialization() {
 
     let expected_response_struct = DandelionDeserializeResponse {
         sets: vec![InputSet {
-            identifier: String::from("set_ident"),
+            // TODO: sets currently have no names, so the response always contains empty set identifiers
+            identifier: String::from(""),
             items: vec![InputItem {
                 identifier: String::from("item_ident"),
                 key: 7,
@@ -465,9 +455,8 @@ fn test_dandelion_body_serialization() {
     let expected_response = bson::to_vec(&expected_response_struct).unwrap();
 
     let mut new_context = ReadOnlyContext::from_boxed(data_box).unwrap();
-    new_context.content = vec![Some(DataSet {
-        ident: String::from("set_ident"),
-        buffers: vec![DataItem {
+    new_context.content = vec![Some(ContextDataSet {
+        items: vec![ContextDataItem {
             key: 7,
             ident: String::from("item_ident"),
             data: Position {
@@ -475,12 +464,13 @@ fn test_dandelion_body_serialization() {
                 size: repetitions * pattern.len(),
             },
         }],
+        total_size: repetitions * pattern.len(),
     })];
-    let composition_set = CompositionSet::from_context(new_context)
+    let sets = DataSet::from_context(new_context)
         .into_iter()
-        .map(|set| set.map(|set| set.into_local()))
+        .map(|set| set.items)
         .collect();
-    let context_body = DandelionBody::new(composition_set, &recorder);
+    let context_body = DandelionBody::new(sets, &recorder).unwrap();
 
     tokio::runtime::Builder::new_current_thread()
         .build()

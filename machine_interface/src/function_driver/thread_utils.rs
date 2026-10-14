@@ -1,16 +1,18 @@
 use crate::{
-    composition::CompositionSet,
     function_driver::{
         functions::FunctionConfig, ComputeResource, EngineWorkQueue, WorkDone, WorkToDo,
     },
     machine_config::EngineType,
-    memory_domain::{self, Context},
 };
 use core::marker::Send;
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
 };
-use std::thread::spawn;
+use memory::{
+    context::{self, Context},
+    DataItem, DataSet,
+};
+use std::{sync::Arc, thread::spawn};
 
 extern crate alloc;
 
@@ -20,8 +22,9 @@ pub trait EngineLoop {
         &mut self,
         config: FunctionConfig,
         context: Context,
+        input_sets: &[(String, Option<DataSet>)],
         output_sets: &[String],
-    ) -> DandelionResult<Context>;
+    ) -> DandelionResult<(i32, Vec<Arc<Vec<DataItem>>>)>;
     fn get_engine_type(&self) -> EngineType;
 }
 
@@ -156,7 +159,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
             WorkToDo::FunctionArguments {
                 function_id: _,
                 function_alternatives,
-                mut input_sets,
+                input_sets,
                 metadata,
                 caching,
                 mut recorder,
@@ -185,44 +188,51 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 };
 
                 recorder.record(RecordPoint::LoadStart);
-                let mut function_context = match function.load(
-                    alternative.domain.as_ref().as_ref(),
-                    alternative.context_size,
-                ) {
-                    Ok(con) => con,
-                    Err(err) => {
-                        drop(recorder);
-                        debt.fulfill(Err(err));
-                        continue;
-                    }
-                };
+                let mut function_context =
+                    match function.load(&**alternative.domain, alternative.context_size) {
+                        Ok(con) => con,
+                        Err(err) => {
+                            drop(recorder);
+                            debt.fulfill(Err(err));
+                            continue;
+                        }
+                    };
 
                 recorder.record(RecordPoint::TransferStart);
 
                 function_context.content.reserve(metadata.input_sets.len());
 
-                for (set_index, (input_set_name, static_set)) in
-                    metadata.input_sets.iter().enumerate()
-                {
+                for (set_index, (_, static_set)) in metadata.input_sets.iter().enumerate() {
                     // need to add each input set to the content
                     // the input_sets vec can have less entries than the functions defined sets (not all sets need to be used in composition)
-                    let input_option = input_sets
-                        .get_mut(set_index)
-                        .and_then(|set_opt| set_opt.take().map(|set| set.into_local()));
-                    let transfer_option = static_set.as_ref().or(input_option.as_ref());
+                    let input_set = &input_sets[set_index];
+                    let transfer_set = static_set.as_ref().unwrap_or(input_set);
                     // Always push the content set, even if it is empty / not present, so keep numbering consistent
-                    if let Some(transfer_set) = transfer_option {
-                        function_context.content.push(Some(crate::DataSet {
-                            ident: input_set_name.clone(),
-                            buffers: Vec::with_capacity(transfer_set.len()),
+                    if !transfer_set.is_empty() {
+                        function_context.content.push(Some(crate::ContextDataSet {
+                            items: Vec::with_capacity(transfer_set.len()),
+                            total_size: 0,
                         }));
-                        for (source_item, source_context) in transfer_set {
-                            let transfer_result = memory_domain::transfer_data_item(
+                        for source_item in transfer_set.items.iter() {
+                            let local_item = match source_item.local_ref() {
+                                Ok(data) => data,
+                                Err(err) => {
+                                    drop(recorder);
+                                    debt.fulfill(Err(err));
+                                    continue 'engine;
+                                }
+                            };
+                            let local_source_item = crate::ContextDataItem {
+                                ident: source_item.ident.clone(),
+                                key: source_item.key,
+                                data: local_item.pos,
+                            };
+                            let transfer_result = context::transfer_data_item(
                                 &mut function_context,
-                                source_context,
+                                &local_item.ctx,
                                 set_index,
                                 128,
-                                source_item,
+                                &local_source_item,
                             );
 
                             if let Err(transfer_error) = transfer_result {
@@ -245,18 +255,18 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 let result = engine_state.run(
                     function.config.clone(),
                     function_context,
+                    &metadata.input_sets,
                     &metadata.output_sets,
                 );
 
-                if let Ok(ref context) = result {
-                    log::debug!("content: {:?}, state: {:?}", context.content, context.state);
+                if let Ok((exit_code, items)) = &result {
+                    log::debug!("content: {}, state: {:?}", *exit_code, items);
                 }
 
                 recorder.record(RecordPoint::EngineEnd);
                 drop(recorder);
 
-                let results = result
-                    .map(|context| WorkDone::CompositionSet(CompositionSet::from_context(context)));
+                let results = result.map(|(_, items)| WorkDone::DataItems(items));
                 debt.fulfill(results);
             }
             WorkToDo::SetsToResolve { .. } => {

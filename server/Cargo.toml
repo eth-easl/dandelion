@@ -3,17 +3,19 @@ name = "dandelion_server"
 version = "0.1.0"
 edition = "2021"
 
-[lints]
-workspace = true
-
 [package.metadata.cargo-machete]
 ignored = ["openssl", "serde_bytes"]
 
+[lints]
+workspace = true
+
 [dependencies]
+memory = { path = "../memory" }
 machine_interface = { path = "../machine_interface" }
 dandelion_commons = { path = "../dandelion_commons" }
 dispatcher = { path = "../dispatcher" }
 multinode = { path = "../multinode" }
+composition = { path = "../composition" }
 futures = { version = "0.3.28", default-features=false}
 tokio = { version = "1.38.2", features = ["full"] }
 hyper = { version = "1.2", features = ["server", "http1", "http2"] }
