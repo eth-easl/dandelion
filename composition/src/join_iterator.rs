@@ -49,7 +49,7 @@ impl JoinIterator for SetAllIterator {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_partitions(any_parallelisms);
         } else {
-            debug_assert!(any_parallelisms.len() == 0);
+            debug_assert!(any_parallelisms.is_empty());
         }
     }
 
@@ -102,7 +102,7 @@ impl JoinIterator for SetEachIterator {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_partitions(any_parallelisms);
         } else {
-            debug_assert!(any_parallelisms.len() == 0);
+            debug_assert!(any_parallelisms.is_empty());
         }
     }
 
@@ -177,9 +177,9 @@ fn key_set_intersect(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<
 }
 
 fn key_set_union(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<usize>)>) {
-    if new_key_groups.len() == 0 {
+    if new_key_groups.is_empty() {
         return;
-    } else if curr_keys.len() == 0 {
+    } else if curr_keys.is_empty() {
         return *curr_keys = new_key_groups.iter().map(|(k, _)| *k).collect();
     }
 
@@ -306,7 +306,7 @@ impl SetKeyIterator {
 
 impl JoinIterator for SetKeyIterator {
     fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>) {
-        debug_assert!(any_parallelisms.len() == 0);
+        debug_assert!(any_parallelisms.is_empty());
     }
 
     fn fill_in(&mut self, to_fill: &mut Vec<DataSet>) {
@@ -748,7 +748,7 @@ impl JoinIterator for AnyIterator {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_partitions(any_parallelisms);
         } else {
-            debug_assert!(any_parallelisms.len() == 0);
+            debug_assert!(any_parallelisms.is_empty());
         }
     }
 

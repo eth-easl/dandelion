@@ -14,26 +14,26 @@ use tokio::sync::{mpsc, OnceCell};
 /// Translates dandelion engine types to protocol engine types.
 pub(crate) fn engine_type_to_proto(t: machine_config::EngineType) -> proto::EngineType {
     match t {
-        machine_config::EngineType::System => proto::EngineType::EngineReqwest,
+        machine_config::EngineType::System => proto::EngineType::Reqwest,
         #[cfg(feature = "cheri")]
-        machine_config::EngineType::Cheri => proto::EngineType::EngineCheri,
+        machine_config::EngineType::Cheri => proto::EngineType::Cheri,
         #[cfg(feature = "mmu")]
-        machine_config::EngineType::Process => proto::EngineType::EngineProcess,
+        machine_config::EngineType::Process => proto::EngineType::Process,
         #[cfg(feature = "kvm")]
-        machine_config::EngineType::Kvm => proto::EngineType::EngineKvm,
+        machine_config::EngineType::Kvm => proto::EngineType::Kvm,
     }
 }
 
 /// Translates protocol engine types to dandelion engine types.
 pub(crate) fn engine_type_from_proto(t: i32) -> DandelionResult<machine_config::EngineType> {
     match proto::EngineType::try_from(t).unwrap() {
-        proto::EngineType::EngineReqwest => Ok(machine_config::EngineType::System),
+        proto::EngineType::Reqwest => Ok(machine_config::EngineType::System),
         #[cfg(feature = "cheri")]
-        proto::EngineType::EngineCheri => Ok(machine_config::EngineType::Cheri),
+        proto::EngineType::Cheri => Ok(machine_config::EngineType::Cheri),
         #[cfg(feature = "mmu")]
-        proto::EngineType::EngineProcess => Ok(machine_config::EngineType::Process),
+        proto::EngineType::Process => Ok(machine_config::EngineType::Process),
         #[cfg(feature = "kvm")]
-        proto::EngineType::EngineKvm => Ok(machine_config::EngineType::Kvm),
+        proto::EngineType::Kvm => Ok(machine_config::EngineType::Kvm),
         _ => err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
             "Unknown engine type!".to_string(),
         ))),

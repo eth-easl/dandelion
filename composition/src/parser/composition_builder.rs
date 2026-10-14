@@ -99,7 +99,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 arg_spans[arg_set_idx] = Some(arg.span.clone());
                 input_templates[arg_set_idx] = Some(InputSetTemplate {
                     set_idx: *data_set_id,
-                    sharding: arg.v.sharding.clone(),
+                    sharding: arg.v.sharding,
                     optional: arg.v.optional,
                 });
             } else {
@@ -120,13 +120,12 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         processed_sets.resize(num_params, false);
         let mut join_order = Vec::new();
         let mut any_join_order = Vec::new();
-        if let Some(strategy) = fappl.v.join_strategy.as_ref().and_then(|s| {
-            if s.join_strategy_order.is_empty() || s.join_strategies.is_empty() {
-                None
-            } else {
-                Some(s)
-            }
-        }) {
+        if let Some(strategy) = fappl
+            .v
+            .join_strategy
+            .as_ref()
+            .filter(|&s| !(s.join_strategy_order.is_empty() || s.join_strategies.is_empty()))
+        {
             debug_assert!(strategy.join_strategy_order.len() - 1 == strategy.join_strategies.len());
             let mut curr_join_chain_any = None;
             let mut curr_strategy = JoinStrategy::Cross;
@@ -336,7 +335,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             match statement {
                 Statement::FunctionApplication(spanned_fa) => {
                     for ret in spanned_fa.v.rets.iter() {
-                        match data_set_ids.entry(&ret.v.ident) {
+                        match data_set_ids.entry(ret.v.ident) {
                             Entry::Vacant(v) => {
                                 v.insert(data_set_counter);
                                 data_set_counter += 1;

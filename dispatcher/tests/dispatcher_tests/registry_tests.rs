@@ -18,8 +18,8 @@ const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
 fn create_context(matrix: Box<[u64]>) -> Context {
     let mat_len = matrix.len();
-    let mut fixed =
-        ReadOnlyContext::new(matrix).expect("Should be able to make context from boxed array");
+    let mut fixed = ReadOnlyContext::from_boxed(matrix)
+        .expect("Should be able to make context from boxed array");
     let data_size = mat_len * core::mem::size_of::<u64>();
     fixed.content.push(Some(ContextDataSet {
         items: vec![ContextDataItem {
@@ -32,7 +32,7 @@ fn create_context(matrix: Box<[u64]>) -> Context {
         }],
         total_size: data_size,
     }));
-    return fixed;
+    fixed
 }
 
 /// tests with a single set fixed in the metadata

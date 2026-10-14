@@ -288,7 +288,7 @@ impl DandelionConfig {
         cli_config
             .total_cores
             .get_or_insert(num_cpus::get_physical());
-        return cli_config;
+        cli_config
     }
 
     pub fn get_min_sys_cores(&self) -> usize {
@@ -325,7 +325,7 @@ impl DandelionConfig {
             );
             (other_cores as u8..max_core as u8).collect()
         };
-        return core_vec;
+        core_vec
     }
 
     pub fn get_preload_functions(&self) -> (Vec<PreloadFunc>, Vec<String>) {

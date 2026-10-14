@@ -21,14 +21,14 @@ impl core::fmt::Debug for BytesContext {
             f.write_fmt(format_args!("Bytes with len: {}, ", frame.len()))?;
         }
         f.write_fmt(format_args!("]}}"))?;
-        return Ok(());
+        Ok(())
     }
 }
 
 impl ContextTrait for BytesContext {
     fn write<T>(&mut self, _offset: usize, _data: &[T]) -> dandelion_commons::DandelionResult<()> {
         error!("Tried to write to read only contet");
-        return err_dandelion!(dandelion_commons::DandelionError::InvalidWrite);
+        err_dandelion!(dandelion_commons::DandelionError::InvalidWrite)
     }
     fn read<T>(
         &self,
@@ -38,7 +38,7 @@ impl ContextTrait for BytesContext {
         let byte_buffer = unsafe {
             core::slice::from_raw_parts_mut(
                 read_buffer.as_ptr() as *mut u8,
-                read_buffer.len() * core::mem::size_of::<T>(),
+                std::mem::size_of_val(read_buffer),
             )
         };
         let mut read_offset = 0usize;
@@ -89,7 +89,7 @@ struct FrameBuf<'data> {
 
 impl<'data> bytes::Buf for FrameBuf<'data> {
     fn remaining(&self) -> usize {
-        return self.remaining;
+        self.remaining
     }
 
     fn advance(&mut self, cnt: usize) {
@@ -110,21 +110,21 @@ impl<'data> bytes::Buf for FrameBuf<'data> {
     }
 
     fn chunk(&self) -> &[u8] {
-        return &(self.byte_iter[self.current_frame])[self.current_buf_offset..];
+        &(self.byte_iter[self.current_frame])[self.current_buf_offset..]
     }
 }
 
 fn check_remaining<T>(buf: &impl bytes::Buf) -> DandelionResult<()> {
     if buf.remaining() < size_of::<T>() {
-        return err_dandelion!(DandelionError::RequestError(FrontendError::StreamEnd));
+        err_dandelion!(DandelionError::RequestError(FrontendError::StreamEnd))
     } else {
-        return Ok(());
+        Ok(())
     }
 }
 
 fn read_type_byte(buf: &mut impl bytes::Buf) -> DandelionResult<i8> {
     check_remaining::<i8>(buf)?;
-    return Ok(buf.get_i8());
+    Ok(buf.get_i8())
 }
 
 fn read_and_check_termination(buf: &mut impl bytes::Buf) -> DandelionResult<()> {
@@ -138,9 +138,9 @@ fn read_and_check_termination(buf: &mut impl bytes::Buf) -> DandelionResult<()> 
 
 fn read_length(buf: &mut impl bytes::Buf) -> DandelionResult<usize> {
     check_remaining::<i32>(buf)?;
-    return usize::try_from(buf.get_i32_le()).or(err_dandelion!(DandelionError::RequestError(
+    usize::try_from(buf.get_i32_le()).or(err_dandelion!(DandelionError::RequestError(
         FrontendError::ViolatedSpec,
-    )));
+    )))
 }
 
 fn read_cstring(buf: &mut impl bytes::Buf) -> DandelionResult<String> {
@@ -160,7 +160,7 @@ fn read_cstring(buf: &mut impl bytes::Buf) -> DandelionResult<String> {
         cstring.push_str(std::str::from_utf8(chunk).unwrap());
         buf.advance(chunk_index);
     }
-    return Ok(cstring);
+    Ok(cstring)
 }
 
 fn read_and_check_cstring(buf: &mut impl bytes::Buf, expected_string: &str) -> DandelionResult<()> {
@@ -174,14 +174,13 @@ fn read_and_check_cstring(buf: &mut impl bytes::Buf, expected_string: &str) -> D
             FrontendError::MalformedMessage,
         ));
     }
-    return Ok(());
+    Ok(())
 }
 
 fn read_string(buf: &mut impl bytes::Buf) -> DandelionResult<String> {
     // get string length, remove trainling null char, as they are not needed for rust string
     let string_length = read_length(buf)? - 1;
-    let mut byte_buffer = Vec::with_capacity(string_length);
-    byte_buffer.resize(string_length, 0);
+    let mut byte_buffer = vec![0; string_length];
     if buf.remaining() < string_length {
         return err_dandelion!(DandelionError::RequestError(FrontendError::StreamEnd));
     }
@@ -194,7 +193,7 @@ fn read_string(buf: &mut impl bytes::Buf) -> DandelionResult<String> {
     let string = String::from_utf8(byte_buffer).or(err_dandelion!(
         DandelionError::RequestError(FrontendError::ViolatedSpec,)
     ))?;
-    return Ok(string);
+    Ok(string)
 }
 
 fn read_data_item(
@@ -280,11 +279,11 @@ fn read_data_item(
         ));
     }
 
-    return Ok(Some(ContextDataItem {
+    Ok(Some(ContextDataItem {
         ident,
         key,
         data: crate::Position { offset, size },
-    }));
+    }))
 }
 
 fn read_data_set(
@@ -356,10 +355,7 @@ fn read_data_set(
         ));
     }
 
-    return Ok(Some(ContextDataSet {
-        items: items,
-        total_size,
-    }));
+    Ok(Some(ContextDataSet { items, total_size }))
 }
 
 impl BytesContext {
@@ -474,18 +470,16 @@ fn read_test() {
     let fourth = vec![8u8];
     let frames = vec![first, second, third, fourth]
         .into_iter()
-        .map(|vec| Bytes::from(vec))
+        .map(Bytes::from)
         .collect();
     let read_context = BytesContext { frames };
     let expected_data = vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8];
-    let mut all_read_vec = Vec::<u8>::new();
-    all_read_vec.resize(8, 0);
+    let mut all_read_vec = vec![0; 8];
     read_context
         .read(0, &mut all_read_vec)
         .expect("read should succeed");
     assert_eq!(expected_data, all_read_vec.as_slice());
-    let mut partial_read_vec = Vec::<u8>::new();
-    partial_read_vec.resize(4, 0);
+    let mut partial_read_vec = vec![0; 4];
     read_context
         .read(2, &mut partial_read_vec)
         .expect("Partial read should succeed");

@@ -266,7 +266,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 recorder.record(RecordPoint::EngineEnd);
                 drop(recorder);
 
-                let results = result.and_then(|(_, items)| Ok(WorkDone::DataItems(items)));
+                let results = result.map(|(_, items)| WorkDone::DataItems(items));
                 debt.fulfill(results);
             }
             WorkToDo::SetsToResolve { .. } => {
@@ -284,9 +284,6 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
     }
 }
 
-pub fn start_thread<E: EngineLoop>(
-    cpu_slot: u8,
-    queue: impl EngineWorkQueue + Send + 'static,
-) -> () {
+pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: impl EngineWorkQueue + Send + 'static) {
     spawn(move || run_thread::<E>(cpu_slot, queue));
 }

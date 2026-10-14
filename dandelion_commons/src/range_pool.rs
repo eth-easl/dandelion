@@ -24,7 +24,7 @@ where
         ranges.insert(initial_range.start, initial_range.end);
         let mut sizes = BTreeSet::new();
         sizes.insert((initial_size, initial_range.start));
-        return Self { ranges, sizes };
+        Self { ranges, sizes }
     }
 
     pub fn get(&mut self, requested_size: Element, min_value: Element) -> Option<Element> {
@@ -38,7 +38,7 @@ where
             .next()?;
         // need to remove the element and reinsert with the adapted size
         self.sizes.remove(&(original_size, original_start));
-        return if original_size > requested_size {
+        if original_size > requested_size {
             let remaining_size = original_size - requested_size;
             self.sizes.insert((remaining_size, original_start));
             let original_end = self
@@ -52,7 +52,7 @@ where
             // the range has the exact size we need so can just remove it
             self.ranges.remove(&original_start);
             Some(original_start)
-        };
+        }
     }
 
     pub fn insert(&mut self, start: Element, mut end: Element) {

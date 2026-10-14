@@ -38,12 +38,12 @@ impl Function {
         domain: &Box<dyn MemoryDomain>,
         ctx_size: usize,
     ) -> DandelionResult<Context> {
-        return match &self.config {
+        match &self.config {
             FunctionConfig::ElfConfig(_) => {
-                load_static(domain, &self.context, &self.requirements, ctx_size)
+                load_static(domain.as_ref(), &self.context, &self.requirements, ctx_size)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
-        };
+        }
     }
 }
 

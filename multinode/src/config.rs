@@ -15,7 +15,7 @@ pub struct NodeUrl {
 
 impl MultinodeConfig {
     pub fn load(path: Option<&str>) -> Option<Self> {
-        path.map(|path| match File::open(path) {
+        path.and_then(|path| match File::open(path) {
             Ok(config_file) => serde_json::from_reader(config_file)
                 .map_err(|err| warn!("Could not parse multinode config {}: {}", path, err))
                 .ok(),
@@ -24,7 +24,6 @@ impl MultinodeConfig {
                 None
             }
         })
-        .flatten()
     }
 
     pub fn data_server_urls(&self) -> BTreeMap<u64, String> {

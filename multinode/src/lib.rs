@@ -83,8 +83,9 @@ fn test_serialize_invocation_request() {
     data.extend_from_slice(&item_0_0_data.to_le_bytes());
     data.extend_from_slice(&item_1_0_data.to_le_bytes());
     data.extend_from_slice(&item_1_1_data.to_le_bytes());
-    let mut in_context = memory::context::read_only::ReadOnlyContext::new(data.into_boxed_slice())
-        .expect("Should be able to create read only context");
+    let mut in_context =
+        memory::context::read_only::ReadOnlyContext::from_boxed(data.into_boxed_slice())
+            .expect("Should be able to create read only context");
     in_context.content = vec![
         Some(ContextDataSet {
             items: vec![ContextDataItem {

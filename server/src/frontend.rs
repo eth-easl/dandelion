@@ -113,7 +113,7 @@ async fn handle_function_registration(
         .collect();
 
     let metadata = Metadata {
-        input_sets: input_sets,
+        input_sets,
         output_sets: request_map.output_sets,
         min_set_bytes: request_map.min_set_bytes,
     };
@@ -126,9 +126,9 @@ async fn handle_function_registration(
             metadata,
         )
         .expect("Should be able to insert function");
-    return Ok(DandelionBody::from_vec(
+    Ok(DandelionBody::from_vec(
         "Function registered".as_bytes().to_vec(),
-    ));
+    ))
 }
 
 /// Builds a set out of static items given at function registration, each backed by its own context.
@@ -137,7 +137,7 @@ fn static_data_set(items: Vec<(String, Vec<u8>)>) -> DataSet {
         .into_iter()
         .map(|(name, data)| {
             let size = data.len();
-            let ctx = ReadOnlyContext::new(data.into_boxed_slice())
+            let ctx = ReadOnlyContext::from_boxed(data.into_boxed_slice())
                 .expect("Should be able to create read only context for static data");
             DataItem::new_local(
                 name,
@@ -306,7 +306,7 @@ async fn service(
         other_uri => {
             debug!("Received request on {}", other_uri);
             Ok(DandelionBody::from_vec(
-                format!("Hello, World\n").into_bytes(),
+                "Hello, World\n".to_string().into_bytes(),
             ))
         }
     };

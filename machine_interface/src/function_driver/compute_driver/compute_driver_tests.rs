@@ -56,7 +56,7 @@ fn prepare_engine_and_domain<Dom: MemoryDomain>(
     engine_type
         .start_engine(drv_init[0], queue.clone())
         .expect("Should be able to start engine");
-    return (domain, queue);
+    (domain, queue)
 }
 
 fn engine_minimal<Dom: MemoryDomain>(
@@ -147,7 +147,7 @@ fn engine_matmul_single<Dom: MemoryDomain>(
     let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init);
     // add inputs
     let in_data = vec![1i64, 2i64];
-    let mut input_context = ReadOnlyContext::new(in_data.into_boxed_slice()).unwrap();
+    let mut input_context = ReadOnlyContext::from_boxed(in_data.into_boxed_slice()).unwrap();
     input_context.content.push(Some(ContextDataSet {
         items: vec![ContextDataItem {
             ident: "".to_string(),
@@ -216,7 +216,7 @@ fn get_expected_mat(size: usize) -> Vec<i64> {
             }
         }
     }
-    return out_mat_vec;
+    out_mat_vec
 }
 
 fn engine_matmul_size_sweep<Dom: MemoryDomain>(
@@ -229,7 +229,7 @@ fn engine_matmul_size_sweep<Dom: MemoryDomain>(
     const UPPER_SIZE_BOUND: usize = 16;
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
         let (domain, queue) =
-            prepare_engine_and_domain::<Dom>(dom_init.clone(), engine_type, drv_init.clone());
+            prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init.clone());
         // add inputs
         let mut mat_vec = Vec::<i64>::new();
         mat_vec.push(mat_size as i64);
@@ -237,7 +237,7 @@ fn engine_matmul_size_sweep<Dom: MemoryDomain>(
             mat_vec.push(i as i64);
         }
         let item_size = mat_vec.len() * core::mem::size_of::<i64>();
-        let mut input_context = ReadOnlyContext::new(mat_vec.into_boxed_slice()).unwrap();
+        let mut input_context = ReadOnlyContext::from_boxed(mat_vec.into_boxed_slice()).unwrap();
         input_context.content = vec![Some(ContextDataSet {
             items: vec![ContextDataItem {
                 ident: "".to_string(),
@@ -352,7 +352,8 @@ fn engine_stdio<Dom: MemoryDomain>(
     }));
 
     let mut input_context =
-        ReadOnlyContext::new(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice()).unwrap();
+        ReadOnlyContext::from_boxed(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
+            .unwrap();
     input_context.content = content;
     let input_sets = DataSet::from_context(input_context);
 
@@ -504,7 +505,8 @@ fn engine_fileio<Dom: MemoryDomain>(
     }));
 
     let mut input_context =
-        ReadOnlyContext::new(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice()).unwrap();
+        ReadOnlyContext::from_boxed(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
+            .unwrap();
     input_context.content = content;
     let input_sets = DataSet::from_context(input_context);
 
@@ -707,13 +709,10 @@ mod kvm {
     use memory::context::{kvm::KvmMemoryDomain, MemoryResource};
     #[cfg(target_arch = "x86_64")]
     driverTests!(elf_kvm_x86_64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; EngineType::Kvm;
-    core_affinity::get_core_ids()
-       .and_then(
-            |core_vec|
-            Some(core_vec
+    core_affinity::get_core_ids().map(|core_vec| core_vec
                 .into_iter()
                 .map(|id| ComputeResource::CPU(id.id as u8))
-                .collect())).expect("Should have at least one core");
+                .collect()).expect("Should have at least one core");
     vec![
         ComputeResource::CPU(255),
         ComputeResource::GPU(0)

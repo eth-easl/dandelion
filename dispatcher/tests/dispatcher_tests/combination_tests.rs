@@ -64,7 +64,7 @@ pub fn fetch_compute<Domain: MemoryDomain>(
     // matrix with the first number indicating the number of rows
     let data = format!("GET http://127.0.0.1:{}/matrix HTTP/1.1", port);
     let data_len = data.len();
-    let mut in_context = ReadOnlyContext::new(data.into_bytes().into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_bytes().into_boxed_slice())
         .expect("Should be able to create read only context");
     let data_size = data_len * core::mem::size_of::<u8>();
     in_context.content = vec![Some(ContextDataSet {

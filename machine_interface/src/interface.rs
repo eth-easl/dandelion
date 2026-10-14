@@ -86,7 +86,7 @@ pub mod _native {
             Ok(ptr as uintptr_t)
         }
         fn to_native(self) -> DandelionResult<usize> {
-            Ok(self as usize)
+            Ok(self)
         }
     }
 }
@@ -133,12 +133,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     let input_buffer_number = context
         .content
         .iter()
-        .map(|set_opt| {
-            set_opt
-                .as_ref()
-                .and_then(|set| Some(set.items.len()))
-                .unwrap_or(0)
-        })
+        .map(|set_opt| set_opt.as_ref().map(|set| set.items.len()).unwrap_or(0))
         .sum();
     let input_set_number = context.content.len();
     let output_set_number = output_set_names.len();
@@ -163,7 +158,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         // get name and length
         let buffer_len = context.content[c]
             .as_ref()
-            .and_then(|set| Some(set.items.len()))
+            .map(|set| set.items.len())
             .unwrap_or(0);
         // TODO: removed the set identifier -> to completely remove it here we might need to change
         //       the dlibc?
@@ -182,14 +177,14 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         for b in 0..buffer_len {
             let (name, offset, size, key) = context.content[c]
                 .as_ref()
-                .and_then(|set| {
+                .map(|set| {
                     let buffer = &set.items[b];
-                    return Some((
+                    (
                         buffer.ident.clone(),
                         buffer.data.offset,
                         buffer.data.size,
                         buffer.key,
-                    ));
+                    )
                 })
                 .unwrap_or((String::from(""), 0, 0, 0));
             let name_length = name.len();

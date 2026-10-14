@@ -75,14 +75,14 @@ unsafe impl Sync for FunctionTimestamp {}
 #[cfg(feature = "timestamp")]
 impl FunctionTimestamp {
     fn new(start_time: Instant) -> Self {
-        return Self {
+        Self {
             start_time,
             time_points: [const { UnsafeCell::new(std::time::Duration::ZERO) };
                 LAST_RECORD_POINT + 1],
-        };
+        }
     }
 
-    fn record(self: &Self, current_point: RecordPoint) {
+    fn record(&self, current_point: RecordPoint) {
         let new_duration = self.start_time.elapsed();
         // each point is only present once in the code, so we can be sure we can write there safely,
         // and sice it is in arc know the memory exists and will not be dropped during writing
@@ -90,7 +90,7 @@ impl FunctionTimestamp {
         unsafe { *reference = new_duration };
     }
 
-    fn prerecorded(self: &Self, current_point: RecordPoint, time: Instant) {
+    fn prerecorded(&self, current_point: RecordPoint, time: Instant) {
         let new_duration = time.duration_since(self.start_time);
         // each point is only present once in the code, so we can be sure we can write there safely,
         // and sice it is in arc know the memory exists and will not be dropped during writing
@@ -143,6 +143,11 @@ struct InnerRecorder {
     children: OnceCell<Vec<Option<Vec<Recorder>>>>,
 }
 
+#[cfg(feature = "timestamp")]
+unsafe impl Send for InnerRecorder {}
+#[cfg(feature = "timestamp")]
+unsafe impl Sync for InnerRecorder {}
+
 /// Structure to to hold all timestamps related to a single function invocation
 /// All time is relative to the given global start time of the request
 #[derive(Clone)]
@@ -156,9 +161,13 @@ unsafe impl Send for Recorder {}
 #[cfg(feature = "timestamp")]
 unsafe impl Sync for Recorder {}
 
+impl Drop for Recorder {
+    fn drop(&mut self) {}
+}
+
 impl Recorder {
     pub fn new(_function_id: FunctionId, _start: Instant) -> Self {
-        return Self {
+        Self {
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -168,11 +177,11 @@ impl Recorder {
                 input_items: UnsafeCell::new(0),
                 input_size: UnsafeCell::new(0),
             }),
-        };
+        }
     }
 
     pub fn new_from_parent(_function_id: FunctionId, _parent: &Self) -> Self {
-        return Self {
+        Self {
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -182,7 +191,7 @@ impl Recorder {
                 input_items: UnsafeCell::new(0),
                 input_size: UnsafeCell::new(0),
             }),
-        };
+        }
     }
 
     pub fn record(&mut self, _current_point: RecordPoint) {
@@ -251,7 +260,7 @@ impl fmt::Debug for Recorder {
         {
             use std::sync::Arc;
             if Arc::strong_count(&self.inner) + Arc::weak_count(&self.inner) > 1 {
-                write!(_f, "Formatting Recorder with more than 1 references:\n")?;
+                writeln!(_f, "Formatting Recorder with more than 1 references:")?;
             };
             _f.debug_struct("Recorder")
                 .field("Function ID", &self.inner.function_id)
@@ -281,23 +290,21 @@ impl fmt::Display for Recorder {
             )?;
             let mut need_comma = false;
             if let Some(children) = self.inner.children.get() {
-                for child in children.iter() {
-                    if let Some(child_recorders) = child {
-                        if need_comma {
+                for child_recorders in children.iter().flatten() {
+                    if need_comma {
+                        write!(_f, ",")?;
+                    }
+                    write!(_f, "[")?;
+                    let mut has_prev = false;
+                    for r in child_recorders.iter() {
+                        if has_prev {
                             write!(_f, ",")?;
                         }
-                        write!(_f, "[")?;
-                        let mut has_prev = false;
-                        for r in child_recorders.iter() {
-                            if has_prev {
-                                write!(_f, ",")?;
-                            }
-                            write!(_f, "{}", r)?;
-                            has_prev = true;
-                        }
-                        write!(_f, "]")?;
-                        need_comma = true;
+                        write!(_f, "{}", r)?;
+                        has_prev = true;
                     }
+                    write!(_f, "]")?;
+                    need_comma = true;
                 }
             }
             write!(_f, "]}}")

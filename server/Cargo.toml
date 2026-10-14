@@ -6,6 +6,9 @@ edition = "2021"
 [package.metadata.cargo-machete]
 ignored = ["openssl", "serde_bytes"]
 
+[lints]
+workspace = true
+
 [dependencies]
 memory = { path = "../memory" }
 machine_interface = { path = "../machine_interface" }

@@ -1,6 +1,6 @@
+use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use std::{fs::File, vec};
 
 use super::ParsedElf;
 
@@ -16,26 +16,26 @@ fn load_file(name: &str, fsize: usize) -> Vec<u8> {
             .read_to_end(&mut elf_buffer)
             .expect("Should be able to read entire file")
     );
-    return elf_buffer;
+    elf_buffer
 }
 
 #[test]
-fn check_layout_le_64() -> () {
+fn check_layout_le_64() {
     let elf_buffer = load_file("test_elf_le_64", 10400);
     let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
     let (requirements, items) = parsed_elf.get_layout_pair();
     assert_eq!(4, requirements.len());
     // checks on the requirements
-    let virt_offset_list = vec![0x400000, 0x401000, 0x402000, 0x404000];
-    let virt_size_list = vec![0x244, 0x325, 0x184, 0x10];
+    let virt_offset_list = [0x400000, 0x401000, 0x402000, 0x404000];
+    let virt_size_list = [0x244, 0x325, 0x184, 0x10];
     for (index, requirement) in requirements.iter().enumerate() {
         assert_eq!(virt_offset_list[index], requirement.offset);
         assert_eq!(virt_size_list[index], requirement.size);
     }
     // checks on the data items
     assert_eq!(4, items.len());
-    let file_offset_list = vec![0x0, 0x1000, 0x2000, 0x0];
-    let file_size_list = vec![0x244, 0x325, 0x184, 0x0];
+    let file_offset_list = [0x0, 0x1000, 0x2000, 0x0];
+    let file_size_list = [0x244, 0x325, 0x184, 0x0];
     for (index, position) in items.iter().enumerate() {
         assert_eq!(file_offset_list[index], position.offset);
         assert_eq!(file_size_list[index], position.size);
@@ -44,7 +44,7 @@ fn check_layout_le_64() -> () {
 
 #[test]
 #[should_panic]
-fn check_find_symbol_failure() -> () {
+fn check_find_symbol_failure() {
     let elf_buffer = load_file("test_elf_le_64", 10400);
     let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
     parsed_elf
@@ -53,7 +53,7 @@ fn check_find_symbol_failure() -> () {
 }
 
 #[test]
-fn check_find_symbol_success() -> () {
+fn check_find_symbol_success() {
     let elf_buffer = load_file("test_elf_le_64", 10400);
     let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
     let (symbol_offset, symbol_size) = parsed_elf
@@ -69,7 +69,7 @@ fn check_find_symbol_success() -> () {
 }
 
 #[test]
-fn check_entry() -> () {
+fn check_entry() {
     let elf_buffer = load_file("test_elf_le_64", 10400);
     let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
     assert_eq!(0x401000, parsed_elf.get_entry_point());

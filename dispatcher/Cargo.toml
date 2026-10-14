@@ -3,6 +3,9 @@ name = "dispatcher"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 test-log = "0.2.16"
 

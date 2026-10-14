@@ -26,9 +26,9 @@ impl From<&str> for SystemFunction {
     }
 }
 
-impl Into<&str> for &SystemFunction {
-    fn into(self) -> &'static str {
-        match self {
+impl From<&SystemFunction> for &str {
+    fn from(val: &SystemFunction) -> Self {
+        match val {
             SystemFunction::HTTP => "HTTP",
             SystemFunction::MEMCACHED => "MEMCACHED",
         }

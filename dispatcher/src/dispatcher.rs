@@ -196,13 +196,13 @@ impl Dispatcher {
         // create the function registry
         let function_registry = FunctionRegistry::new();
 
-        return Ok(Dispatcher {
+        Ok(Dispatcher {
             function_registry,
             work_queue,
             domains,
             any_sharding_mode,
             composition_id: AtomicUsize::new(0),
-        });
+        })
     }
 
     pub fn get_composition_id(&self) -> usize {
@@ -240,17 +240,14 @@ impl Dispatcher {
         results: ExecutionOutput,
         composition_id: usize,
     ) -> DandelionResult<ExecutionOutput> {
-        let results = if !(&results)
-            .into_iter()
+        let results = if !results
+            .iter()
             .all(|items| items.iter().all(|item| item.is_local()))
         {
             self.work_queue
                 .enqueue(
                     WorkToDo::SetsToResolve {
-                        input_sets: results
-                            .into_iter()
-                            .map(|items| DataSet::from_items(items))
-                            .collect(),
+                        input_sets: results.into_iter().map(DataSet::from_items).collect(),
                     },
                     composition_id,
                 )?

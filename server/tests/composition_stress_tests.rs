@@ -76,7 +76,7 @@ mod composition_stress_tests {
             // keep draining stdout so the server never blocks on a full pipe
             spawn(move || {
                 let mut buf = String::new();
-                while stdout.read_line(&mut buf).map_or(false, |len| len > 0) {
+                while stdout.read_line(&mut buf).is_ok_and(|len| len > 0) {
                     print!("Server out: {}", buf);
                     buf.clear();
                 }

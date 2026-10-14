@@ -28,6 +28,9 @@ criterion = "0.4"
 regex = "1.7.1"
 test-log = "0.2.16"
 
+[lints]
+workspace = true
+
 [dependencies]
 # project internal dependencies
 dandelion_commons = { path = "../dandelion_commons" }
@@ -69,11 +72,3 @@ bench = false
 [[bin]]
 name = "mmu_worker"
 required-features = ["mmu"]
-
-[[bench]]
-name = "cheri_benchmark"
-harness = false
-
-[[bench]]
-name = "mmu_benchmark"
-harness = false

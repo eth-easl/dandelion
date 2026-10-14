@@ -14,6 +14,9 @@ timestamp = ["dandelion_commons/timestamp"]
 [dev-dependencies]
 test-log = "0.2.16"
 
+[lints]
+workspace = true
+
 [dependencies]
 dandelion_commons = { path = "../dandelion_commons" }
 

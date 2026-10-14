@@ -54,10 +54,10 @@ message RepeatedInvocations {
 }
 
 enum EngineType {
-    ENGINE_REQWEST = 0;
-    ENGINE_CHERI = 1;
-    ENGINE_PROCESS = 2;
-    ENGINE_KVM = 3;
+    REQWEST = 0;
+    CHERI = 1;
+    PROCESS = 2;
+    KVM = 3;
 }
 
 message Engine {

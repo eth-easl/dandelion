@@ -179,13 +179,11 @@ impl<'reg> CompositionBuilder<'reg> {
         let mut any_join_order = try_with_capacity!(Vec, num_params)?;
         let mut any_join_strategies = try_with_capacity!(Vec, num_params)?;
 
-        if let Some(strategy) = fappl.join_strategy.as_ref().and_then(|s| {
-            if s.join_strategy_order.is_empty() || s.join_strategies.is_empty() {
-                None
-            } else {
-                Some(s)
-            }
-        }) {
+        if let Some(strategy) = fappl
+            .join_strategy
+            .as_ref()
+            .filter(|s| !(s.join_strategy_order.is_empty() || s.join_strategies.is_empty()))
+        {
             debug_assert!(strategy.join_strategies.len() - 1 == strategy.join_strategy_order.len());
             let mut curr_join_chain_any = None;
             for (i, arg_name) in strategy.join_strategy_order.iter().enumerate() {
@@ -276,7 +274,7 @@ impl<'reg> CompositionBuilder<'reg> {
                 join_order.push(set_idx);
             }
         }
-        if join_order.len() > 0 {
+        if !join_order.is_empty() {
             join_strategies.resize(join_order.len() - 1, JoinStrategy::Cross);
         }
 
@@ -405,7 +403,7 @@ impl<'reg> CompositionBuilder<'reg> {
                 .iter()
                 .map(|name| (name.clone(), None))
                 .collect(),
-            output_sets: comp.returns.iter().map(|name| name.clone()).collect(),
+            output_sets: comp.returns.to_vec(),
             min_set_bytes: vec![],
         };
         self.compositions.push((

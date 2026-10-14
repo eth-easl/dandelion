@@ -191,22 +191,22 @@ macro_rules! try_with_capacity {
 // Implement display to be compliant with core::error::Error
 impl core::fmt::Display for DandelionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return f.write_fmt(format_args!("{:?}", self));
+        f.write_fmt(format_args!("{:?}", self))
     }
 }
 
 impl core::fmt::Debug for DError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return f.write_fmt(format_args!(
+        f.write_fmt(format_args!(
             "{}:{}:{} {}",
             self.origin_file, self.origin_line, self.origin_column, self.error
-        ));
+        ))
     }
 }
 
 impl core::fmt::Display for DError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return f.write_fmt(format_args!("{:?}", self));
+        f.write_fmt(format_args!("{:?}", self))
     }
 }
 

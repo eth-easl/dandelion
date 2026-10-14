@@ -299,13 +299,13 @@ fn insert_by_composition<T>(
     // if list empty or the back has the same or a smaller id just append to the back
     if queue
         .back()
-        .map_or(true, |back| id_of(back) <= composition_id)
+        .is_none_or(|back| id_of(back) <= composition_id)
     {
         queue.append(&mut elements);
     // check the front has same or bigger id so can just prepend
     } else if queue
         .front()
-        .map_or(false, |front| id_of(front) >= composition_id)
+        .is_some_and(|front| id_of(front) >= composition_id)
     {
         elements.append(queue);
         *queue = elements;
@@ -332,7 +332,7 @@ fn get_flags_and_local(work: &WorkToDo) -> (u32, bool) {
             ..
         } => {
             // check if all the sets are already fully locally available
-            let local = input_sets.into_iter().all(|set| set.is_local());
+            let local = input_sets.iter().all(|set| set.is_local());
             let mut flags = 0;
             trace!(
                 "found function arguments with alternatives: {:?}",
@@ -568,12 +568,12 @@ impl WorkQueue {
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
     pub async fn get_compute_work(&self, engine_flags: u32) -> (WorkToDo, Debt) {
         // try to get work, if there is none, insert self into waker and try again
-        ComputeWaitFuture::new(engine_flags, &self).await
+        ComputeWaitFuture::new(engine_flags, self).await
     }
 
     pub async fn get_io_work(&self) -> (WorkToDo, Debt, Option<usize>) {
         // try to get work, if there is none, insert self into waker and try again
-        IoWaitFuture::new(&self).await
+        IoWaitFuture::new(self).await
     }
 
     pub fn add_remote_channel(

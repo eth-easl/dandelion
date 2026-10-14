@@ -98,7 +98,7 @@ pub fn get_available_domains(
     for (dom, resource) in resources {
         default_resources.insert(dom, resource);
     }
-    return default_resources
+    default_resources
         .into_iter()
         .map(|(dom_type, resource)| match dom_type {
             DomainType::System => {
@@ -117,7 +117,7 @@ pub fn get_available_domains(
                 Arc::new(memory::context::mmu::MmuMemoryDomain::init(resource).unwrap())
             }
         })
-        .collect();
+        .collect()
 }
 
 pub fn create_engine_resource_map(

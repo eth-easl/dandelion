@@ -48,9 +48,9 @@ fn read_status(response_buffer: &Vec<u8>) -> String {
         .iter()
         .position(|character| *character == b'\n')
         .unwrap_or(response_buffer.len());
-    return std::str::from_utf8(&response_buffer[0..status_end])
+    std::str::from_utf8(&response_buffer[0..status_end])
         .expect("request has not valid string status line")
-        .to_string();
+        .to_string()
 }
 
 fn get_http(
@@ -58,15 +58,15 @@ fn get_http(
     drv_init: ComputeResource,
     uri: String,
     expected_body_size: usize,
-) -> () {
+) {
     let queue = TestQueue::new();
-    let _engine = engine_type
+    engine_type
         .start_engine(drv_init, queue.clone())
         .expect("Should be able to get engine");
 
     let request = format!("GET {} HTTP/1.1", uri).as_bytes().to_vec();
     let request_length = request.len();
-    let mut input_context = ReadOnlyContext::new(request.into_boxed_slice()).unwrap();
+    let mut input_context = ReadOnlyContext::from_boxed(request.into_boxed_slice()).unwrap();
     input_context.content.push(Some(ContextDataSet {
         items: vec![ContextDataItem {
             ident: "".to_string(),
@@ -83,7 +83,7 @@ fn get_http(
         convert_to_references(SystemFunction::HTTP, DataSet::from_context(input_context))
             .unwrap()
             .into_iter()
-            .map(|items| DataSet::from_items(items))
+            .map(DataSet::from_items)
             .collect();
 
     // let recorder = Recorder::new(zero_id(), Instant::now());
@@ -100,8 +100,7 @@ fn get_http(
     let header_set = &result_sets[0];
     assert_eq!(1, header_set.len());
     let status_item = header_set[0].local_ref().unwrap();
-    let mut response_buffer = Vec::<u8>::new();
-    response_buffer.resize(status_item.pos.size, 0);
+    let mut response_buffer = vec![0; status_item.pos.size];
     status_item
         .ctx
         .read(status_item.pos.offset, &mut response_buffer)
@@ -117,9 +116,9 @@ fn get_http(
     assert_eq!(expected_body_size, body_item.pos.size);
 }
 
-fn post_http(engine_type: EngineType, drv_init: ComputeResource, port: u16) -> () {
+fn post_http(engine_type: EngineType, drv_init: ComputeResource, port: u16) {
     let queue = TestQueue::new();
-    let _engine = engine_type
+    engine_type
         .start_engine(drv_init, queue.clone())
         .expect("Should be able to get engine");
 
@@ -140,7 +139,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
     .as_bytes()
     .to_vec();
     let request_length = request.len();
-    let mut input_context = ReadOnlyContext::new(request.into_boxed_slice()).unwrap();
+    let mut input_context = ReadOnlyContext::from_boxed(request.into_boxed_slice()).unwrap();
     input_context.content.push(Some(ContextDataSet {
         items: vec![ContextDataItem {
             ident: "".to_string(),
@@ -157,7 +156,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
         convert_to_references(SystemFunction::HTTP, DataSet::from_context(input_context))
             .unwrap()
             .into_iter()
-            .map(|items| DataSet::from_items(items))
+            .map(DataSet::from_items)
             .collect();
 
     // let recorder = Recorder::new(zero_id(), Instant::now());
@@ -174,8 +173,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
     let header_set = &result_sets[0];
     assert_eq!(1, header_set.len());
     let header_item = header_set[0].local_ref().unwrap();
-    let mut header_buffer = Vec::<u8>::new();
-    header_buffer.resize(header_item.pos.size, 0);
+    let mut header_buffer = vec![0; header_item.pos.size];
     header_item
         .ctx
         .read(header_item.pos.offset, &mut header_buffer)

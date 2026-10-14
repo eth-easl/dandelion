@@ -118,13 +118,13 @@ impl Request for HttpRequest {
             let header_line = raw_request[header_index..]
                 .iter()
                 .position(|character| *character == b'\n')
-                .and_then(|header_end| Some(&raw_request[header_index..header_index + header_end]))
+                .map(|header_end| &raw_request[header_index..header_index + header_end])
                 .unwrap_or(&raw_request[header_index..]);
             // skip the \n at the index itself
             header_index += header_line.len() + 1;
             // if the header line is empty there are two consequtive new lines which means the headers are finished
             // or the request is at the end which also means there are not more lines to read
-            if header_line.len() == 0 {
+            if header_line.is_empty() {
                 break;
             }
             let split_index = header_line
@@ -223,12 +223,12 @@ impl Request for MemcachedRequest {
         };
         trace!("Reqwest body: {:?}", body);
 
-        return Ok(Self {
+        Ok(Self {
             method,
             uri,
             memcached_identifier,
             body,
-        });
+        })
     }
 }
 
@@ -323,7 +323,7 @@ async fn http_request(
         }
     }
 
-    let header_context = Arc::new(ReadOnlyContext::new(
+    let header_context = Arc::new(ReadOnlyContext::from_boxed(
         preamble.into_bytes().into_boxed_slice(),
     )?);
 
@@ -410,7 +410,7 @@ async fn memcached_request(
 
     let body_length = response_body.len();
 
-    let header_context = Arc::new(ReadOnlyContext::new(
+    let header_context = Arc::new(ReadOnlyContext::from_boxed(
         preamble.into_bytes().into_boxed_slice(),
     )?);
 
@@ -434,7 +434,7 @@ pub(crate) async fn resolve_io_item(
         .get_or_init(|| async move {
             let input = match io_data.original_data.as_ref() {
                 ItemData::Local(local) => local.clone(),
-                ItemData::Io(io) => Box::pin(resolve_io_item(&io, client)).await?,
+                ItemData::Io(io) => Box::pin(resolve_io_item(io, client)).await?,
                 ItemData::Remote(remote) => {
                     let client = get_remote_data_client()?;
                     let (ctx, pos) = client.resolve_remote_data((remote).clone()).await?;
@@ -612,10 +612,8 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                             // of taking any more prefetch work.
                             Err(err) => debt.fulfill(Err(err)),
                             Ok(sets) => {
-                                let input_sets = sets
-                                    .into_iter()
-                                    .map(|item_vec| DataSet::from_items(item_vec))
-                                    .collect();
+                                let input_sets =
+                                    sets.into_iter().map(DataSet::from_items).collect();
                                 queue_clone.reenqueue_engine_args(
                                     WorkToDo::FunctionArguments {
                                         function_id,
@@ -695,7 +693,7 @@ impl Driver for ReqwestDriver {
         debug!("spawned task on global runtiome");
         global_runtime.add_core(core_id.into());
         debug!("sent wake up to core {}", core_id);
-        return Ok(());
+        Ok(())
     }
 
     fn parse_function(
@@ -703,16 +701,16 @@ impl Driver for ReqwestDriver {
         function_path: String,
         static_domain: &Box<dyn memory::context::MemoryDomain>,
     ) -> DandelionResult<Function> {
-        if function_path.len() != 0 {
+        if !function_path.is_empty() {
             return err_dandelion!(DandelionError::CalledSystemFuncParser);
         }
-        return Ok(Function {
+        Ok(Function {
             requirements: crate::DataRequirementList {
                 input_requirements: vec![],
                 static_requirements: vec![],
             },
             context: Arc::new(static_domain.acquire_context(0)?),
             config: FunctionConfig::SysConfig(SystemFunction::HTTP),
-        });
+        })
     }
 }

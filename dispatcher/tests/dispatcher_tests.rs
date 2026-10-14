@@ -53,7 +53,7 @@ mod dispatcher_tests {
         let resource_pool = ResourcePool {
             engine_pool: futures::lock::Mutex::new(pool_map),
         };
-        let memory_resources = BTreeMap::from_iter(vec![memory_resource].into_iter());
+        let memory_resources = BTreeMap::from_iter(vec![memory_resource]);
         let work_queue = WorkQueue::init();
         let dispatcher = Dispatcher::init(
             resource_pool,
@@ -72,7 +72,7 @@ mod dispatcher_tests {
                 metadata,
             )
             .expect("Should be able to insert function in new dispatcher");
-        return (dispatcher, function_id);
+        (dispatcher, function_id)
     }
 
     /// Parses `composition` (which must contain exactly one composition) and runs it to completion

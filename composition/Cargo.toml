@@ -3,6 +3,9 @@ name = "composition"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 dandelion_commons = {path = "../dandelion_commons"}
 memory = { path = "../memory" }

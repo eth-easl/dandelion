@@ -56,10 +56,10 @@ impl PromiseBufferInternal {
         for index in 0..size - 1 {
             buffer[index].next = ptr::addr_of!(buffer[index + 1]).cast_mut();
         }
-        return Self {
+        Self {
             head,
             _buffer: buffer,
-        };
+        }
     }
 
     pub fn get_promise_data(&self) -> DandelionResult<*mut DataWrapper> {
@@ -78,7 +78,7 @@ impl PromiseBufferInternal {
             }
             new_head = unsafe { (*current).next };
         }
-        return Ok(current);
+        Ok(current)
     }
 
     fn drop_promise_data(&self, data_ptr: *mut DataWrapper) {
@@ -104,9 +104,9 @@ pub struct PromiseBuffer {
 
 impl PromiseBuffer {
     pub fn init(size: usize) -> Self {
-        return Self {
+        Self {
             internal: Arc::new(PromiseBufferInternal::init(size)),
-        };
+        }
     }
 
     pub fn get_promise(&self) -> DandelionResult<(Promise, Debt)> {
@@ -130,7 +130,7 @@ impl PromiseBuffer {
             data: data_ptr,
             origin: self.internal.clone(),
         };
-        return Ok((promise, debt));
+        Ok((promise, debt))
     }
 }
 
@@ -141,7 +141,7 @@ pub struct Promise {
 unsafe impl Send for Promise {}
 
 impl Promise {
-    pub fn abort(self) -> () {
+    pub fn abort(self) {
         core::mem::drop(self);
     }
     fn abort_internal(&mut self) {
@@ -170,11 +170,14 @@ impl futures::future::Future for Promise {
         // the only changes the debt ever does is set the content or get dropped, which also sets content
         // if there was an error it could only have been seting the content.
         if flags & DEBT_ALIVE == 0 {
-            return Poll::Ready(data.results.replace(err_dandelion!(
-                DandelionError::PromiseError(PromiseError::TakenPromise,)
-            )));
+            Poll::Ready(
+                data.results
+                    .replace(err_dandelion!(DandelionError::PromiseError(
+                        PromiseError::TakenPromise,
+                    ))),
+            )
         } else {
-            return Poll::Pending;
+            Poll::Pending
         }
     }
 }
@@ -200,7 +203,7 @@ unsafe impl Send for Debt {}
 impl Debt {
     pub fn is_alive(&self) -> bool {
         let data = unsafe { &(&*self.data).data };
-        return data.flags.load(Ordering::SeqCst) & PROMISE_ALIVE != 0;
+        data.flags.load(Ordering::SeqCst) & PROMISE_ALIVE != 0
     }
 
     pub fn fulfill(self, results: DandelionResult<WorkDone>) {

@@ -1,4 +1,4 @@
-name: Dandelion depenency checks
+name: Dandelion dependency checks
 
 on:
   push:

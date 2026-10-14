@@ -62,8 +62,8 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     // matrix with first eleemnt inidicating number of rows
     let mat_a = vec![2u64, 1, 2, 3, 4];
     let mat_len = mat_a.len();
-    let mut in_context =
-        ReadOnlyContext::new(mat_a.into()).expect("Should be able to create read only context");
+    let mut in_context = ReadOnlyContext::from_boxed(mat_a.into())
+        .expect("Should be able to create read only context");
     let mat_size = mat_len * core::mem::size_of::<u64>();
     in_context.content = vec![Some(ContextDataSet {
         total_size: mat_size,
@@ -114,7 +114,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     // matrix with first eleemnt inidicating number of rows
     let mat_a = vec![2u64, 1, 2, 3, 4];
     let mat_len = mat_a.len();
-    let mut in_context = ReadOnlyContext::new(mat_a.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(mat_a.into_boxed_slice())
         .expect("Should be able to create read only context");
     let mat_size = mat_len * core::mem::size_of::<u64>();
     in_context.content = vec![Some(ContextDataSet {
@@ -247,7 +247,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     let mut data = vec![];
     data.extend_from_slice(&mat_a);
     data.extend_from_slice(&mat_b);
-    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_boxed_slice())
         .expect("Should be able to create read only context");
     let mat_a_size = mat_a.len() * core::mem::size_of::<u64>();
     let mat_b_size = mat_b.len() * core::mem::size_of::<u64>();
@@ -313,7 +313,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     // matrix with the first number indicating the number of rows
     let data = vec![2u64, 1, 2, 3, 4];
     let data_len = data.len();
-    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_boxed_slice())
         .expect("Should be able to create read only context");
     let data_size = data_len * core::mem::size_of::<u64>();
     in_context.content = vec![Some(ContextDataSet {
@@ -376,7 +376,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     data.extend_from_slice(&mat_a);
     data.extend_from_slice(&mat_b);
     data.extend_from_slice(&mat_bt);
-    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_boxed_slice())
         .expect("Should be able to create read only context");
     let mat_a_size = mat_a.len() * core::mem::size_of::<u64>();
     let mat_b_size = mat_b.len() * core::mem::size_of::<u64>();
@@ -478,7 +478,7 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
     let mut data = vec![];
     data.extend_from_slice(&mat_a);
     data.extend_from_slice(&mat_b);
-    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_boxed_slice())
         .expect("Should be able to create read only context");
     let mat_a_size = mat_a.len() * core::mem::size_of::<u64>();
     let mat_b_size = mat_b.len() * core::mem::size_of::<u64>();

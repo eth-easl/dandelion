@@ -47,10 +47,10 @@ pub enum WorkDone {
 
 impl WorkDone {
     pub fn get_data_items(self) -> Vec<Arc<Vec<DataItem>>> {
-        return match self {
+        match self {
             WorkDone::DataItems(sets) => sets,
             _ => panic!("WorkDone is not context when context was expected"),
-        };
+        }
     }
 }
 

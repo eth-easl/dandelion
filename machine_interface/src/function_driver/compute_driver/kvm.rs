@@ -30,7 +30,7 @@ mod x86_64_asm;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::PAGE_SIZE;
 #[cfg(target_arch = "x86_64")]
-pub(self) use x86_64::*;
+use x86_64::*;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
@@ -91,7 +91,7 @@ impl EngineLoop for KvmLoop {
 
         let state = ResetState::new(&vm, &vcpu);
 
-        return Ok(Box::new(KvmLoop { vm, vcpu, state }));
+        Ok(Box::new(KvmLoop { vm, vcpu, state }))
     }
 
     fn get_engine_type(&self) -> crate::machine_config::EngineType {
@@ -199,7 +199,7 @@ impl EngineLoop for KvmLoop {
         }
 
         #[cfg(target_arch = "x86_64")]
-        self.vm.set_clock(&mut kvm_clock_data::default()).unwrap();
+        self.vm.set_clock(&kvm_clock_data::default()).unwrap();
 
         // initialize vCPU
         let page_fault_metadata = self.state.init_vcpu(
@@ -296,11 +296,11 @@ impl EngineLoop for KvmLoop {
                 }
                 while trailing_zeros < 64 {
                     // can always do this, sice if the last one is not a zero it will simply shift by 0
-                    local_dirty = local_dirty >> trailing_zeros;
+                    local_dirty >>= trailing_zeros;
                     bits_processed += trailing_zeros;
                     let trailing_ones = local_dirty.trailing_ones() as usize;
                     contiguous_pages += trailing_ones;
-                    local_dirty = local_dirty >> trailing_ones;
+                    local_dirty >>= trailing_ones;
                     bits_processed += trailing_ones;
                     // if the trailing ones were until the end of the u64, break and continue with the next u64
                     if bits_processed >= 64 {
@@ -401,7 +401,7 @@ impl Driver for KvmDriver {
             return err_dandelion!(DandelionError::EngineResourceError);
         }
         start_thread::<KvmLoop>(cpu_slot, queue);
-        return Ok(());
+        Ok(())
     }
 
     // parses an executable,
@@ -460,13 +460,13 @@ impl Driver for KvmDriver {
 
         let requirements = DataRequirementList {
             input_requirements: Vec::<DataRequirement>::new(),
-            static_requirements: static_requirements,
+            static_requirements,
         };
 
-        return Ok(Function {
+        Ok(Function {
             requirements,
             context: Arc::new(context),
             config,
-        });
+        })
     }
 }

@@ -144,11 +144,9 @@ pub(crate) fn create_sharding_iter(
         let set_idx = join_order[i];
         if let Some((set, sharding)) = sets[set_idx].take() {
             if let Sharding::Keyed(strategy) = sharding {
-                if strategy == JoinStrategy::Cross {
-                    if join_group_key_set.len() > 0 {
-                        fixed_partitions *= join_group_key_set.len();
-                        join_group_key_set.clear();
-                    }
+                if strategy == JoinStrategy::Cross && !join_group_key_set.is_empty() {
+                    fixed_partitions *= join_group_key_set.len();
+                    join_group_key_set.clear();
                 }
                 key_join_iter = SetKeyIterator::new(
                     key_join_iter,
@@ -164,7 +162,7 @@ pub(crate) fn create_sharding_iter(
         }
         i += 1;
     }
-    if join_group_key_set.len() > 0 {
+    if !join_group_key_set.is_empty() {
         fixed_partitions *= join_group_key_set.len();
         join_group_key_set.clear();
     }

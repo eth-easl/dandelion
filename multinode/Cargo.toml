@@ -3,6 +3,9 @@ name = "multinode"
 version = "1.0.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 memory = { path = "../memory" }
 dandelion_commons = { path = "../dandelion_commons" }

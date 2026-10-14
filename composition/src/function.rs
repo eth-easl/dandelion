@@ -94,7 +94,7 @@ impl Function {
         inner.is_blocking = inputs.iter().any(|in_opt| {
             in_opt
                 .as_ref()
-                .map_or(false, |(sharding, _)| sharding.is_blocking())
+                .is_some_and(|(sharding, _)| sharding.is_blocking())
         });
         // TODO: Retention is only needed when more than one input is still streaming. So this could
         //       be improved further.
@@ -108,7 +108,7 @@ impl Function {
                     } else {
                         InputSet::Incomplete
                     };
-                    (in_set, sharding.clone(), *optional, false)
+                    (in_set, *sharding, *optional, false)
                 })
             })
             .collect();
@@ -130,14 +130,12 @@ impl Function {
 
         let mut blocking = false;
         let mut complete = true;
-        for in_opt in &inner.inputs {
-            if let Some((set, sharding, _, _)) = in_opt {
-                let set_complete = set.is_complete();
-                blocking |= sharding.is_blocking() && !set_complete;
-                complete &= set_complete;
-                if !complete && blocking {
-                    break;
-                }
+        for (set, sharding, _, _) in inner.inputs.iter().flatten() {
+            let set_complete = set.is_complete();
+            blocking |= sharding.is_blocking() && !set_complete;
+            complete &= set_complete;
+            if !complete && blocking {
+                break;
             }
         }
 
@@ -163,7 +161,7 @@ impl Function {
                             break;
                         }
                     }
-                    sets.push(Some((data_set, sharding.clone())));
+                    sets.push(Some((data_set, *sharding)));
                 } else {
                     sets.push(None);
                 }
@@ -183,10 +181,8 @@ impl Function {
             // assume that if no invocations were created there are also no outstanding invocations.
             inner.inputs.clear();
             let empty_items = Arc::new(vec![]);
-            for out_set_opt in inner.outputs.iter() {
-                if let Some(out_set) = out_set_opt {
-                    out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
-                }
+            for out_set in inner.outputs.iter().flatten() {
+                out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
             }
             inner.outputs.clear()
         }
@@ -235,7 +231,7 @@ impl Function {
                             break;
                         }
                     }
-                    sets.push(Some((data_set, sharding.clone())));
+                    sets.push(Some((data_set, *sharding)));
                 } else {
                     sets.push(None);
                 }
@@ -268,16 +264,14 @@ impl Function {
             inner.all_started = inner.inputs.iter().enumerate().all(|(idx, in_opt)| {
                 in_opt
                     .as_ref()
-                    .map_or(true, |(set, _, _, _)| idx == set_idx || set.is_complete())
+                    .is_none_or(|(set, _, _, _)| idx == set_idx || set.is_complete())
             });
 
             if inner.all_started && inner.num_outstanding == 0 {
                 inner.inputs.clear();
                 let empty_items = Arc::new(vec![]);
-                for out_set_opt in inner.outputs.iter() {
-                    if let Some(out_set) = out_set_opt {
-                        out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
-                    }
+                for out_set in inner.outputs.iter().flatten() {
+                    out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
                 }
                 inner.outputs.clear()
             }
@@ -341,10 +335,8 @@ impl Function {
 
         if sets.is_empty() {
             let empty_items = Arc::new(vec![]);
-            for out_set_opt in inner.outputs.iter() {
-                if let Some(out_set) = out_set_opt {
-                    out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
-                }
+            for out_set in inner.outputs.iter().flatten() {
+                out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
             }
         } else {
             debug_assert_eq!(sets.len(), inner.outputs.len());

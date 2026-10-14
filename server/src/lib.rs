@@ -93,7 +93,7 @@ fn encode_item(
     let doc_size = (response.len() - doc_start + item_size) as i32;
     response[doc_start..doc_start + 4].copy_from_slice(&doc_size.to_le_bytes());
 
-    return Ok(item_size);
+    Ok(item_size)
 }
 
 fn encode_sets(
@@ -142,7 +142,7 @@ fn encode_sets(
         let doc_size = (response.len() - doc_start + set_items_length) as i32;
         response[doc_start..doc_start + 4].copy_from_slice(&doc_size.to_le_bytes());
     }
-    return Ok(all_items);
+    Ok(all_items)
 }
 
 fn encode_response(
@@ -225,7 +225,7 @@ pub struct DandelionBuf {
 
 impl DandelionBuf {
     fn get_chunk(&self, read_mode: ReadMode) -> &[u8] {
-        return match read_mode {
+        match read_mode {
             ReadMode::ToEnd(to_end) => {
                 let start = self.serial.len() - to_end;
                 &self.serial[start..self.serial.len()]
@@ -239,7 +239,7 @@ impl DandelionBuf {
                 let start = pos.offset + (pos.size - to_end);
                 ctx.get_chunk_ref(start, to_end).unwrap()
             }
-        };
+        }
     }
     fn advance_descriptor(&self, read_mode: ReadMode, to_advance: usize) -> (usize, ReadMode) {
         let (advanced, new_mode) = match read_mode {
@@ -291,13 +291,13 @@ impl DandelionBuf {
                 }
             }
         };
-        return (advanced, new_mode);
+        (advanced, new_mode)
     }
 }
 
 impl bytes::Buf for DandelionBuf {
     fn remaining(&self) -> usize {
-        return self.remaining;
+        self.remaining
     }
 
     fn advance(&mut self, cnt: usize) {
@@ -331,14 +331,14 @@ impl bytes::Buf for DandelionBuf {
         let mut remaining = self.remaining;
         while slice_index < dst.len() && next_read != ReadMode::ToEnd(0) && remaining > 0 {
             let chunk = self.get_chunk(next_read);
-            if chunk.len() > 0 {
+            if !chunk.is_empty() {
                 dst[slice_index] = IoSlice::new(chunk);
                 slice_index += 1;
             }
             remaining -= chunk.len();
             (_, next_read) = self.advance_descriptor(next_read, chunk.len());
         }
-        return slice_index;
+        slice_index
     }
 }
 
@@ -349,7 +349,7 @@ pub struct DandelionBody {
 impl DandelionBody {
     pub fn new(sets: Vec<Arc<Vec<DataItem>>>, timing: &Recorder) -> DandelionResult<Self> {
         let (total_item_size, serial, items) = encode_response(sets, timing)?;
-        let read_offset = if items.len() > 0 {
+        let read_offset = if !items.is_empty() {
             if items[0].response_offset > 0 {
                 ReadMode::ToItem(0, items[0].response_offset)
             } else {
@@ -358,24 +358,24 @@ impl DandelionBody {
         } else {
             ReadMode::ToEnd(serial.len())
         };
-        return Ok(DandelionBody {
+        Ok(DandelionBody {
             buffer: Some(DandelionBuf {
                 read_offset,
                 remaining: total_item_size + serial.len(),
                 serial,
                 items,
             }),
-        });
+        })
     }
     pub fn from_vec(array: Vec<u8>) -> Self {
-        return DandelionBody {
+        DandelionBody {
             buffer: Some(DandelionBuf {
                 read_offset: ReadMode::ToEnd(array.len()),
                 remaining: array.len(),
                 serial: array,
                 items: Vec::new(),
             }),
-        };
+        }
     }
 }
 
@@ -390,8 +390,8 @@ impl hyper::body::Body for DandelionBody {
             .get_mut()
             .buffer
             .take()
-            .and_then(|bytes| Some(Ok(Frame::data(bytes))));
-        return std::task::Poll::Ready(frame_data);
+            .map(|bytes| Ok(Frame::data(bytes)));
+        std::task::Poll::Ready(frame_data)
     }
 }
 
@@ -416,8 +416,7 @@ async fn test_dandelion_body_serialization_async(mut body: DandelionBody, expect
         .into_data()
         .expect("Should be able to get data from dandelion body frame");
     let data_length = context_data.remaining();
-    let mut data_buf = Vec::with_capacity(data_length);
-    data_buf.resize(data_length, 0u8);
+    let mut data_buf = vec![0; data_length];
     context_data.copy_to_slice(&mut data_buf);
     assert_eq!(expected, data_buf);
 }
@@ -454,7 +453,7 @@ fn test_dandelion_body_serialization() {
     };
     let expected_response = bson::to_vec(&expected_response_struct).unwrap();
 
-    let mut new_context = ReadOnlyContext::new(data_box).unwrap();
+    let mut new_context = ReadOnlyContext::from_boxed(data_box).unwrap();
     new_context.content = vec![Some(ContextDataSet {
         items: vec![ContextDataItem {
             key: 7,
