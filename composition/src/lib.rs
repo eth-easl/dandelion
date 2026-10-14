@@ -86,6 +86,10 @@ impl CompositionTemplate {
             )))
         })
     }
+
+    pub fn num_functions(&self) -> usize {
+        self.functions.len()
+    }
 }
 
 pub struct Composition {

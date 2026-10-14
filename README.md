@@ -7,7 +7,7 @@ The compute functions are provided by users, while communication functions are b
 A more in depth explanation can be found in the [paper here](https://arxiv.org/abs/2505.01603).
 The [Dandelion SDK](https://github.com/eth-easl/dandelionSDK) describes the interfaces user functions can use in more detail.
 Functions can be composed into graphs, where nodes are functions and edges describe which data is passed between them.
-These compostions can be described using the composition language described in the README.md in the dparser folder.
+These compositions can be described using the [composition language](docs/compositions.md).
 
 # Structure
 
@@ -16,7 +16,7 @@ The main code for dandelion is organized in the following rust modules:
 - **machine_interface** has the isolation backend specific code, also has the code to detect and set machine specific options
   - **memory_domain** the code for interacting with the memory structures for setting up functions
   - **function_driver** the code for the engine, i.e. for running a function using a specific isolation technique
-- **dparser** code for parsing compositions
+- **composition** composition language parser and execution of compositions (includes the `dparser` binary to check whether a composition parses)
 - **dispatcher** registry and scheduler for the compositions, uses the domain and engine interferaces as well as the parser 
 - **server** wrapper code arround the dispatcher for the http frontend
 
