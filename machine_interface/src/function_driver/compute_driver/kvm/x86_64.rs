@@ -1,10 +1,8 @@
 use crate::{
     function_driver::compute_driver::kvm::{
-        GLOBAL_SYSTEM_MEMORY_SIZE, PER_VM_SYSTEM_MEMORY, SYSTEM_MEMORY_SIZE, SYSTEM_VIRTUAL_BASE,
-    },
-    memory_domain::{
-        kvm::{KvmContext, PageType},
-        ContextTrait,
+         GLOBAL_SYSTEM_MEMORY_SIZE, PER_VM_SYSTEM_MEMORY, ROOT_PAGE_TABLE_SIZE, SYSTEM_MEMORY_SIZE, SYSTEM_VIRTUAL_BASE,
+    }, memory_domain::{
+        ContextTrait, kvm::{KvmContext, PageType, Page},
     },
 };
 use dandelion_commons::DandelionResult;
@@ -201,22 +199,22 @@ impl ResetState {
         entry_point: u64,
         kvm_context: &mut Box<KvmContext>,
         stack_pointer: usize,
-    ) -> DandelionResult<()> {
+    ) -> DandelionResult<Vec<Page>> {
+        // code to set up assembly to debug
+        // let code_start = (entry_point as usize).next_multiple_of(PAGE_SIZE) - PAGE_SIZE;
+        // debug!("Entry point: {}, code start {}", entry_point, code_start);
+        // set_debug_asm(kvm_context, code_start);
+        
         let mut sregs = self.sregs;
         let xregs = self.xregs;
         set_interrupt_table(&mut sregs);
-        set_page_table(&mut sregs, kvm_context, stack_pointer)?;
-
-        // code to set up assembly to debug
-        let code_start = (entry_point as usize).next_multiple_of(PAGE_SIZE) - PAGE_SIZE;
-        debug!("Entry point: {}, code start {}", entry_point, code_start);
-        set_debug_asm(kvm_context, code_start);
-
+        let pages = set_page_table(&mut sregs, kvm_context, stack_pointer)?;
+        
         vcpu.set_sregs(&sregs).unwrap();
         vcpu.set_xcrs(&xregs).unwrap();
         vcpu.set_regs(&kvm_regs {
-            // rip: entry_point,
-            rip: code_start as u64,
+            rip: entry_point,
+            // rip: code_start as u64,
             rsp: stack_pointer as u64 - 32,
             rbp: stack_pointer as u64 - 32,
             rflags: 2,
@@ -249,7 +247,7 @@ impl ResetState {
         .unwrap();
         assert_eq!(1, vcpu.set_msrs(&msrs).unwrap());
 
-        Ok(())
+        Ok(pages)
     }
 }
 
@@ -266,10 +264,10 @@ pub struct PageMapeIterator<'memory> {
 
 impl<'memory> PageMapeIterator<'memory> {
     pub fn new(memory: &'memory [u64], vcpu: &VcpuFd) -> Self {
-        let p4_physical = vcpu.get_sregs().unwrap().cr3 as usize & !(PAGE_SIZE - 1);
+        let p4_physical = (vcpu.get_sregs().unwrap().cr3 & !PAGE_MASK) as usize;
         let p4_base = p4_physical / size_of::<u64>();
         // read entry at index 0, since we expect only one p4 entry
-        let p3_base = (memory[p4_base] as usize & !(PAGE_SIZE - 1)) / size_of::<u64>();
+        let p3_base = (memory[p4_base] & !PAGE_MASK) as usize / size_of::<u64>();
         PageMapeIterator {
             p3_base,
             p3_index: 0,
@@ -287,23 +285,19 @@ impl<'memory> Iterator for PageMapeIterator<'memory> {
         while self.p3_index * HUGE_PAGE < SYSTEM_VIRTUAL_BASE {
             let p3_entry = self.memory[self.p3_base + self.p3_index];
             if p3_entry & PDE64_PRESENT != 0 {
-                let p2_base = (p3_entry as usize & !(PAGE_SIZE - 1)) / size_of::<u64>();
+                let p2_base = (p3_entry & !PAGE_MASK) as usize / size_of::<u64>();
                 while self.p2_index < TABLE_SIZE {
                     let p2_entry = self.memory[p2_base + self.p2_index];
                     if p2_entry & PDE64_PRESENT != 0 {
-                        let p1_base = (p2_entry as usize & !(PAGE_SIZE - 1)) / size_of::<u64>();
+                        let p1_base = (p2_entry & !PAGE_MASK) as usize / size_of::<u64>();
                         while self.p1_index < TABLE_SIZE {
                             let p1_entry = self.memory[p1_base + self.p1_index];
-                            if p1_entry & PDE64_PRESENT != 0 {
-                                debug!(
-                                    "p3_index: {}, p2_index: {}, p2_entry: {}, p1_index: {}",
-                                    self.p3_index, self.p2_index, p2_entry, self.p1_index
-                                );
+                            if p1_entry & PDE64_PRESENT != 0 { 
                                 let virtual_address = self.p3_index * HUGE_PAGE
                                     + self.p2_index * LARGE_PAGE
                                     + self.p1_index * PAGE_SIZE;
                                 let is_owned = p1_entry & PDE64_RW != 0;
-                                let physical_address = p1_entry & !(PAGE_SIZE as u64 - 1);
+                                let physical_address = p1_entry & !PAGE_MASK;
                                 self.p1_index += 1;
                                 return Some((virtual_address, is_owned, physical_address));
                             }
@@ -461,18 +455,18 @@ fn write_global_page_table_entries(memory: &mut [u8]) {
     let table_start = (HANDLER_CODE + handler_code_size()).next_multiple_of(PAGE_SIZE);
     assert!(table_start + 2 * PAGE_SIZE < memory.len());
     // need to set up a 1 GiB Table with a single 2 MB table at the start
-    let table_entry = u8_slice_to_u64_slice(&mut memory[table_start..table_start + 8]);
+    let table_entry =
+        u8_slice_to_u64_slice(&mut memory[table_start..table_start + size_of::<u64>()]);
     // Needs to be writable, since the segments are marked accessed by the CPU when they are loaded.
-    table_entry[0] = PDE64_RW
-        | PDE64_GLOBAL
-        | PDE64_PRESENT
-        | (SYSTEM_VIRTUAL_BASE + table_start + PAGE_SIZE) as u64;
+    table_entry[0] =
+        PDE64_RW | PDE64_PRESENT | (SYSTEM_VIRTUAL_BASE + table_start + PAGE_SIZE) as u64;
     let page_table =
         u8_slice_to_u64_slice(&mut memory[table_start + PAGE_SIZE..table_start + 2 * PAGE_SIZE]);
     // install mappings for all pages bellow this page table
     for (page_index, entry) in page_table.iter_mut().enumerate() {
         let address = page_index * PAGE_SIZE;
-        if address < table_start
+        if address < table_start 
+        // Interrupt stack page mappings can be global, as we map different memory into each VM, so they will not collide
             || (SYSTEM_MEMORY_SIZE <= address
                 && address < SYSTEM_MEMORY_SIZE + PER_VM_SYSTEM_MEMORY)
         {
@@ -569,7 +563,7 @@ fn set_page_table(
     sregs: &mut kvm_sregs,
     kvm_context: &mut Box<KvmContext>,
     stack_start: usize,
-) -> DandelionResult<()> {
+) -> DandelionResult<Vec<Page>> {
     // allocate top level table containing 512 entries for 512 GB ranges, total of 256 TB
     // naming:
     // - p4 is the top level page table overseeing 256TB, each entry being a p3 table which each oversees 512GB
@@ -584,6 +578,9 @@ fn set_page_table(
     // Ensure the context size does not violate basic size assumption.
     assert!(kvm_context.context_size < SYSTEM_VIRTUAL_BASE);
     assert_eq!(0, stack_start % PAGE_SIZE);
+
+    // Vec with pages that the user should not access, but that need to be hold on to
+    let mut page_table_pages = Vec::new();
 
     let p2_table_number = kvm_context
         .context_size
@@ -617,6 +614,7 @@ fn set_page_table(
         let p2_table = p2_physical.get_slice();
         p2_table.fill(0);
         p3_physical.get_slice()[p3_entry] = PDE64_ALL_ALLOWED | *p2_physical;
+        page_table_pages.push(p2_physical);
     }
     // can assume that all p2 tables are zero initialized after this loop
 
@@ -624,9 +622,10 @@ fn set_page_table(
     // find index based on the GiB at which SYSTEM_VIRTUAL_BASE is located at
     let table_entry = SYSTEM_VIRTUAL_BASE / (1 << 30);
     p3_physical.get_slice()[table_entry] = PDE64_ALL_ALLOWED
-        | PDE64_GLOBAL
         | (SYSTEM_VIRTUAL_BASE + HANDLER_CODE + handler_code_size().next_multiple_of(PAGE_SIZE))
             as u64;
+
+    trace!("overlay before stack: {:?}", kvm_context.overlay);
 
     // add pages for the stack, round down to start of next large page
     let stack_page_start = (stack_start - 1) & !(LARGE_PAGE - 1);
@@ -653,11 +652,11 @@ fn set_page_table(
         let p3_index = (virtual_address >> HUGE_PAGE_SHIFT) & (TABLE_SIZE - 1);
         let p2_index = (virtual_address >> LARGE_PAGE_SHIFT) & (TABLE_SIZE - 1);
         let p1_index = (virtual_address >> PAGE_SHIFT) & (TABLE_SIZE - 1);
-
-        let p2_address = p3_physical.get_slice()[p3_index] as usize & !(PAGE_SIZE - 1);
-        let p2_base = p2_address / size_of::<u64>();
+ 
+        let p2_address = p3_physical.get_slice()[p3_index] & !PAGE_MASK;
+        let p2_base = p2_address as usize / size_of::<u64>();
         // read p2 entry
-        let p2_entry = kvm_context.backing_memory.get_mut_u64()[p2_base + p2_index];
+        let p2_entry = kvm_context.backing_memory.get_mut_u64()[p2_base + p2_index]; 
 
         // check if p2 entry points to valid p1 table, if not insert table
         if p2_entry & PDE64_PRESENT == 0 {
@@ -666,8 +665,9 @@ fn set_page_table(
                 PDE64_ALL_ALLOWED | *new_p1;
             new_p1.get_slice().fill(0);
             new_p1.get_slice()[p1_index] = flags | **physical_address;
-        } else {
-            let p1_base = (p2_entry as usize & !(PAGE_SIZE - 1)) / size_of::<u64>();
+            page_table_pages.push(new_p1);
+        } else { 
+            let p1_base = (p2_entry & !PAGE_MASK) as usize / size_of::<u64>();
             debug_assert_eq!(
                 0,
                 kvm_context.backing_memory.get_mut_u64()[p1_base + p1_index]
@@ -677,10 +677,33 @@ fn set_page_table(
         }
     }
 
+    // check that the segement pages are accessible
+    #[cfg(debug_assertions)]
+    {
+        let p4_entry =
+            kvm_context.backing_memory.get_mut_u64()[*p4_physical as usize / size_of::<u64>()];
+        debug_assert_eq!(PDE64_ALL_ALLOWED, p4_entry & PAGE_MASK);
+        let p3_base = (p4_entry & !PAGE_MASK) as usize / size_of::<u64>();
+        let p3_table = &kvm_context.backing_memory.get_mut_u64()[p3_base..p3_base + TABLE_SIZE];
+        // check the global table is set correclty
+        let global_p3_entry = p3_table[TABLE_SIZE - 1];
+        debug_assert_eq!(PDE64_ALL_ALLOWED, global_p3_entry & PAGE_MASK);
+
+        let global_table_base_address = (SYSTEM_VIRTUAL_BASE + HANDLER_CODE + handler_code_size()).next_multiple_of(PAGE_SIZE);
+        debug_assert_eq!(
+            global_table_base_address,
+            (global_p3_entry & !PAGE_MASK) as usize
+        );
+    }
+
     let cr3 = *p4_physical | USER_PCID;
     trace!("CR3: {}, (0x{:x})", cr3, cr3);
     sregs.cr3 = cr3;
-    Ok(())
+    
+    page_table_pages.push(p4_physical);
+    page_table_pages.push(p3_physical);
+    
+    Ok(page_table_pages)
 }
 
 fn setup_long_mode(sregs: &mut kvm_sregs, xregs: &mut kvm_xcrs) {

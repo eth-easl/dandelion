@@ -135,7 +135,6 @@ impl Memory {
                 }
                 Err(root) => root,
             };
-            trace!("next free loaded: {}", next_free);
         }
     }
 

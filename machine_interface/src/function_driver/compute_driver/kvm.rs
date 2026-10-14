@@ -180,7 +180,7 @@ impl EngineLoop for KvmLoop {
                     guest_phys_addr: 0x0,
                     memory_size: (kvm_context.backing_memory.get_mut_u64().len() * size_of::<u64>())
                         as u64,
-                    userspace_addr: kvm_context.backing_memory.get_mut_u64().as_ptr().addr() as u64,
+                    userspace_addr: kvm_context.backing_memory.get_mut_u64().as_ptr() as u64,
                 })
                 .unwrap();
             // Page tables need to be writable, as CPU will attempt to set accessed bit.
@@ -209,14 +209,13 @@ impl EngineLoop for KvmLoop {
 
         info!("Elf entry: {}", elf_config.entry_point);
         // initialize vCPU
-        self.state.init_vcpu(
+        let pages = self.state.init_vcpu(
             &self.vcpu,
             elf_config.entry_point as u64,
             kvm_context,
             stack_start,
         )?;
 
-        // make sure that the stack start has not moved into the occupied territory
         write_heap_end::<u64, u64>(
             kvm_context,
             elf_config.system_data_offset,
@@ -280,6 +279,8 @@ impl EngineLoop for KvmLoop {
                 }
             }
         }
+
+        drop(pages);
 
         // get iterator over the page table after the function ran
         let page_iter = PageMapeIterator::new(kvm_context.backing_memory.get_mut_u64(), &self.vcpu);
