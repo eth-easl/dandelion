@@ -3,12 +3,11 @@ mod policy;
 pub use policy::PREFETCH_PER_CORE;
 
 use dandelion_commons::{records::RecordPoint, DandelionResult, SystemInfo};
-use futures::{stream::FuturesUnordered, StreamExt};
 use log::trace;
 use machine_interface::{
-    function_driver::{EngineWorkQueue, WorkDone, WorkToDo},
+    function_driver::{EngineWorkQueue, WorkToDo},
     machine_config::EngineType,
-    promise::{Debt, PromiseBuffer},
+    promise::{Debt, Promise, PromiseBuffer},
 };
 use std::{
     collections::{BTreeMap, LinkedList},
@@ -59,6 +58,19 @@ struct IoQueueElement {
     debt: Debt,
     /// Policy-specific metadata for this element
     policy_data: policy::IOElementData,
+}
+
+/// Work that was prepared for the queues, but not yet inserted.
+#[derive(Default)]
+struct PreparedElements {
+    compute: LinkedList<ComputeQueueElement>,
+    io: LinkedList<IoQueueElement>,
+}
+
+impl PreparedElements {
+    fn is_empty(&self) -> bool {
+        self.compute.is_empty() && self.io.is_empty()
+    }
 }
 
 struct WakerElement {
@@ -256,6 +268,59 @@ impl Future for IoWaitFuture<'_> {
     }
 }
 
+/// Records that the work enters the compute queue, done before taking the queue lock.
+fn record_compute_queue_start(work: &mut WorkToDo) {
+    if let WorkToDo::FunctionArguments {
+        input_sets: _input_sets,
+        recorder,
+        ..
+    } = work
+    {
+        #[cfg(feature = "timestamp")]
+        {
+            let (total_items, total_size) =
+                _input_sets.iter().fold((0, 0), |(number, size), set| {
+                    (number + set.len(), size + set.total_size)
+                });
+            recorder.record_input(total_items as u64, total_size as u64);
+        }
+        recorder.record(RecordPoint::ComputeQueueStart);
+    }
+}
+
+/// Inserts all `elements` of the composition with `composition_id` into `queue`, keeping the queue
+/// sorted by composition id and the elements in their order.
+fn insert_by_composition<T>(
+    queue: &mut LinkedList<T>,
+    mut elements: LinkedList<T>,
+    composition_id: usize,
+    id_of: impl Fn(&T) -> usize,
+) {
+    // if list empty or the back has the same or a smaller id just append to the back
+    if queue
+        .back()
+        .map_or(true, |back| id_of(back) <= composition_id)
+    {
+        queue.append(&mut elements);
+    // check the front has same or bigger id so can just prepend
+    } else if queue
+        .front()
+        .map_or(false, |front| id_of(front) >= composition_id)
+    {
+        elements.append(queue);
+        *queue = elements;
+    // find the place to insert
+    } else {
+        let index = queue
+            .iter()
+            .position(|elem| id_of(elem) > composition_id)
+            .unwrap();
+        let mut tail = queue.split_off(index);
+        queue.append(&mut elements);
+        queue.append(&mut tail);
+    }
+}
+
 fn get_flags_and_local(work: &WorkToDo) -> (u32, bool) {
     match &work {
         WorkToDo::Shutdown(engine_type) => (get_engine_flag(*engine_type), true),
@@ -283,7 +348,6 @@ fn get_flags_and_local(work: &WorkToDo) -> (u32, bool) {
 }
 
 impl WorkQueue {
-    /// Creates a new WorkQueue of given size.
     pub fn init() -> Self {
         WorkQueue {
             inner: Arc::new(Mutex::new(InnerQueue {
@@ -313,342 +377,164 @@ impl WorkQueue {
         self.inner.lock().unwrap().compute_waker_list.len()
     }
 
-    /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
-    /// Returns an error if the queue is full.
-    /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
-    fn push_compute(
+    /// Prepares the work for the queue (without yet taking the queue lock).
+    /// NOTE: This does run the io policy which may already offload work to a remote node.
+    fn prepare(
         &self,
         mut work: WorkToDo,
         debt: Debt,
-        flags: u32,
-        composition_id: usize,
-        had_fetching: bool,
-    ) {
-        if let WorkToDo::FunctionArguments {
-            input_sets: _input_sets,
-            recorder,
-            ..
-        } = &mut work
-        {
-            #[cfg(feature = "timestamp")]
-            {
-                let (total_items, total_size) =
-                    _input_sets.iter().fold((0, 0), |(number, size), set| {
-                        (number + set.len(), size + set.total_size)
-                    });
-                recorder.record_input(total_items as u64, total_size as u64);
-            }
-            recorder.record(RecordPoint::ComputeQueueStart);
-        }
-
-        let mut queue_guard = self.inner.lock().unwrap();
-        if had_fetching {
-            queue_guard.prefetching_in_progress -= 1;
-        }
-
-        let new_element = ComputeQueueElement {
-            composition_id,
-            flags,
-            work,
-            debt,
-        };
-        // if list empty or the back has the same or a smaller id just push to the back
-        if queue_guard.compute_queue.is_empty()
-            || queue_guard.compute_queue.back().unwrap().composition_id <= composition_id
-        {
-            queue_guard.compute_queue.push_back(new_element);
-        // check the front has same or bigger id so can just push front
-        } else if queue_guard.compute_queue.front().unwrap().composition_id >= composition_id {
-            queue_guard.compute_queue.push_front(new_element);
-        // find the place to insert
-        } else {
-            let index = queue_guard
-                .compute_queue
-                .iter()
-                .position(|elem| elem.composition_id > composition_id)
-                .unwrap();
-            let mut tail = queue_guard.compute_queue.split_off(index);
-            queue_guard.compute_queue.push_back(new_element);
-            queue_guard.compute_queue.append(&mut tail);
-        }
-
-        // call first waker with matching flags if there are any
-        if let Some(waker_to_call) = queue_guard
-            .compute_waker_list
-            .extract_if(|queue_element| queue_element.flags & flags == flags)
-            .next()
-        {
-            log::trace!("Notifying one waker");
-            waker_to_call.waker.wake();
-        } else {
-            self.queuing_notifier.notify_waiters();
-        }
-    }
-
-    fn push_io(
-        &self,
-        mut work: WorkToDo,
-        debt: Debt,
-        flags: u32,
         composition_id: usize,
         try_offload: bool,
+        elements: &mut PreparedElements,
     ) {
-        if let WorkToDo::FunctionArguments {
-            function_id: _,
-            function_alternatives: _,
-            input_sets: _,
-            metadata: _,
-            caching: _,
-            recorder,
-        } = &mut work
-        {
-            recorder.record(RecordPoint::IOQueueStart);
-        }
-
-        // Policy: compute element metadata and optionally offload to a remote node
-        let Some((work, debt, policy_data)) =
-            policy::prepare_io_element(work, debt, try_offload, composition_id, &self.remote_nodes)
-        else {
-            // if prepare_io_element returned None it has already offloaded the work to a remote
-            return;
-        };
-
-        let mut queue_guard = self.inner.lock().unwrap();
-        let new_element = IoQueueElement {
-            composition_id,
-            flags,
-            work,
-            debt,
-            policy_data,
-        };
-        // check if an io core would take the element or not;
-        // if not, no reason to call waker
-        let compute_length = queue_guard.compute_queue.len();
-        let local_cores = self.system_info.local_cores();
-        let already_fetching = queue_guard.prefetching_in_progress;
-        let idle_compute_cores = queue_guard.compute_waker_list.len();
-        let would_process = match &new_element.work {
-            WorkToDo::FunctionArguments { .. } => policy::should_io_take(
-                &new_element.policy_data,
-                compute_length,
-                already_fetching,
-                local_cores,
-                idle_compute_cores,
-            ),
-            _ => true,
-        };
-
-        // if list empty or the back has the same or a smaller id just push to the back
-        if queue_guard.io_queue.is_empty()
-            || queue_guard.io_queue.back().unwrap().composition_id <= composition_id
-        {
-            queue_guard.io_queue.push_back(new_element);
-        // check the front has same or smaller id so can just push front
-        } else if queue_guard.io_queue.front().unwrap().composition_id >= composition_id {
-            queue_guard.io_queue.push_front(new_element);
-        // find the place to insert
-        } else {
-            let index = queue_guard
-                .io_queue
-                .iter()
-                .position(|elem| elem.composition_id > composition_id)
-                .unwrap();
-            let mut tail = queue_guard.io_queue.split_off(index);
-            queue_guard.io_queue.push_back(new_element);
-            queue_guard.io_queue.append(&mut tail);
-        }
-
-        // call first waker with matching flags if there are any
-        // only call waker if we know the core wants to take this element
-        if !queue_guard.io_waker_list.is_empty() && would_process {
-            queue_guard.io_waker_list.pop_front().unwrap().wake();
-        } else {
-            self.queuing_notifier.notify_waiters();
-        }
-    }
-
-    fn push(&self, work: WorkToDo, debt: Debt, composition_id: usize, try_offload: bool) {
         let (flags, local) = get_flags_and_local(&work);
-        log::trace!(
+        trace!(
             "Enqueueing function with all local data {}, with engine flags: {}",
             local,
             flags
         );
-
         if local {
-            self.push_compute(work, debt, flags, composition_id, false);
+            record_compute_queue_start(&mut work);
+            elements.compute.push_back(ComputeQueueElement {
+                composition_id,
+                flags,
+                work,
+                debt,
+            });
         } else {
-            self.push_io(work, debt, flags, composition_id, try_offload);
+            if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
+                recorder.record(RecordPoint::IOQueueStart);
+            }
+            if let Some((work, debt, policy_data)) = policy::prepare_io_element(
+                work,
+                debt,
+                try_offload,
+                composition_id,
+                &self.remote_nodes,
+            ) {
+                elements.io.push_back(IoQueueElement {
+                    composition_id,
+                    flags,
+                    work,
+                    debt,
+                    policy_data,
+                });
+            }
+        }
+    }
+
+    /// Inserts the prepared elements of the composition with `composition_id` into the queues and
+    /// wakes up the cores that should take them, taking the queue lock only once.
+    /// `had_fetching` indicates that the elements come from an io core that finished prefetching.
+    // TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
+    fn insert_prepared(
+        &self,
+        elements: PreparedElements,
+        composition_id: usize,
+        had_fetching: bool,
+    ) {
+        // nothing to do if all the work was offloaded already
+        if elements.is_empty() && !had_fetching {
+            return;
+        }
+        let PreparedElements { compute, io } = elements;
+        let mut queue_guard = self.inner.lock().unwrap();
+        if had_fetching {
+            queue_guard.prefetching_in_progress -= 1;
+        }
+        let mut notify = false;
+
+        if !compute.is_empty() {
+            // wake up one idle compute core with matching flags per element
+            for flags in compute.iter().map(|elem| elem.flags) {
+                match queue_guard
+                    .compute_waker_list
+                    .extract_if(|queue_element| queue_element.flags & flags == flags)
+                    .next()
+                {
+                    Some(waker_to_call) => waker_to_call.waker.wake(),
+                    None => notify = true,
+                }
+            }
+            insert_by_composition(
+                &mut queue_guard.compute_queue,
+                compute,
+                composition_id,
+                |elem| elem.composition_id,
+            );
+        }
+
+        if !io.is_empty() {
+            // only wake up io cores for elements we know they would take
+            let compute_length = queue_guard.compute_queue.len();
+            let local_cores = self.system_info.local_cores();
+            let already_fetching = queue_guard.prefetching_in_progress;
+            let idle_compute_cores = queue_guard.compute_waker_list.len();
+            let num_io_elements = io.len();
+            let would_process = io
+                .iter()
+                .filter(|elem| match &elem.work {
+                    WorkToDo::FunctionArguments { .. } => policy::should_io_take(
+                        &elem.policy_data,
+                        compute_length,
+                        already_fetching,
+                        local_cores,
+                        idle_compute_cores,
+                    ),
+                    _ => true,
+                })
+                .count();
+            insert_by_composition(&mut queue_guard.io_queue, io, composition_id, |elem| {
+                elem.composition_id
+            });
+            let mut woken = 0;
+            while woken < would_process {
+                let Some(waker) = queue_guard.io_waker_list.pop_front() else {
+                    break;
+                };
+                waker.wake();
+                woken += 1;
+            }
+            notify |= woken < num_io_elements;
+        }
+        drop(queue_guard);
+
+        if notify {
+            self.queuing_notifier.notify_waiters();
         }
     }
 
     /// Inserts the work into the queue setting the flags according to the supported engines and
-    /// awaits the future before returning the result.
-    pub async fn do_work(
-        &self,
-        work: WorkToDo,
-        composition_id: usize,
-    ) -> DandelionResult<WorkDone> {
+    /// returns the promise that resolves to its result.
+    pub fn enqueue(&self, work: WorkToDo, composition_id: usize) -> DandelionResult<Promise> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
-        self.push(work, debt, composition_id, true);
-        promise.await
+        let mut elements = PreparedElements::default();
+        self.prepare(work, debt, composition_id, true, &mut elements);
+        self.insert_prepared(elements, composition_id, false);
+        Ok(promise)
     }
 
-    /// Inserts a vector of work at once.
-    /// Assumes all the work is uniform, i.e the flags for all invocations are the same.
-    pub async fn do_work_many(
+    /// Inserts all the work into the queue and returns the promises for their results, in the same
+    /// order as the work.
+    /// Everything that does not depend on the queue state is done up front, so the queue lock is
+    /// only taken once and only held for the insertion and waking up the engines.
+    pub fn enqueue_many(
         &self,
-        work_iter: impl ExactSizeIterator<Item = WorkToDo>,
+        work_iter: impl IntoIterator<Item = WorkToDo>,
         composition_id: usize,
-    ) -> DandelionResult<Vec<WorkDone>> {
-        let size_hint = work_iter.len();
-        let mut debts = Vec::with_capacity(size_hint);
-        let mut promises = FuturesUnordered::new();
-        let mut results = Vec::with_capacity(size_hint);
-        for _ in 0..size_hint {
+    ) -> DandelionResult<Vec<Promise>> {
+        let work_iter = work_iter.into_iter();
+        // If we run out of promises midway, none of the work gets inserted into the queue. Work
+        // the io policy already offloaded to a remote node will be discarded.
+        let mut promises = Vec::with_capacity(work_iter.size_hint().0);
+        let mut elements = PreparedElements::default();
+        for work in work_iter {
             let (promise, debt) = self.promise_buffer.get_promise()?;
-            debts.push(debt);
             promises.push(promise);
+            self.prepare(work, debt, composition_id, true, &mut elements);
         }
-        // Transform into either a IO element or a compute queue element
-        let mut compute_elements = LinkedList::new();
-        let mut io_elements = LinkedList::new();
-        // first transforming all then pushing to not hold lock while evaluating policy
-        let mut global_flags = 0;
-        for mut work in work_iter {
-            // determine if local and figure out flags
-            let (flags, local) = get_flags_and_local(&work);
-            global_flags = flags;
-            if local {
-                #[cfg(feature = "timestamp")]
-                {
-                    if let WorkToDo::FunctionArguments {
-                        input_sets,
-                        recorder,
-                        ..
-                    } = &mut work
-                    {
-                        let (total_items, total_size) =
-                            input_sets.iter().fold((0, 0), |(number, size), set| {
-                                (number + set.len(), size + set.total_size)
-                            });
-                        // Record queue start here, as we want do to it before taking the lock.
-                        recorder.record_input(total_items as u64, total_size as u64);
-                        recorder.record(RecordPoint::ComputeQueueStart);
-                    }
-                }
-                compute_elements.push_back(ComputeQueueElement {
-                    composition_id,
-                    flags,
-                    work,
-                    debt: debts.pop().unwrap(),
-                });
-            } else {
-                // Record queue start here, as we want do to it before taking the lock.
-                if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
-                    recorder.record(RecordPoint::IOQueueStart);
-                }
-                if let Some((work, debt, policy_data)) = policy::prepare_io_element(
-                    work,
-                    debts.pop().unwrap(),
-                    true,
-                    composition_id,
-                    &self.remote_nodes,
-                ) {
-                    io_elements.push_back(IoQueueElement {
-                        composition_id,
-                        flags,
-                        work,
-                        debt,
-                        policy_data,
-                    });
-                }
-            }
-        }
-
-        {
-            let mut queue_guard = self.inner.lock().unwrap();
-
-            if !compute_elements.is_empty() {
-                let num_compute_elements = compute_elements.len();
-                if queue_guard.compute_queue.is_empty()
-                    || queue_guard.compute_queue.back().unwrap().composition_id <= composition_id
-                {
-                    queue_guard.compute_queue.append(&mut compute_elements);
-                // check the front has same or bigger id so can just push front
-                } else if queue_guard.compute_queue.front().unwrap().composition_id
-                    >= composition_id
-                {
-                    compute_elements.append(&mut queue_guard.compute_queue);
-                    queue_guard.compute_queue = compute_elements;
-                // find the place to insert
-                } else {
-                    let index = queue_guard
-                        .compute_queue
-                        .iter()
-                        .position(|elem| elem.composition_id > composition_id)
-                        .unwrap();
-                    let mut tail = queue_guard.compute_queue.split_off(index);
-                    queue_guard.compute_queue.append(&mut compute_elements);
-                    queue_guard.compute_queue.append(&mut tail);
-                }
-
-                // wake up to one idle compute core per element we just queued, since each
-                // one can only be picked up by a core that gets polled again.
-                for waker_to_call in queue_guard
-                    .compute_waker_list
-                    .extract_if(|queue_element| queue_element.flags & global_flags == global_flags)
-                    .take(num_compute_elements)
-                {
-                    waker_to_call.waker.wake();
-                }
-                self.queuing_notifier.notify_waiters();
-            }
-
-            if !io_elements.is_empty() {
-                let num_io_elements = io_elements.len();
-                // check if an io core would take the element or not;
-                // if not, no reason to call waker
-                if queue_guard.io_queue.is_empty()
-                    || queue_guard.io_queue.back().unwrap().composition_id <= composition_id
-                {
-                    queue_guard.io_queue.append(&mut io_elements);
-                // check the front has same or smaller id so can just push front
-                } else if queue_guard.io_queue.front().unwrap().composition_id >= composition_id {
-                    io_elements.append(&mut queue_guard.io_queue);
-                    queue_guard.io_queue = io_elements;
-                // find the place to insert
-                } else {
-                    let index = queue_guard
-                        .io_queue
-                        .iter()
-                        .position(|elem| elem.composition_id > composition_id)
-                        .unwrap();
-                    let mut tail = queue_guard.io_queue.split_off(index);
-                    queue_guard.io_queue.append(&mut io_elements);
-                    queue_guard.io_queue.append(&mut tail);
-                }
-
-                // wake up to one idle io core per element we just queued, for the same reason
-                // as for the compute queue above.
-                // TODO: have removed check for multiple wakeups / queueing notifications, need to consider if we need to reintroduce it or not
-                // and have a good way to decide when to notify the remotes, since this may add an amount of work where parts of it can be done locally,
-                // and parts should be done remotely (or all)
-                for waker in queue_guard
-                    .io_waker_list
-                    .extract_if(|_| true)
-                    .take(num_io_elements)
-                {
-                    waker.wake();
-                }
-                self.queuing_notifier.notify_waiters();
-            }
-        }
-        while let Some(done) = promises.next().await {
-            results.push(done?);
-        }
-
-        Ok(results)
+        self.insert_prepared(elements, composition_id, false);
+        Ok(promises)
     }
 
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
@@ -705,7 +591,9 @@ impl WorkQueue {
 
     /// Put work back into queue after trying to offload without success.
     pub fn reenqueue(&self, work: WorkToDo, debt: Debt, composition_id: usize) {
-        self.push(work, debt, composition_id, false);
+        let mut elements = PreparedElements::default();
+        self.prepare(work, debt, composition_id, false, &mut elements);
+        self.insert_prepared(elements, composition_id, false);
     }
 }
 
@@ -739,7 +627,7 @@ impl EngineWorkQueue for EngineQueue {
         self.work_queue.get_io_work()
     }
 
-    fn requeu_engine_args(&self, work: WorkToDo, debt: Debt, composition_id: usize) {
+    fn reenqueue_engine_args(&self, mut work: WorkToDo, debt: Debt, composition_id: usize) {
         let flags = match &work {
             WorkToDo::FunctionArguments {
                 function_id: _,
@@ -754,8 +642,17 @@ impl EngineWorkQueue for EngineQueue {
             _ => panic!("Should not reenqueue non function arguments"),
         };
         trace!("Reenqueue with flags: {}", flags);
+        // the io core fetched all the data, so the work always goes to the compute queue now
+        record_compute_queue_start(&mut work);
+        let mut elements = PreparedElements::default();
+        elements.compute.push_back(ComputeQueueElement {
+            composition_id,
+            flags,
+            work,
+            debt,
+        });
         self.work_queue
-            .push_compute(work, debt, flags, composition_id, true)
+            .insert_prepared(elements, composition_id, true)
     }
 
     fn remove_self_from_queue(&self) {

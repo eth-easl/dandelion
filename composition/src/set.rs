@@ -6,7 +6,7 @@ use std::{
 use log::error;
 use memory::data::{DataItem, DataSet, DataSetAccumulator};
 
-use crate::{function::Invocation, sharding::AnyShardingMode, Function};
+use crate::{sharding::AnyShardingMode, Executor, Function};
 
 #[derive(Debug)]
 enum State {
@@ -84,7 +84,7 @@ impl CompositionSet {
         items: Arc<Vec<DataItem>>,
         complete: bool,
         any_sharding_mode: &AnyShardingMode,
-        out: &mut impl Extend<Invocation>,
+        exec: &mut impl Executor,
     ) {
         let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
         debug_assert!(
@@ -93,7 +93,7 @@ impl CompositionSet {
         );
 
         for (f, set_idx) in inner.consumers_streaming.iter() {
-            f.push_streaming_items(*set_idx, items.clone(), complete, any_sharding_mode, out);
+            f.push_streaming_items(*set_idx, items.clone(), complete, any_sharding_mode, exec);
         }
 
         if inner.requires_retention {
@@ -113,7 +113,7 @@ impl CompositionSet {
                     false => acc.collect_unsorted(),
                 };
                 for (c, set_idx) in inner.consumers_blocking.iter() {
-                    c.in_set_complete(data_set.clone(), *set_idx, any_sharding_mode, out);
+                    c.in_set_complete(data_set.clone(), *set_idx, any_sharding_mode, exec);
                 }
                 inner.state = State::Complete(data_set);
             }
@@ -126,7 +126,7 @@ impl CompositionSet {
         &self,
         set: DataSet,
         any_sharding_mode: &AnyShardingMode,
-        out: &mut impl Extend<Invocation>,
+        exec: &mut impl Executor,
     ) {
         let inner = self.inner.lock().expect("CompositionSet lock poisoned!");
         debug_assert!(
@@ -135,10 +135,10 @@ impl CompositionSet {
         );
 
         for (c, set_idx) in inner.consumers_blocking.iter() {
-            c.in_set_complete(set.clone(), *set_idx, any_sharding_mode, out);
+            c.in_set_complete(set.clone(), *set_idx, any_sharding_mode, exec);
         }
         for (c, set_idx) in inner.consumers_streaming.iter() {
-            c.push_streaming_items(*set_idx, set.items.clone(), true, any_sharding_mode, out);
+            c.push_streaming_items(*set_idx, set.items.clone(), true, any_sharding_mode, exec);
         }
     }
 

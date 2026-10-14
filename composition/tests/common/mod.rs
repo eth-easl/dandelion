@@ -8,9 +8,10 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use composition::{Composition, CompositionTemplate, Registry};
+use composition::{Composition, CompositionTemplate, Executor, Registry};
 use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, FunctionId,
     FunctionRegistryError,
@@ -127,17 +128,58 @@ pub fn items(items: Vec<DataItem>) -> Arc<Vec<DataItem>> {
     Arc::new(items)
 }
 
+/// An invocation as enqueued by the composition, collected by the tests to inspect it.
+#[derive(Debug)]
+pub struct Invocation {
+    pub function_id: FunctionId,
+    pub composition_idx: usize,
+    pub input: Vec<DataSet>,
+}
+
+/// An [`ExecutionQueue`] that simply collects all enqueued invocations.
+#[derive(Debug, Default)]
+pub struct InvocationQueue(pub Vec<Invocation>);
+
+impl Executor for InvocationQueue {
+    fn enqueue_invocations<T: IntoIterator<Item = Vec<DataSet>>>(
+        &mut self,
+        function_id: FunctionId,
+        composition_idx: usize,
+        inv_input_iter: T,
+    ) {
+        self.0
+            .extend(inv_input_iter.into_iter().map(|input| Invocation {
+                function_id: function_id.clone(),
+                composition_idx,
+                input,
+            }));
+    }
+}
+
+impl Deref for InvocationQueue {
+    type Target = Vec<Invocation>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for InvocationQueue {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Runs a composition to completion given its composition-level inputs, driving every produced
-/// [`memory::data::Invocation`] through `respond` (which stands in for actually running
+/// [`Invocation`] through `respond` (which stands in for actually running
 /// the invoked function) until nothing is left outstanding, then returns the composition outputs.
 ///
 /// `respond` receives each invocation and returns the output sets it produced.
 pub fn run_to_completion(
     mut composition: Composition,
     inputs: Vec<DataSet>,
-    mut respond: impl FnMut(&composition::Invocation) -> Vec<Arc<Vec<DataItem>>>,
+    mut respond: impl FnMut(&Invocation) -> Vec<Arc<Vec<DataItem>>>,
 ) -> Vec<DataSet> {
-    let mut pending = Vec::new();
+    let mut pending = InvocationQueue::default();
     composition.start_execution(inputs, &mut pending);
     while let Some(invocation) = pending.pop() {
         let output = respond(&invocation);

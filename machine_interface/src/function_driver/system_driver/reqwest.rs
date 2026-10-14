@@ -616,7 +616,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                                     .into_iter()
                                     .map(|item_vec| DataSet::from_items(item_vec))
                                     .collect();
-                                queue_clone.requeu_engine_args(
+                                queue_clone.reenqueue_engine_args(
                                     WorkToDo::FunctionArguments {
                                         function_id,
                                         function_alternatives,

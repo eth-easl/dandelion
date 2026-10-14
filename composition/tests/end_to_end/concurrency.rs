@@ -4,8 +4,10 @@ use std::{
     time::Duration,
 };
 
-use crate::common::{data_set, item, items, parse_composition, TestRegistry};
-use composition::{AnyShardingMode, Composition, Invocation};
+use crate::common::{
+    data_set, item, items, parse_composition, Invocation, InvocationQueue, TestRegistry,
+};
+use composition::{AnyShardingMode, Composition};
 use memory::DataItem;
 
 /// How long a round may take before it is considered deadlocked.
@@ -27,7 +29,7 @@ fn run_groups_concurrently(
         thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 barrier.wait();
-                let mut follow_ups = Vec::new();
+                let mut follow_ups = InvocationQueue::default();
                 for invocation in group {
                     let output = respond(&invocation);
                     composition.push_invocation_output(
@@ -36,7 +38,7 @@ fn run_groups_concurrently(
                         &mut follow_ups,
                     );
                 }
-                follow_ups
+                follow_ups.0
             }));
             // release the composition before reporting back so the caller can take it back
             drop(composition);
@@ -84,9 +86,10 @@ fn concurrent_streams_into_two_each_inputs_neither_deadlock_nor_duplicate() {
             Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
         let in_a = data_set((0..n).map(|i| item(&format!("a{i}"), i)).collect());
         let in_b = data_set((0..n).map(|i| item(&format!("b{i}"), i)).collect());
-        let mut initial = Vec::new();
+        let mut initial = InvocationQueue::default();
         composition.start_execution(vec![in_a, in_b], &mut initial);
         let (side_a, side_b) = initial
+            .0
             .into_iter()
             .partition(|invocation| invocation.input[0].items[0].ident.starts_with('a'));
 
@@ -127,12 +130,13 @@ fn concurrent_last_invocations_of_a_function_keep_all_output() {
     for _ in 0..2000 {
         let mut composition =
             Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
-        let mut initial = Vec::new();
+        let mut initial = InvocationQueue::default();
         composition.start_execution(
             vec![data_set(vec![item("a0", 0), item("a1", 1)])],
             &mut initial,
         );
         let groups = initial
+            .0
             .into_iter()
             .map(|invocation| vec![invocation])
             .collect();

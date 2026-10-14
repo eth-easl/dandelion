@@ -6,15 +6,12 @@ mod sharding;
 
 use std::sync::Arc;
 
+pub use crate::sharding::{AnyShardingMode, AnyShardingParams, DEFAULT_AUTOSHARDING_OFFLOAD_CONST};
 use crate::{
     function::Function,
     parser::{ErrorDiagnostic, Parser},
     set::CompositionSet,
     sharding::Sharding,
-};
-pub use crate::{
-    function::Invocation,
-    sharding::{AnyShardingMode, AnyShardingParams, DEFAULT_AUTOSHARDING_OFFLOAD_CONST},
 };
 use dandelion_commons::{dandelion_err, DandelionError, DandelionResult, FunctionId};
 use log::warn;
@@ -31,6 +28,17 @@ pub trait Registry {
     fn id_exists(&self, id: &str) -> bool;
     /// Get min_set_bytes for a function.
     fn get_min_set_bytes(&self, id: &FunctionId) -> DandelionResult<Vec<usize>>;
+}
+
+/// Functions from the queue side required to execute compositions.
+pub trait Executor {
+    /// Enqueues invocations of a composition function from an iterator over the invocation's input sets.
+    fn enqueue_invocations<T: IntoIterator<Item = Vec<DataSet>>>(
+        &mut self,
+        function_id: FunctionId,
+        composition_idx: usize,
+        inv_input_iter: T,
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -161,16 +169,17 @@ impl Composition {
         }
     }
 
+    /// Number of functions in the composition.
+    pub fn num_functions(&self) -> usize {
+        self.functions.len()
+    }
+
     /// Starts the composition with the given inputs and adds all initial invocations to `out`.
-    pub fn start_execution(
-        &mut self,
-        composition_inputs: Vec<DataSet>,
-        out: &mut impl Extend<Invocation>,
-    ) {
+    pub fn start_execution(&mut self, composition_inputs: Vec<DataSet>, exec: &mut impl Executor) {
         debug_assert_eq!(composition_inputs.len(), self.input_sets.len());
 
         for (i, in_set) in composition_inputs.into_iter().enumerate() {
-            self.input_sets[i].set_composition_input(in_set, &self.any_sharding_mode, out);
+            self.input_sets[i].set_composition_input(in_set, &self.any_sharding_mode, exec);
         }
         self.input_sets.clear();
     }
@@ -180,9 +189,9 @@ impl Composition {
         &self,
         output: Vec<Arc<Vec<DataItem>>>,
         composition_idx: usize,
-        out: &mut impl Extend<Invocation>,
+        exec: &mut impl Executor,
     ) {
-        self.functions[composition_idx].add_invocation_output(output, &self.any_sharding_mode, out)
+        self.functions[composition_idx].add_invocation_output(output, &self.any_sharding_mode, exec)
     }
 
     pub fn collect(self) -> Vec<DataSet> {

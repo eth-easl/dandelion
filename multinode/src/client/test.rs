@@ -33,7 +33,7 @@ const EXPECTED_ERROR: DandelionError = DandelionError::NotImplemented;
 async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::EngineType) {
     let function_id = Arc::new("dummy_function".to_string());
     let result = work_queue
-        .do_work(
+        .enqueue(
             machine_interface::function_driver::WorkToDo::FunctionArguments {
                 function_id: function_id.clone(),
                 function_alternatives: vec![Arc::new(FunctionAlternative {
@@ -54,6 +54,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
             },
             0,
         )
+        .expect("Should be able to get a promise")
         .await;
     let error = if let Err(error) = result {
         error.error

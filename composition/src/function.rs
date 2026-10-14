@@ -6,6 +6,7 @@ use std::{
 use crate::{
     set::CompositionSet,
     sharding::{create_sharding_iter, AnyShardingMode, Sharding},
+    Executor,
 };
 use dandelion_commons::FunctionId;
 use log::trace;
@@ -119,7 +120,7 @@ impl Function {
         data_set: DataSet,
         set_idx: usize,
         any_sharding_mode: &AnyShardingMode,
-        out: &mut impl Extend<Invocation>,
+        exec: &mut impl Executor,
     ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
 
@@ -169,7 +170,7 @@ impl Function {
             }
             if runnable {
                 num_created =
-                    self.create_invocations(sets, any_sharding_mode, &self.min_set_bytes, out);
+                    self.create_invocations(sets, any_sharding_mode, &self.min_set_bytes, exec);
             }
         }
 
@@ -184,7 +185,7 @@ impl Function {
             let empty_items = Arc::new(vec![]);
             for out_set_opt in inner.outputs.iter() {
                 if let Some(out_set) = out_set_opt {
-                    out_set.push_items(empty_items.clone(), complete, any_sharding_mode, out);
+                    out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
                 }
             }
             inner.outputs.clear()
@@ -197,7 +198,7 @@ impl Function {
         mut items: Arc<Vec<DataItem>>,
         complete: bool,
         any_sharding_mode: &AnyShardingMode,
-        out: &mut impl Extend<Invocation>,
+        exec: &mut impl Executor,
     ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
 
@@ -243,7 +244,7 @@ impl Function {
         drop(inner);
 
         let num_created = if runnable {
-            self.create_invocations(sets, any_sharding_mode, &self.min_set_bytes, out)
+            self.create_invocations(sets, any_sharding_mode, &self.min_set_bytes, exec)
         } else {
             0
         };
@@ -256,7 +257,6 @@ impl Function {
                     inner.inputs[set_idx].take()
                 {
                     inner.inputs[set_idx] = Some((
-                        // TODO: why is this collect unsorted? This is used in sharding later, so should be sorted
                         InputSet::Complete(acc.collect_unsorted()),
                         sharding,
                         optional,
@@ -268,7 +268,6 @@ impl Function {
             inner.all_started = inner.inputs.iter().enumerate().all(|(idx, in_opt)| {
                 in_opt
                     .as_ref()
-                    // TODO: why does it check the index here? The set that just arrived should also be marked complete at this point, no?
                     .map_or(true, |(set, _, _, _)| idx == set_idx || set.is_complete())
             });
 
@@ -277,7 +276,7 @@ impl Function {
                 let empty_items = Arc::new(vec![]);
                 for out_set_opt in inner.outputs.iter() {
                     if let Some(out_set) = out_set_opt {
-                        out_set.push_items(empty_items.clone(), complete, any_sharding_mode, out);
+                        out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
                     }
                 }
                 inner.outputs.clear()
@@ -291,7 +290,7 @@ impl Function {
         sets: Vec<Option<(DataSet, Sharding)>>,
         any_sharding_mode: &AnyShardingMode,
         min_set_bytes: &[usize],
-        out: &mut impl Extend<Invocation>,
+        exec: &mut impl Executor,
     ) -> usize {
         let num_sets = sets.len();
 
@@ -302,23 +301,27 @@ impl Function {
         };
 
         let mut num_created = 0;
-        out.extend(iter::from_fn(|| {
-            // The sharding iterator starts out on its first element, so only advance after that.
-            // Once `advance` returned false we're done.
-            if num_created > 0 && !iter.advance() {
-                return None;
-            }
-            let mut input = vec![DataSet::default(); num_sets];
-            iter.fill_in(&mut input);
-            let invocation = Invocation {
-                function_id: self.function_id.clone(),
-                composition_idx: self.composition_idx,
-                input,
-            };
-            trace!("Computed sharding invocation: {:?}", invocation);
-            num_created += 1;
-            Some(invocation)
-        }));
+        exec.enqueue_invocations(
+            self.function_id.clone(),
+            self.composition_idx,
+            iter::from_fn(|| {
+                // The sharding iterator starts out on its first element, so only advance after that.
+                // Once `advance` returned false we're done.
+                if num_created > 0 && !iter.advance() {
+                    return None;
+                }
+                let mut input = vec![DataSet::default(); num_sets];
+                iter.fill_in(&mut input);
+                trace!(
+                    "Computed sharding invocation: {}, {}, {:?}",
+                    self.function_id,
+                    self.composition_idx,
+                    input
+                );
+                num_created += 1;
+                Some(input)
+            }),
+        );
         num_created
     }
 
@@ -326,7 +329,7 @@ impl Function {
         &self,
         sets: Vec<Arc<Vec<DataItem>>>,
         any_sharding_mode: &AnyShardingMode,
-        out: &mut impl Extend<Invocation>,
+        exec: &mut impl Executor,
     ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
 
@@ -340,14 +343,14 @@ impl Function {
             let empty_items = Arc::new(vec![]);
             for out_set_opt in inner.outputs.iter() {
                 if let Some(out_set) = out_set_opt {
-                    out_set.push_items(empty_items.clone(), complete, any_sharding_mode, out);
+                    out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
                 }
             }
         } else {
             debug_assert_eq!(sets.len(), inner.outputs.len());
             for (data, out_set_opt) in sets.into_iter().zip(inner.outputs.iter()) {
                 if let Some(out_set) = out_set_opt {
-                    out_set.push_items(data, complete, any_sharding_mode, out);
+                    out_set.push_items(data, complete, any_sharding_mode, exec);
                 }
             }
         }
@@ -358,16 +361,35 @@ impl Function {
     }
 }
 
-#[derive(Debug)]
-pub struct Invocation {
-    pub function_id: FunctionId,
-    pub composition_idx: usize,
-    pub input: Vec<DataSet>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Executor;
+
+    /// An invocation as enqueued by the composition, collected by the tests to inspect it.
+    /// The [`Executor`] implementation also serves the unit tests of the other modules.
+    #[derive(Debug)]
+    #[allow(dead_code)] // not every field is checked by the current tests
+    pub(crate) struct Invocation {
+        pub function_id: FunctionId,
+        pub composition_idx: usize,
+        pub input: Vec<DataSet>,
+    }
+
+    impl Executor for Vec<Invocation> {
+        fn enqueue_invocations<T: IntoIterator<Item = Vec<DataSet>>>(
+            &mut self,
+            function_id: FunctionId,
+            composition_idx: usize,
+            inv_input_iter: T,
+        ) {
+            self.extend(inv_input_iter.into_iter().map(|input| Invocation {
+                function_id: function_id.clone(),
+                composition_idx,
+                input,
+            }));
+        }
+    }
     use memory::{data::Position, Context, LocalData};
 
     /// A small real context for tests; the composition layer only tracks items, it never reads

@@ -88,9 +88,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                     .expect("Path should be valid string")
                     .to_string(),
                 Metadata {
-                    input_sets: local_names
-                        .into_iter()
-                        .collect(),
+                    input_sets: local_names.into_iter().collect(),
                     output_sets: out_set_names.clone(),
                     min_set_bytes: vec![],
                 },
@@ -202,9 +200,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                     .expect("Path should be valid string")
                     .to_string(),
                 Metadata {
-                    input_sets: local_names
-                        .into_iter()
-                        .collect(),
+                    input_sets: local_names.into_iter().collect(),
                     output_sets: out_set_names.clone(),
                     min_set_bytes: vec![],
                 },
