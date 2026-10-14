@@ -1,4 +1,3 @@
-use memory::context::{malloc::MallocMemoryDomain, MemoryDomain};
 use crate::{
     function_driver::{
         compute_driver::cheri::CheriDriver,
@@ -7,6 +6,7 @@ use crate::{
     },
     Position,
 };
+use memory::context::{malloc::MallocMemoryDomain, MemoryDomain};
 
 #[test]
 fn test_loader_basic() {

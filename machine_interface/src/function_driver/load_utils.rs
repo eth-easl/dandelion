@@ -1,8 +1,6 @@
-use memory::context::{transfer_memory, Context, MemoryDomain};
-use crate::{
-    DataRequirementList,
-};
+use crate::DataRequirementList;
 use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
+use memory::context::{transfer_memory, Context, MemoryDomain};
 use std::sync::Arc;
 
 #[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
