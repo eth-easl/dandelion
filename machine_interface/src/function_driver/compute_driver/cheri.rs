@@ -7,12 +7,15 @@ use crate::{
     },
     interface::{read_output_structs, setup_input_structs},
     util::elf_parser,
-    DataItem, DataRequirement, DataRequirementList, DataSet, Position,
+    DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use libc::size_t;
-use memory::context::{Context, ContextTrait, ContextType, MemoryDomain};
+use memory::{
+    context::{Context, ContextDataItem, ContextDataSet, ContextTrait, ContextType, MemoryDomain},
+    DataItem, LocalData,
+};
 use std::sync::Arc;
 
 #[link(name = "cheri_lib")]
@@ -43,10 +46,10 @@ impl EngineLoop for CheriLoop {
         mut context: Context,
         input_sets: &[(String, Option<DataSet>)],
         output_sets: &[String],
-    ) -> DandelionResult<Context> {
+    ) -> DandelionResult<(i32, Vec<Arc<Vec<DataItem>>>)> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return err_dandelion!((DandelionError::ConfigMissmatch)),
+            _ => return err_dandelion!(DandelionError::ConfigMissmatch),
         };
         setup_input_structs::<u64, u64>(
             &mut context,
@@ -56,7 +59,7 @@ impl EngineLoop for CheriLoop {
         )?;
         let cheri_context = match &context.context {
             ContextType::Cheri(cheri_context) => cheri_context,
-            _ => return err_dandelion!((DandelionError::ContextMissmatch)),
+            _ => return err_dandelion!(DandelionError::ContextMissmatch),
         };
         let cap_offset = cheri_context.cap_offset;
         let stack_end = cheri_context.storage.size() - cap_offset - 32;
@@ -74,8 +77,27 @@ impl EngineLoop for CheriLoop {
             1 => err_dandelion!(DandelionError::OutOfMemory),
             _ => err_dandelion!(DandelionError::NotImplemented),
         }?;
-        read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
-        return Ok(context);
+        let (exit_code, proto_items) =
+            read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
+        let context_arc = Arc::new(context);
+        let mut set_vec = Vec::with_capacity(proto_items.len());
+        for set in proto_items {
+            set_vec.push(Arc::new(
+                set.into_iter()
+                    .map(|(ident, key, pos)| {
+                        DataItem::new_local(
+                            ident,
+                            key,
+                            LocalData {
+                                ctx: context_arc.clone(),
+                                pos,
+                            },
+                        )
+                    })
+                    .collect(),
+            ));
+        }
+        Ok((exit_code, set_vec))
     }
 }
 
@@ -139,7 +161,7 @@ impl Driver for CheriDriver {
         let mut context = static_domain.acquire_context(context_size)?;
         // copy all
         let mut total_size = 0;
-        let mut items = Vec::with_capacity(static_requirements.len());
+        let mut items = Vec::with_capacity(source_layout.len());
         for position in source_layout.iter() {
             context.write(
                 total_size,

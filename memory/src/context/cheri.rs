@@ -2,7 +2,7 @@ use crate::{
     context::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
     util::mmapmem::{self, MmapMem, MmapMemPool},
 };
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
+use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
 use libc::size_t;
 use log::debug;
 use nix::sys::mman::ProtFlags;
@@ -68,7 +68,7 @@ impl MemoryDomain for CheriMemoryDomain {
         };
         let allocation_size = size
             .checked_add(additional_space)
-            .ok_or(DandelionError::OutOfMemory)?;
+            .ok_or(dandelion_err!(DandelionError::OutOfMemory))?;
         let (storage, actual_size) = self
             .memory_pool
             .get_allocation(allocation_size, nix::sys::mman::MmapAdvise::MADV_DONTNEED)?;

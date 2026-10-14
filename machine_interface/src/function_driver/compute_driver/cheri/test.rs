@@ -22,7 +22,7 @@ fn test_loader_basic() {
         context,
         config,
     } = driver
-        .parse_function(elf_path, &malloc_domain)
+        .parse_function(elf_path, malloc_domain.as_ref())
         .expect("Parsing should work");
     println!("requirements: {:?}", requirements);
     // check requirement list to be list of programm header info for after load
@@ -75,7 +75,7 @@ fn test_loader_basic() {
     let layout = &context.content[0]
         .as_ref()
         .expect("Set should be present")
-        .buffers;
+        .items;
     for (index, item) in layout.into_iter().enumerate() {
         assert_eq!(
             expected_offset, item.data.offset,

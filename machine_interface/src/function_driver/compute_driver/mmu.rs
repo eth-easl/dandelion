@@ -14,7 +14,7 @@ use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionR
 use log::{debug, warn};
 use memory::{
     context::{Context, ContextDataItem, ContextDataSet, ContextTrait, ContextType, MemoryDomain},
-    DataItem, ItemData, LocalData,
+    DataItem, LocalData,
 };
 use nix::{
     sys::{
@@ -201,7 +201,7 @@ impl EngineLoop for MmuLoop {
         mut context: Context,
         input_sets: &[(String, Option<DataSet>)],
         output_sets: &[String],
-    ) -> DandelionResult<(i32, Vec<Vec<DataItem>>)> {
+    ) -> DandelionResult<(i32, Vec<Arc<Vec<DataItem>>>)> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return err_dandelion!(DandelionError::ConfigMissmatch),
@@ -235,18 +235,20 @@ impl EngineLoop for MmuLoop {
         let context_arc = Arc::new(context);
         let mut set_vec = Vec::with_capacity(proto_items.len());
         for set in proto_items {
-            set_vec.push(
+            set_vec.push(Arc::new(
                 set.into_iter()
-                    .map(|(ident, key, pos)| DataItem {
-                        ident,
-                        key,
-                        data: ItemData::Local(LocalData {
-                            ctx: context_arc.clone(),
-                            pos,
-                        }),
+                    .map(|(ident, key, pos)| {
+                        DataItem::new_local(
+                            ident,
+                            key,
+                            LocalData {
+                                ctx: context_arc.clone(),
+                                pos,
+                            },
+                        )
                     })
                     .collect(),
-            );
+            ));
         }
         Ok((exit_code, set_vec))
     }
