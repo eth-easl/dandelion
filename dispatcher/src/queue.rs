@@ -591,6 +591,8 @@ impl WorkQueue {
 
     /// Put work back into queue after trying to offload without success.
     pub fn reenqueue(&self, work: WorkToDo, debt: Debt, composition_id: usize) {
+        // The abort handle refers to the failed offload attempt, whose remote invocation id may be reused.
+        debt.clear_abort_handle();
         let mut elements = PreparedElements::default();
         self.prepare(work, debt, composition_id, false, &mut elements);
         self.insert_prepared(elements, composition_id, false);

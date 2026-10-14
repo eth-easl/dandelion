@@ -242,10 +242,28 @@ async fn remote_queue_server_try_offload(
     }
 }
 
+/// Forwards cancellations from abort handles into the server logic.
+/// Abort handles run synchronously when a promise is dropped, so they cannot wait for capacity in
+/// the bounded logic channel.
+async fn remote_queue_server_cancel(
+    mut cancel_receiver: mpsc::UnboundedReceiver<u32>,
+    sender: mpsc::Sender<QueueOption>,
+) {
+    while let Some(invocation_id) = cancel_receiver.recv().await {
+        if sender
+            .send(QueueOption::CancelRemote(invocation_id))
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+}
+
 /// The protocol logic handling for the remote queue server
 async fn remote_queue_server_logic(
     mut message_receiver: mpsc::Receiver<QueueOption>,
-    local_sender: mpsc::Sender<QueueOption>,
+    cancel_sender: mpsc::UnboundedSender<u32>,
     message_sender: mpsc::Sender<queue_message::QueueMessage>,
     queue: WorkQueue,
     export_registry: ExportRegistry,
@@ -355,12 +373,9 @@ async fn remote_queue_server_logic(
                                     );
                                 let caching = caching;
                                 let function_id = function_id.to_string();
-                                let cancel_sender = local_sender.clone();
+                                let cancel_sender = cancel_sender.clone();
                                 debt.install_abort_handle(move || {
-                                    if cancel_sender
-                                        .try_send(QueueOption::CancelRemote(promise_id))
-                                        .is_err()
-                                    {
+                                    if cancel_sender.send(promise_id).is_err() {
                                         warn!(
                                             "Failed to enqueue cancellation for remote invocation {}",
                                             promise_id
@@ -568,12 +583,9 @@ async fn remote_queue_server_logic(
                     });
                 let caching = caching;
                 let function_id = function_id.to_string();
-                let cancel_sender = local_sender.clone();
+                let cancel_sender = cancel_sender.clone();
                 debt.install_abort_handle(move || {
-                    if cancel_sender
-                        .try_send(QueueOption::CancelRemote(promise_id))
-                        .is_err()
-                    {
+                    if cancel_sender.send(promise_id).is_err() {
                         warn!(
                             "Failed to enqueue cancellation for remote invocation {}",
                             promise_id
@@ -749,10 +761,16 @@ pub async fn remote_queue_server(
         queue_option_sender.clone(),
         queue.clone(),
     ));
+    // spawn loop forwarding cancellations from abort handles
+    let (cancel_sender, cancel_receiver) = mpsc::unbounded_channel();
+    let cancel_handle = spawn(remote_queue_server_cancel(
+        cancel_receiver,
+        queue_option_sender.clone(),
+    ));
 
     remote_queue_server_logic(
         queue_option_receiver,
-        queue_option_sender.clone(),
+        cancel_sender,
         queue_message_sender,
         queue,
         export_registry,
@@ -767,6 +785,7 @@ pub async fn remote_queue_server(
     sender_handle.abort();
     receiver_handle.abort();
     notification_handle.abort();
+    cancel_handle.abort();
 }
 
 pub enum PollingOption {
@@ -1049,7 +1068,6 @@ async fn remote_queue_client_logic(
                         if remote_shutdown {
                             debug!("Should not get offload invocations after remote indicates shutdown");
                         }
-                        work_from_remote += 1;
 
                         // mark remote as having work, so we ask for more as idle cores change
                         let start_instance = Instant::now();

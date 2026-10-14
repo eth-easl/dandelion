@@ -79,11 +79,12 @@ fn test_remote_queue_server() {
 
     let (queue_option_sender, queue_option_receiver) = mpsc::channel(64);
     let (queue_message_sender, mut queue_message_receiver) = mpsc::channel(64);
+    let (cancel_sender, _cancel_receiver) = mpsc::unbounded_channel();
 
     let mut context = Context::from_waker(Waker::noop());
     let mut server_future = Box::pin(remote_queue_server_logic(
         queue_option_receiver,
-        queue_option_sender.clone(),
+        cancel_sender,
         queue_message_sender,
         work_queue.clone(),
         ExportRegistry::new(1),
