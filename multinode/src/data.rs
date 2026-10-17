@@ -199,6 +199,40 @@ enum IoCommitStart {
     InProgress(watch::Receiver<Option<SharedIoResult>>),
 }
 
+/// A started commit that is aborted when dropped unless it was finished, so a cancelled request
+/// cannot leave the key committing forever.
+#[cfg(feature = "exactly-once")]
+struct IoCommitGuard<'a> {
+    registry: &'a ExportRegistry,
+    key: Option<IoCoordinationKey>,
+    claim_id: u64,
+}
+
+#[cfg(feature = "exactly-once")]
+impl<'a> IoCommitGuard<'a> {
+    fn new(registry: &'a ExportRegistry, key: IoCoordinationKey, claim_id: u64) -> Self {
+        Self {
+            registry,
+            key: Some(key),
+            claim_id,
+        }
+    }
+
+    fn finish(mut self, outcome: Result<Vec<IoRemoteRef>, String>) -> DandelionResult<()> {
+        let key = self.key.take().expect("I/O commit guard holds its key until finished");
+        self.registry.finish_io_commit(key, self.claim_id, outcome)
+    }
+}
+
+#[cfg(feature = "exactly-once")]
+impl Drop for IoCommitGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            self.registry.abort_io_commit(&key, self.claim_id);
+        }
+    }
+}
+
 #[cfg(feature = "exactly-once")]
 fn io_claim_lost_error() -> dandelion_commons::DError {
     export_registry_error("I/O claim was taken over by another worker")
@@ -321,6 +355,10 @@ fn decode_io_resolve_request(bytes: &[u8]) -> Result<IoResolveWireRequest, Strin
 fn encode_io_resolve_response(response: &IoResolveWireResponse) -> Vec<u8> {
     use crate::proto::{io_resolve_response, IoResolveExecuteNone, IoResolveRetry};
 
+    let claim_id = match response {
+        IoResolveWireResponse::Execute { claim_id, .. } => *claim_id,
+        _ => 0,
+    };
     let response = match response {
         // Winner, no input.
         IoResolveWireResponse::Execute { input: None, .. } => {
@@ -346,10 +384,6 @@ fn encode_io_resolve_response(response: &IoResolveWireResponse) -> Vec<u8> {
         }
         // Transient; worker should retry.
         IoResolveWireResponse::Retry => io_resolve_response::Response::Retry(IoResolveRetry {}),
-    };
-    let claim_id = match response {
-        IoResolveWireResponse::Execute { claim_id, .. } => *claim_id,
-        _ => 0,
     };
     crate::proto::IoResolveResponse {
         response: Some(response),
@@ -1396,6 +1430,7 @@ impl ExportRegistry {
         let IoCommitDecision::Commit(claim_id) = decision else {
             return Ok(decision);
         };
+        let commit = IoCommitGuard::new(self, key.clone(), claim_id);
         // Durable log first so a restart can recover Completed instead of re-electing.
         if let Ok(outputs) = &outcome {
             match accept_delivered_io_completion_record(&completion_record(
@@ -1403,20 +1438,13 @@ impl ExportRegistry {
                 outputs,
                 Some(claim_id),
             ))
-            .await
+            .await?
             {
-                Ok(IoCompletionDisposition::Retain) => (),
-                Ok(IoCompletionDisposition::Delete) => {
-                    self.abort_io_commit(&key, claim_id);
-                    return Ok(IoCommitDecision::Rejected);
-                }
-                Err(error) => {
-                    self.abort_io_commit(&key, claim_id);
-                    return Err(error);
-                }
+                IoCompletionDisposition::Retain => (),
+                IoCompletionDisposition::Delete => return Ok(IoCommitDecision::Rejected),
             }
         }
-        self.finish_io_commit(key, claim_id, outcome)?;
+        commit.finish(outcome)?;
         Ok(decision)
     }
 
@@ -2794,6 +2822,11 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     .await;
                 let publish = match commit {
                     Ok(IoCommitDecision::Commit(claim_id)) => {
+                        let commit = IoCommitGuard::new(
+                            &self.local_registry,
+                            completion.key.clone(),
+                            claim_id,
+                        );
                         let mut rejected = false;
                         // skip journal entry for local owner
                         if let Ok(outputs) = &wire_outcome {
@@ -2826,15 +2859,11 @@ impl RemoteDataClient for HttpRemoteDataClient {
                             }
                         }
                         if rejected {
-                            self.local_registry.abort_io_commit(&completion.key, claim_id);
+                            drop(commit);
                             warn!("Coordinated I/O result was rejected, its claim was taken over");
                             Err(io_claim_lost_error())
                         } else {
-                            self.local_registry.finish_io_commit(
-                                completion.key,
-                                claim_id,
-                                wire_outcome,
-                            )
+                            commit.finish(wire_outcome)
                         }
                     }
                     Ok(IoCommitDecision::AlreadyCommitted) => Ok(()),
