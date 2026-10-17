@@ -167,14 +167,30 @@ fn parse_log_fields(line: &str) -> HashMap<&str, &str> {
         .collect()
 }
 
-pub fn set_recovery_log_root(root: PathBuf) -> DandelionResult<()> {
-    let log_dir = io_log_dir(&root);
-    fs::create_dir_all(&log_dir).map_err(|_| {
+fn create_dir_all_durable(directory: &Path) -> DandelionResult<()> {
+    let mut synced_directories = Vec::new();
+    let mut current = directory;
+    while !current.exists() {
+        current = match current.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        synced_directories.push(current);
+    }
+    fs::create_dir_all(directory).map_err(|_| {
         internal_error(format!(
             "Failed to create IO recovery log directory {}",
-            log_dir.display()
+            directory.display()
         ))
     })?;
+    for synced_directory in synced_directories {
+        sync_directory_blocking(synced_directory)?;
+    }
+    Ok(())
+}
+
+pub fn set_recovery_log_root(root: PathBuf) -> DandelionResult<()> {
+    create_dir_all_durable(&io_log_dir(&root))?;
     match RECOVERY_LOG_ROOT.set(root.clone()) {
         Ok(()) => Ok(()),
         Err(existing_root) => {
