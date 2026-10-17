@@ -169,6 +169,12 @@ enum IoResolutionState {
 }
 
 #[cfg(feature = "exactly-once")]
+struct IoNodeSession {
+    token: u64,
+    connected: bool,
+}
+
+#[cfg(feature = "exactly-once")]
 enum RegistryIoResolution {
     Execute(Option<IoRemoteRef>),
     Wait(watch::Receiver<Option<SharedIoResult>>),
@@ -895,6 +901,8 @@ struct ExportRegistryInner {
     io_resolutions: HashMap<IoCoordinationKey, IoResolutionState>,
     #[cfg(feature = "exactly-once")]
     cancelled_io_runs: HashSet<dandelion_commons::RunId>,
+    #[cfg(feature = "exactly-once")]
+    io_node_sessions: HashMap<u64, IoNodeSession>,
     #[cfg(feature = "at-least-once")]
     durable_store: Option<DurableExportStore>,
 }
@@ -930,6 +938,8 @@ impl ExportRegistry {
                 io_resolutions: HashMap::new(),
                 #[cfg(feature = "exactly-once")]
                 cancelled_io_runs: HashSet::new(),
+                #[cfg(feature = "exactly-once")]
+                io_node_sessions: HashMap::new(),
                 #[cfg(feature = "at-least-once")]
                 durable_store: None,
             })),
@@ -973,6 +983,8 @@ impl ExportRegistry {
                 io_resolutions: HashMap::new(),
                 #[cfg(feature = "exactly-once")]
                 cancelled_io_runs: HashSet::new(),
+                #[cfg(feature = "exactly-once")]
+                io_node_sessions: HashMap::new(),
                 durable_store: Some(DurableExportStore {
                     directory,
                     next_data_id,
@@ -1123,27 +1135,60 @@ impl ExportRegistry {
         Ok(())
     }
 
-    /// Releases unfinished claims owned by a disconnected worker. Completed outputs are durable
-    /// and remain valid while the worker process restarts.
+    /// Marks a worker connection as active and returns the token identifying this session.
     #[cfg(feature = "exactly-once")]
-    pub fn invalidate_running_io_for_node(&self, node_id: u64) {
-        self.inner
-            .lock()
-            .unwrap()
-            .io_resolutions
-            .retain(|_, state| {
-                if let IoResolutionState::Running {
-                    worker_node_id,
-                    result,
-                } = state
-                {
-                    if *worker_node_id == node_id {
-                        result.send_replace(Some(SharedIoResult::Retry));
-                        return false;
-                    }
-                }
-                true
+    pub fn io_node_connected(&self, node_id: u64) -> u64 {
+        let mut inner = self.inner.lock().unwrap();
+        let session = inner
+            .io_node_sessions
+            .entry(node_id)
+            .or_insert(IoNodeSession {
+                token: 0,
+                connected: false,
             });
+        session.token += 1;
+        session.connected = true;
+        session.token
+    }
+
+    /// Marks a worker session as disconnected. Returns false if a newer session already replaced it.
+    #[cfg(feature = "exactly-once")]
+    pub fn io_node_disconnected(&self, node_id: u64, token: u64) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        match inner.io_node_sessions.get_mut(&node_id) {
+            Some(session) if session.token == token => {
+                session.connected = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Releases the worker's unfinished claims if it did not reconnect since the given session.
+    #[cfg(feature = "exactly-once")]
+    pub fn expire_io_node(&self, node_id: u64, token: u64) {
+        let mut inner = self.inner.lock().unwrap();
+        match inner.io_node_sessions.get(&node_id) {
+            Some(session) if session.token == token && !session.connected => (),
+            _ => return,
+        }
+        log::info!(
+            "Worker node {} did not reconnect in time, releasing its running I/O",
+            node_id
+        );
+        inner.io_resolutions.retain(|_, state| {
+            if let IoResolutionState::Running {
+                worker_node_id,
+                result,
+            } = state
+            {
+                if *worker_node_id == node_id {
+                    result.send_replace(Some(SharedIoResult::Retry));
+                    return false;
+                }
+            }
+            true
+        });
     }
 
     /// recovery path: retained worker completion so `/io/resolve` waiters wake.
@@ -3650,7 +3695,9 @@ mod tests {
             _ => panic!("second worker should wait"),
         };
 
-        registry.invalidate_running_io_for_node(2);
+        let session = registry.io_node_connected(2);
+        assert!(registry.io_node_disconnected(2, session));
+        registry.expire_io_node(2, session);
         old_waiter.changed().await.unwrap();
         assert_eq!(Some(SharedIoResult::Retry), old_waiter.borrow().clone());
 

@@ -816,7 +816,8 @@ pub async fn remote_queue_server(
     queue: WorkQueue,
     export_registry: ExportRegistry,
     remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
-    _io_disconnect_timeout: Duration,
+    #[cfg_attr(not(feature = "exactly-once"), allow(unused_variables))]
+    io_disconnect_timeout: Duration,
 ) {
     let (mut read_socket, write_socket) = socket.into_split();
 
@@ -847,6 +848,9 @@ pub async fn remote_queue_server(
         "Established connection to worker node {} ({} cores)",
         node_id, num_local_cores
     );
+
+    #[cfg(feature = "exactly-once")]
+    let io_session = export_registry.io_node_connected(node_id);
 
     // tell the queue about the remote cores
     queue.add_remote_cores(num_local_cores as usize);
@@ -889,10 +893,20 @@ pub async fn remote_queue_server(
     )
     .await;
 
-    // Work that completed durably remains reusable after the worker restarts. Only unfinished
-    // claims need to be released so requeued attempts can elect a replacement winner.
+    // Work that completed durably remains reusable after the worker restarts. Unfinished claims are
+    // only released if the worker does not reconnect within the timeout, as it may still be running.
     #[cfg(feature = "exactly-once")]
-    export_registry.invalidate_running_io_for_node(node_id);
+    if export_registry.io_node_disconnected(node_id, io_session) {
+        info!(
+            "Worker node {} disconnected, releasing its running I/O in {:?} unless it reconnects",
+            node_id, io_disconnect_timeout
+        );
+        let registry = export_registry.clone();
+        spawn(async move {
+            tokio::time::sleep(io_disconnect_timeout).await;
+            registry.expire_io_node(node_id, io_session);
+        });
+    }
 
     // The logic loop returned because the connection was lost, stop the helper tasks so they do not
     // linger waiting on a dead socket or closed channels.
