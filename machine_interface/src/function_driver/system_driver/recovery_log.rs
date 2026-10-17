@@ -333,17 +333,38 @@ fn load_run_log_blocking(log_path: &Path) -> DandelionResult<String> {
     })
 }
 
-fn append_run_log_blocking(log_path: &Path, content: &str, sync: bool) -> DandelionResult<()> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
+fn open_run_log_blocking(log_path: &Path) -> DandelionResult<(fs::File, bool)> {
+    let open_error = || {
+        internal_error(format!(
+            "Failed to open invocation log {}",
+            log_path.display()
+        ))
+    };
+    match fs::OpenOptions::new().append(true).open(log_path) {
+        Ok(file) => Ok((file, false)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::OpenOptions::new()
+            .append(true)
+            .create_new(true)
+            .open(log_path)
+            .map(|file| (file, true))
+            .map_err(|_| open_error()),
+        Err(_) => Err(open_error()),
+    }
+}
+
+fn sync_directory_blocking(directory: &Path) -> DandelionResult<()> {
+    fs::File::open(directory)
+        .and_then(|directory_file| directory_file.sync_all())
         .map_err(|_| {
             internal_error(format!(
-                "Failed to open invocation log {}",
-                log_path.display()
+                "Failed to sync invocation log directory {}",
+                directory.display()
             ))
-        })?;
+        })
+}
+
+fn append_run_log_blocking(log_path: &Path, content: &str, sync: bool) -> DandelionResult<()> {
+    let (mut file, created) = open_run_log_blocking(log_path)?;
     file.write_all(content.as_bytes()).map_err(|_| {
         internal_error(format!(
             "Failed to append invocation log {}",
@@ -357,6 +378,15 @@ fn append_run_log_blocking(log_path: &Path, content: &str, sync: bool) -> Dandel
                 log_path.display()
             ))
         })?;
+        if created {
+            let directory = log_path.parent().ok_or_else(|| {
+                internal_error(format!(
+                    "Invocation log {} has no parent directory",
+                    log_path.display()
+                ))
+            })?;
+            sync_directory_blocking(directory)?;
+        }
     }
     Ok(())
 }
