@@ -14,6 +14,7 @@ const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_MIN_SYS_CORES: usize = 1;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_RECONNECT_INTERVAL: u64 = 1000;
+const DEFAULT_MULTINODE_IO_DISCONNECT_TIMEOUT: u64 = 10000;
 use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
 use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
 
@@ -201,6 +202,11 @@ pub struct DandelionConfig {
     #[serde(default)]
     pub multinode_reconnect_interval_ms: u64,
 
+    /// Multinode: how long the master waits after a worker disconnects before its running I/O is handed to another worker.
+    #[arg(long, env, default_value_t = DEFAULT_MULTINODE_IO_DISCONNECT_TIMEOUT)]
+    #[serde(default)]
+    pub multinode_io_disconnect_timeout_ms: u64,
+
     /// Special modes for testing
     #[arg(long, env, value_enum)]
     #[serde(default)]
@@ -263,6 +269,10 @@ impl DandelionConfig {
         merge!(
             multinode_reconnect_interval_ms,
             DEFAULT_MULTINODE_RECONNECT_INTERVAL
+        );
+        merge!(
+            multinode_io_disconnect_timeout_ms,
+            DEFAULT_MULTINODE_IO_DISCONNECT_TIMEOUT
         );
     }
 

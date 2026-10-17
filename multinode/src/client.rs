@@ -816,6 +816,7 @@ pub async fn remote_queue_server(
     queue: WorkQueue,
     export_registry: ExportRegistry,
     remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
+    _io_disconnect_timeout: Duration,
 ) {
     let (mut read_socket, write_socket) = socket.into_split();
 
