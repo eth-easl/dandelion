@@ -124,6 +124,7 @@ struct IoResolveWireRequest {
     key: IoCoordinationKey,
     set_index: usize,
     requester_node_id: u64,
+    requester_incarnation: u64,
     original_data: Option<IoRemoteRef>,
 }
 
@@ -162,6 +163,7 @@ enum SharedIoResult {
 enum IoResolutionState {
     Running {
         worker_node_id: u64,
+        worker_incarnation: u64,
         result: watch::Sender<Option<SharedIoResult>>,
     },
     Completed(Vec<IoRemoteRef>),
@@ -170,8 +172,38 @@ enum IoResolutionState {
 
 #[cfg(feature = "exactly-once")]
 struct IoNodeSession {
+    incarnation: u64,
     token: u64,
     connected: bool,
+    expired: bool,
+}
+
+/// Retries and removes the running claims held by `node_id` whose incarnation matches.
+#[cfg(feature = "exactly-once")]
+fn release_running_io_claims(
+    io_resolutions: &mut HashMap<IoCoordinationKey, IoResolutionState>,
+    node_id: u64,
+    mut matches_incarnation: impl FnMut(u64) -> bool,
+) {
+    io_resolutions.retain(|_, state| {
+        if let IoResolutionState::Running {
+            worker_node_id,
+            worker_incarnation,
+            result,
+        } = state
+        {
+            if *worker_node_id == node_id && matches_incarnation(*worker_incarnation) {
+                result.send_replace(Some(SharedIoResult::Retry));
+                return false;
+            }
+        }
+        true
+    });
+}
+
+fn new_incarnation() -> u64 {
+    let (high, low) = dandelion_commons::RunId::now_v7().as_u64_pair();
+    (high ^ low).max(1)
 }
 
 #[cfg(feature = "exactly-once")]
@@ -227,6 +259,7 @@ fn encode_io_resolve_request(request: &IoResolveWireRequest) -> Result<Vec<u8>, 
             .map_err(|_| "I/O resolve set_index does not fit u64".to_string())?,
         requester_node_id: request.requester_node_id,
         original_data: request.original_data.as_ref().map(IoRemoteRef::to_proto),
+        requester_incarnation: request.requester_incarnation,
     }
     .encode_to_vec())
 }
@@ -240,6 +273,7 @@ fn decode_io_resolve_request(bytes: &[u8]) -> Result<IoResolveWireRequest, Strin
         set_index: usize::try_from(request.set_index)
             .map_err(|_| "I/O resolve set_index does not fit usize".to_string())?,
         requester_node_id: request.requester_node_id,
+        requester_incarnation: request.requester_incarnation,
         original_data: request
             .original_data
             .map(IoRemoteRef::from_proto)
@@ -910,6 +944,7 @@ struct ExportRegistryInner {
 #[derive(Clone)]
 pub struct ExportRegistry {
     node_id: u64,
+    incarnation: u64,
     empty_notifier: Arc<Notify>,
     inner: Arc<Mutex<ExportRegistryInner>>,
     #[cfg(feature = "at-least-once")]
@@ -922,6 +957,7 @@ impl ExportRegistry {
     pub fn new(node_id: u64) -> Self {
         Self {
             node_id,
+            incarnation: new_incarnation(),
             empty_notifier: Arc::new(Notify::new()),
             inner: Arc::new(Mutex::new(ExportRegistryInner {
                 next_transient_data_id: 0,
@@ -970,6 +1006,7 @@ impl ExportRegistry {
         let pending_io_completions = load_io_completion_journal(&directory).await?;
         Ok(Self {
             node_id,
+            incarnation: new_incarnation(),
             empty_notifier: Arc::new(Notify::new()),
             inner: Arc::new(Mutex::new(ExportRegistryInner {
                 next_transient_data_id: 0,
@@ -1000,6 +1037,10 @@ impl ExportRegistry {
         self.node_id
     }
 
+    pub fn get_incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
     #[cfg(all(test, feature = "exactly-once"))]
     fn begin_io_resolution(
         &self,
@@ -1007,7 +1048,13 @@ impl ExportRegistry {
         set_index: usize,
         original_data: Option<IoRemoteRef>,
     ) -> DandelionResult<RegistryIoResolution> {
-        self.begin_io_resolution_from_node(key, set_index, self.node_id, original_data)
+        self.begin_io_resolution_from_node(
+            key,
+            set_index,
+            self.node_id,
+            self.incarnation,
+            original_data,
+        )
     }
 
     /// Elect a winner for this I/O key, or reuse a recovered / already-finished result.
@@ -1017,6 +1064,7 @@ impl ExportRegistry {
         key: IoCoordinationKey,
         set_index: usize,
         requester_node_id: u64,
+        requester_incarnation: u64,
         original_data: Option<IoRemoteRef>,
     ) -> DandelionResult<RegistryIoResolution> {
         let output_count = get_system_function_output_sets(key.function).len();
@@ -1059,6 +1107,13 @@ impl ExportRegistry {
                 "I/O invocation was cancelled".to_string(),
             ));
         }
+        if let Some(session) = inner.io_node_sessions.get(&requester_node_id) {
+            if session.incarnation != requester_incarnation || session.expired {
+                return Ok(RegistryIoResolution::Failed(
+                    "I/O requester is no longer connected to the owner".to_string(),
+                ));
+            }
+        }
         match inner.io_resolutions.entry(key) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 if let Some(outputs) = recovered {
@@ -1075,6 +1130,7 @@ impl ExportRegistry {
                 let (result, _) = watch::channel(None);
                 entry.insert(IoResolutionState::Running {
                     worker_node_id: requester_node_id,
+                    worker_incarnation: requester_incarnation,
                     result,
                 });
                 Ok(RegistryIoResolution::Execute(original_data))
@@ -1136,18 +1192,33 @@ impl ExportRegistry {
     }
 
     /// Marks a worker connection as active and returns the token identifying this session.
+    /// A different incarnation means the worker restarted, so its old claims are released at once.
     #[cfg(feature = "exactly-once")]
-    pub fn io_node_connected(&self, node_id: u64) -> u64 {
-        let mut inner = self.inner.lock().unwrap();
+    pub fn io_node_connected(&self, node_id: u64, incarnation: u64) -> u64 {
+        let mut guard = self.inner.lock().unwrap();
+        let inner = &mut *guard;
         let session = inner
             .io_node_sessions
             .entry(node_id)
             .or_insert(IoNodeSession {
+                incarnation,
                 token: 0,
                 connected: false,
+                expired: false,
             });
+        if session.incarnation != incarnation {
+            log::info!(
+                "Worker node {} restarted, releasing the running I/O of its previous incarnation",
+                node_id
+            );
+            session.incarnation = incarnation;
+            release_running_io_claims(&mut inner.io_resolutions, node_id, |worker_incarnation| {
+                worker_incarnation != incarnation
+            });
+        }
         session.token += 1;
         session.connected = true;
+        session.expired = false;
         session.token
     }
 
@@ -1167,27 +1238,21 @@ impl ExportRegistry {
     /// Releases the worker's unfinished claims if it did not reconnect since the given session.
     #[cfg(feature = "exactly-once")]
     pub fn expire_io_node(&self, node_id: u64, token: u64) {
-        let mut inner = self.inner.lock().unwrap();
-        match inner.io_node_sessions.get(&node_id) {
-            Some(session) if session.token == token && !session.connected => (),
+        let mut guard = self.inner.lock().unwrap();
+        let inner = &mut *guard;
+        let incarnation = match inner.io_node_sessions.get_mut(&node_id) {
+            Some(session) if session.token == token && !session.connected => {
+                session.expired = true;
+                session.incarnation
+            }
             _ => return,
-        }
+        };
         log::info!(
             "Worker node {} did not reconnect in time, releasing its running I/O",
             node_id
         );
-        inner.io_resolutions.retain(|_, state| {
-            if let IoResolutionState::Running {
-                worker_node_id,
-                result,
-            } = state
-            {
-                if *worker_node_id == node_id {
-                    result.send_replace(Some(SharedIoResult::Retry));
-                    return false;
-                }
-            }
-            true
+        release_running_io_claims(&mut inner.io_resolutions, node_id, |worker_incarnation| {
+            worker_incarnation == incarnation
         });
     }
 
@@ -2352,6 +2417,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         request.key.clone(),
                         request.set_index,
                         self.local_registry.node_id,
+                        self.local_registry.incarnation,
                         original_data.clone(),
                     )?;
                     registry_resolution_response(
@@ -2367,6 +2433,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         key: request.key.clone(),
                         set_index: request.set_index,
                         requester_node_id: self.local_registry.node_id,
+                        requester_incarnation: self.local_registry.incarnation,
                         original_data: original_data.clone(),
                     })
                     .map_err(|error| {
@@ -2676,6 +2743,7 @@ async fn handle_io_resolve(
         request.key,
         request.set_index,
         request.requester_node_id,
+        request.requester_incarnation,
         request.original_data,
     ) {
         Ok(resolution) => resolution,
@@ -3431,6 +3499,7 @@ mod tests {
             key: coordination_key(),
             set_index: 2,
             requester_node_id: 9,
+            requester_incarnation: 5,
             original_data: Some(remote.clone()),
         };
         let encoded = encode_io_resolve_request(&request).unwrap();
@@ -3438,6 +3507,7 @@ mod tests {
         assert_eq!(request.key, decoded.key);
         assert_eq!(request.set_index, decoded.set_index);
         assert_eq!(request.requester_node_id, decoded.requester_node_id);
+        assert_eq!(request.requester_incarnation, decoded.requester_incarnation);
         assert_eq!(request.original_data, decoded.original_data);
 
         let resolved = IoResolvedWireRequest {
@@ -3683,19 +3753,19 @@ mod tests {
         let key = coordination_key();
         assert!(matches!(
             registry
-                .begin_io_resolution_from_node(key.clone(), 0, 2, None)
+                .begin_io_resolution_from_node(key.clone(), 0, 2, 1, None)
                 .unwrap(),
             RegistryIoResolution::Execute(None)
         ));
         let mut old_waiter = match registry
-            .begin_io_resolution_from_node(key.clone(), 0, 3, None)
+            .begin_io_resolution_from_node(key.clone(), 0, 3, 1, None)
             .unwrap()
         {
             RegistryIoResolution::Wait(waiter) => waiter,
             _ => panic!("second worker should wait"),
         };
 
-        let session = registry.io_node_connected(2);
+        let session = registry.io_node_connected(2, 1);
         assert!(registry.io_node_disconnected(2, session));
         registry.expire_io_node(2, session);
         old_waiter.changed().await.unwrap();
@@ -3703,13 +3773,13 @@ mod tests {
 
         assert!(matches!(
             registry
-                .begin_io_resolution_from_node(key.clone(), 0, 3, None)
+                .begin_io_resolution_from_node(key.clone(), 0, 3, 1, None)
                 .unwrap(),
             RegistryIoResolution::Execute(None)
         ));
         assert!(matches!(
             registry
-                .begin_io_resolution_from_node(key, 0, 4, None)
+                .begin_io_resolution_from_node(key, 0, 4, 1, None)
                 .unwrap(),
             RegistryIoResolution::Wait(_)
         ));

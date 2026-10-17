@@ -6,6 +6,7 @@ message NodeInfo {
     uint32 version = 1;
     uint64 id = 2;
     uint64 num_local_cores = 3;
+    uint64 incarnation = 4;
 }
 
 enum SystemFunction {
@@ -146,6 +147,7 @@ message IoResolveRequest {
     uint64 set_index = 2;
     uint64 requester_node_id = 3;
     RemoteData original_data = 4;
+    uint64 requester_incarnation = 5;
 }
 
 message IoResolveExecuteNone {}

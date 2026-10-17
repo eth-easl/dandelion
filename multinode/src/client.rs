@@ -842,15 +842,16 @@ pub async fn remote_queue_server(
         version,
         id: node_id,
         num_local_cores,
+        incarnation,
     } = deserialize_node_info(node_info_buffer).unwrap();
     assert_eq!(version, 1);
     info!(
-        "Established connection to worker node {} ({} cores)",
-        node_id, num_local_cores
+        "Established connection to worker node {} ({} cores, incarnation {})",
+        node_id, num_local_cores, incarnation
     );
 
     #[cfg(feature = "exactly-once")]
-    let io_session = export_registry.io_node_connected(node_id);
+    let io_session = export_registry.io_node_connected(node_id, incarnation);
 
     // tell the queue about the remote cores
     queue.add_remote_cores(num_local_cores as usize);
@@ -1797,6 +1798,7 @@ pub async fn remote_queue_client(
         version: 1,
         id: export_registry.get_node_id(),
         num_local_cores: local_core_count as u64,
+        incarnation: export_registry.get_incarnation(),
     });
 
     let (read_socket, mut write_socket) = socket.into_split();
