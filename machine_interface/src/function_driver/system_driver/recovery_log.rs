@@ -24,6 +24,7 @@ use crate::{
 };
 
 const IO_LOG_DIR_NAME: &str = "io_logs";
+const SYNC_RUN_LOG: bool = cfg!(feature = "exactly-once");
 static RECOVERY_LOG_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static RUN_LOG_LOCKS: OnceLock<Mutex<HashMap<RunId, Arc<AsyncMutex<RunLogState>>>>> =
     OnceLock::new();
@@ -332,7 +333,7 @@ fn load_run_log_blocking(log_path: &Path) -> DandelionResult<String> {
     })
 }
 
-fn append_run_log_blocking(log_path: &Path, content: &str) -> DandelionResult<()> {
+fn append_run_log_blocking(log_path: &Path, content: &str, sync: bool) -> DandelionResult<()> {
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -349,13 +350,14 @@ fn append_run_log_blocking(log_path: &Path, content: &str) -> DandelionResult<()
             log_path.display()
         ))
     })?;
-    #[cfg(feature = "exactly-once")]
-    file.sync_data().map_err(|_| {
-        internal_error(format!(
-            "Failed to sync invocation log {}",
-            log_path.display()
-        ))
-    })?;
+    if sync {
+        file.sync_data().map_err(|_| {
+            internal_error(format!(
+                "Failed to sync invocation log {}",
+                log_path.display()
+            ))
+        })?;
+    }
     Ok(())
 }
 
@@ -375,10 +377,11 @@ async fn write_run_log_locked(
     log_path: &Path,
     state: &mut RunLogState,
     content: String,
+    sync: bool,
 ) -> DandelionResult<()> {
     let task_path = log_path.to_path_buf();
     state.loaded = false;
-    run_log_blocking(move || append_run_log_blocking(&task_path, &content)).await?;
+    run_log_blocking(move || append_run_log_blocking(&task_path, &content, sync)).await?;
     state.loaded = true;
     Ok(())
 }
@@ -407,10 +410,18 @@ pub fn deactivate_async_run_logging(run_id: RunId) {
 /// Appends a recovery record without blocking a Tokio worker. The per-run async
 /// mutex covers inspection, truncation, and append as one transaction.
 pub async fn append_run_log_line(run_id: RunId, line: &str) -> DandelionResult<()> {
+    append_run_log_line_with(run_id, line, SYNC_RUN_LOG).await
+}
+
+pub async fn append_submission_line(run_id: RunId, line: &str) -> DandelionResult<()> {
+    append_run_log_line_with(run_id, line, true).await
+}
+
+async fn append_run_log_line_with(run_id: RunId, line: &str, sync: bool) -> DandelionResult<()> {
     let log_path = run_log_path(run_id)?;
     let run_lock = run_log_lock(run_id);
     let mut state = run_lock.lock().await;
-    append_run_log_line_locked(&log_path, &mut state, line).await
+    append_run_log_line_locked(&log_path, &mut state, line, sync).await
 }
 
 /// Returns only fully written, newline-terminated recovery-log records.
@@ -424,9 +435,10 @@ async fn append_run_log_line_locked(
     log_path: &Path,
     state: &mut RunLogState,
     line: &str,
+    sync: bool,
 ) -> DandelionResult<()> {
     ensure_run_log_loaded(log_path, state).await?;
-    write_run_log_locked(log_path, state, line.to_string()).await?;
+    write_run_log_locked(log_path, state, line.to_string(), sync).await?;
     if let Err(error) = state.apply(line) {
         state.loaded = false;
         return Err(error);
@@ -670,7 +682,7 @@ mod cleanup_tests {
         fs::write(&log_path, b"event=first\nevent=incomplete").unwrap();
 
         let mut state = RunLogState::default();
-        append_run_log_line_locked(&log_path, &mut state, "event=second\n")
+        append_run_log_line_locked(&log_path, &mut state, "event=second\n", false)
             .await
             .unwrap();
 
@@ -697,6 +709,7 @@ mod cleanup_tests {
                 "event=invocation_submitted run_id={} request_len=0 request_b64= is_cold=false\n",
                 run_id
             ),
+            false,
         )
         .await
         .unwrap();
@@ -704,6 +717,7 @@ mod cleanup_tests {
             &log_path,
             &mut state,
             &format_io_completion_line(&winner).unwrap(),
+            false,
         )
         .await
         .unwrap();
@@ -1124,7 +1138,7 @@ pub async fn append_io_completion_record(record: &IoCompletionRecord) -> Dandeli
     let log_path = run_log_path(record.run_id)?;
     let run_lock = run_log_lock(record.run_id);
     let mut state = run_lock.lock().await;
-    append_run_log_line_locked(&log_path, &mut state, &line).await
+    append_run_log_line_locked(&log_path, &mut state, &line, SYNC_RUN_LOG).await
 }
 
 /// Accepts the first successful completion for a logical I/O key. Redelivery of that exact winner
@@ -1143,7 +1157,7 @@ pub async fn accept_delivered_io_completion_record(
     let record_key = record.completion_key()?;
     let payload_b64 = encode_io_completion_payload(&record.outputs)?;
     let line = io_completion_line(record, &payload_b64);
-    write_run_log_locked(&log_path, &mut state, line).await?;
+    write_run_log_locked(&log_path, &mut state, line, SYNC_RUN_LOG).await?;
     state.completions.insert(record_key, payload_b64);
     Ok(IoCompletionDisposition::Retain)
 }
@@ -1303,7 +1317,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteStart);
             }
-            write_run_log_locked(&log_path, &mut state, appended).await?;
+            write_run_log_locked(&log_path, &mut state, appended, SYNC_RUN_LOG).await?;
             state.completions.extend(appended_completions);
             for recorder in &mut journal_recorders {
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteEnd);

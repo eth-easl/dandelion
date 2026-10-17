@@ -5,7 +5,7 @@ use dandelion_commons::{
 use dandelion_server::{AsyncInvocationState, AsyncInvocationStatusResponse};
 use log::info;
 use machine_interface::function_driver::system_driver::recovery_log::{
-    append_run_log_line, complete_log_lines, list_run_log_ids, read_run_log,
+    append_run_log_line, append_submission_line, complete_log_lines, list_run_log_ids, read_run_log,
 };
 use std::{
     collections::HashMap,
@@ -193,7 +193,7 @@ pub async fn persist_submitted(
     request_bytes: &[u8],
     is_cold: bool,
 ) -> DandelionResult<()> {
-    append_event(
+    append_submission_line(
         run_id,
         &format!(
             "event=invocation_submitted run_id={} request_len={} request_b64={} is_cold={}\n",
