@@ -164,6 +164,7 @@ message IoResolveResponse {
         string failed = 5;
         IoResolveRetry retry = 6;
     }
+    uint64 claim_id = 7;
 }
 
 message IoResolvedOutputs {
@@ -177,6 +178,7 @@ message IoResolvedRequest {
         IoResolvedOutputs completed = 2;
         string failed = 3;
     }
+    uint64 claim_id = 4;
 }
 
 // Message from remote node to get work or return completed tasks

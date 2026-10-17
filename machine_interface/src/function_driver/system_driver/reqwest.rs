@@ -580,6 +580,7 @@ async fn resolve_checkpointed_io_item(
                     .collect(),
             ),
             recorder: None,
+            claim_id: None,
         };
         tokio::spawn(async move {
             if let Err(error) = remote_client.publish_io_completion(completion).await {
@@ -678,11 +679,12 @@ async fn resolve_io_item_exactly_once(
         return Err(coordination_error(error));
     }
 
-    let (resolved_input, won_coordination) = match resolution {
-        Some(IoResolveOutcome::Execute { input }) => (input, true),
-        None => (None, false),
+    let (resolved_input, claim_id) = match resolution {
+        Some(IoResolveOutcome::Execute { input, claim_id }) => (input, Some(claim_id)),
+        None => (None, None),
         Some(IoResolveOutcome::Completed { .. } | IoResolveOutcome::Failed(_)) => unreachable!(),
     };
+    let won_coordination = claim_id.is_some();
     // Winner (or uncoordinated): get input bytes, then run the external I/O.
     let input_result = match resolved_input {
         Some(IoResolveInput::Inline { context, position }) => Ok((position, context)),
@@ -712,6 +714,7 @@ async fn resolve_io_item_exactly_once(
                             key: coordination_key,
                             outcome: IoCompletionOutcome::Failed(error.to_string()),
                             recorder: None,
+                            claim_id,
                         })
                         .await?;
                 }
@@ -767,6 +770,7 @@ async fn resolve_io_item_exactly_once(
                 key: coordination_key,
                 outcome,
                 recorder: None,
+                claim_id,
             })
             .await?;
     }

@@ -47,6 +47,7 @@ pub struct IoCompletionRecord {
     pub io_path: IoPath,
     pub function: SystemFunction,
     pub outputs: Vec<IoCompletionOutputSet>,
+    pub claim_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,11 +530,19 @@ pub fn parse_io_completion_line(line: &str) -> DandelionResult<Option<IoCompleti
     let outputs = decode_io_completion_payload(fields.get("payload_b64").copied().ok_or(
         internal_error("Missing payload_b64 field in IO completion record"),
     )?)?;
+    let claim_id = fields
+        .get("claim_id")
+        .map(|raw| {
+            raw.parse::<u64>()
+                .map_err(|_| internal_error("Invalid claim_id in IO completion record"))
+        })
+        .transpose()?;
     Ok(Some(IoCompletionRecord {
         run_id,
         io_path,
         function,
         outputs,
+        claim_id,
     }))
 }
 
@@ -643,6 +652,7 @@ mod cleanup_tests {
                     },
                 }],
             }],
+            claim_id: None,
         }
     }
 
@@ -681,6 +691,7 @@ mod cleanup_tests {
                     ],
                 },
             ],
+            claim_id: None,
         }];
 
         let exports = remote_io_exports_from_records(records);
@@ -1162,9 +1173,13 @@ pub fn format_io_completion_line(record: &IoCompletionRecord) -> DandelionResult
 
 #[cfg(feature = "at-least-once")]
 fn io_completion_line(record: &IoCompletionRecord, payload_b64: &str) -> String {
+    let claim_field = record
+        .claim_id
+        .map(|claim_id| format!(" claim_id={}", claim_id))
+        .unwrap_or_default();
     format!(
-        "event=io_function_completed run_id={} io_path={} function={} payload_b64={}\n",
-        record.run_id, record.io_path, record.function, payload_b64
+        "event=io_function_completed run_id={} io_path={} function={}{} payload_b64={}\n",
+        record.run_id, record.io_path, record.function, claim_field, payload_b64
     )
 }
 

@@ -594,22 +594,18 @@ async fn remote_queue_server_logic(
                                     continue;
                                 }
                             };
-                            let disposition = match machine_interface::function_driver::system_driver::recovery_log::accept_delivered_io_completion_record(&record).await {
+                            #[cfg(feature = "exactly-once")]
+                            let accepted =
+                                export_registry.accept_io_completion_delivery(&record).await;
+                            #[cfg(not(feature = "exactly-once"))]
+                            let accepted = machine_interface::function_driver::system_driver::recovery_log::accept_delivered_io_completion_record(&record).await;
+                            let disposition = match accepted {
                                 Ok(disposition) => disposition,
                                 Err(err) => {
                                     error!("Failed to persist worker IO completion: {}", err);
                                     continue;
                                 }
                             };
-                            #[cfg(feature = "exactly-once")]
-                            if disposition == IoCompletionDisposition::Retain {
-                                if let Err(err) =
-                                    export_registry.publish_io_resolution_from_record(&record)
-                                {
-                                    error!("Failed to complete coordinated worker IO: {}", err);
-                                    continue;
-                                }
-                            }
                             let completion_key = match record.completion_key() {
                                 Ok(completion_key) => completion_key,
                                 Err(err) => {

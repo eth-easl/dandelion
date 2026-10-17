@@ -381,7 +381,10 @@ pub struct IoResolveRequest {
 #[cfg(feature = "exactly-once")]
 #[derive(Clone, Debug)]
 pub enum IoResolveOutcome {
-    Execute { input: Option<IoResolveInput> },
+    Execute {
+        input: Option<IoResolveInput>,
+        claim_id: u64,
+    },
     Completed { data: RemoteData },
     Failed(String),
 }
@@ -420,6 +423,7 @@ pub struct IoCoordinationCompletion {
     pub key: IoCoordinationKey,
     pub outcome: IoCompletionOutcome,
     pub recorder: Option<dandelion_commons::records::Recorder>,
+    pub claim_id: Option<u64>,
 }
 
 static REMOTE_DATA_CLIENT: OnceLock<Arc<dyn RemoteDataClient>> = OnceLock::new();

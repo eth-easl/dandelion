@@ -28,7 +28,7 @@ use machine_interface::{
 use machine_interface::{
     composition::{IoResolveInput, IoResolveOutcome, IoResolveRequest},
     function_driver::system_driver::{
-        recovery_log::{append_delivered_io_completion_record, recovered_io_item_locations},
+        recovery_log::recovered_io_item_locations,
         RecoveredIoOutput,
     },
 };
@@ -131,7 +131,10 @@ struct IoResolveWireRequest {
 #[cfg(feature = "exactly-once")]
 #[derive(Debug, PartialEq, Eq)]
 enum IoResolveWireResponse {
-    Execute { input: Option<IoResolveWireInput> },
+    Execute {
+        input: Option<IoResolveWireInput>,
+        claim_id: u64,
+    },
     Completed { data: IoRemoteRef },
     Failed(String),
     Retry,
@@ -148,6 +151,7 @@ enum IoResolveWireInput {
 #[derive(Debug)]
 struct IoResolvedWireRequest {
     key: IoCoordinationKey,
+    claim_id: Option<u64>,
     outputs: Result<Vec<IoRemoteRef>, String>,
 }
 
@@ -162,12 +166,53 @@ enum SharedIoResult {
 #[cfg(feature = "exactly-once")]
 enum IoResolutionState {
     Running {
+        claim_id: u64,
         worker_node_id: u64,
         worker_incarnation: u64,
         result: watch::Sender<Option<SharedIoResult>>,
     },
     Completed(Vec<IoRemoteRef>),
     Failed(String),
+}
+
+/// How the owner treats a result that a worker submits for a claim.
+#[cfg(feature = "exactly-once")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IoClaimDecision {
+    Accepted,
+    AlreadyCommitted,
+    Rejected,
+}
+
+/// A result is accepted for the current claim or when nobody holds the key, and rejected when
+/// another claim runs or a different result was already committed.
+#[cfg(feature = "exactly-once")]
+fn io_claim_decision(
+    state: Option<&IoResolutionState>,
+    claim_id: Option<u64>,
+    outcome: &Result<Vec<IoRemoteRef>, String>,
+) -> IoClaimDecision {
+    match state {
+        None => IoClaimDecision::Accepted,
+        Some(IoResolutionState::Running {
+            claim_id: running_claim,
+            ..
+        }) if claim_id == Some(*running_claim) => IoClaimDecision::Accepted,
+        Some(IoResolutionState::Running { .. }) => IoClaimDecision::Rejected,
+        Some(IoResolutionState::Completed(outputs)) => match outcome {
+            Ok(submitted) if submitted == outputs => IoClaimDecision::AlreadyCommitted,
+            _ => IoClaimDecision::Rejected,
+        },
+        Some(IoResolutionState::Failed(_)) => match outcome {
+            Err(_) => IoClaimDecision::AlreadyCommitted,
+            Ok(_) => IoClaimDecision::Rejected,
+        },
+    }
+}
+
+#[cfg(feature = "exactly-once")]
+fn io_claim_lost_error() -> DandelionError {
+    export_registry_error("I/O claim was taken over by another worker")
 }
 
 #[cfg(feature = "exactly-once")]
@@ -208,7 +253,7 @@ fn new_incarnation() -> u64 {
 
 #[cfg(feature = "exactly-once")]
 enum RegistryIoResolution {
-    Execute(Option<IoRemoteRef>),
+    Execute(Option<IoRemoteRef>, u64),
     Wait(watch::Receiver<Option<SharedIoResult>>),
     Completed(IoRemoteRef),
     Failed(String),
@@ -288,16 +333,18 @@ fn encode_io_resolve_response(response: &IoResolveWireResponse) -> Vec<u8> {
 
     let response = match response {
         // Winner, no input.
-        IoResolveWireResponse::Execute { input: None } => {
+        IoResolveWireResponse::Execute { input: None, .. } => {
             io_resolve_response::Response::ExecuteNone(IoResolveExecuteNone {})
         }
         // Winner, input bytes inline.
         IoResolveWireResponse::Execute {
             input: Some(IoResolveWireInput::Inline(bytes)),
+            ..
         } => io_resolve_response::Response::ExecuteInline(bytes.clone()),
         // Winner, fetch input from a remote ref.
         IoResolveWireResponse::Execute {
             input: Some(IoResolveWireInput::Remote(data)),
+            ..
         } => io_resolve_response::Response::ExecuteRemote(data.to_proto()),
         // Already finished; output lives at this remote ref.
         IoResolveWireResponse::Completed { data } => {
@@ -310,8 +357,13 @@ fn encode_io_resolve_response(response: &IoResolveWireResponse) -> Vec<u8> {
         // Transient; worker should retry.
         IoResolveWireResponse::Retry => io_resolve_response::Response::Retry(IoResolveRetry {}),
     };
+    let claim_id = match response {
+        IoResolveWireResponse::Execute { claim_id, .. } => *claim_id,
+        _ => 0,
+    };
     crate::proto::IoResolveResponse {
         response: Some(response),
+        claim_id,
     }
     .encode_to_vec()
 }
@@ -323,21 +375,27 @@ fn decode_io_resolve_response(bytes: &[u8]) -> Result<IoResolveWireResponse, Str
 
     let response = crate::proto::IoResolveResponse::decode(bytes)
         .map_err(|error| format!("Invalid I/O resolve response protobuf: {}", error))?;
+    let claim_id = response.claim_id;
     match response.response {
         // Winner, no input.
         Some(io_resolve_response::Response::ExecuteNone(_)) => {
-            Ok(IoResolveWireResponse::Execute { input: None })
+            Ok(IoResolveWireResponse::Execute {
+                input: None,
+                claim_id,
+            })
         }
         // Winner, input bytes inline.
         Some(io_resolve_response::Response::ExecuteInline(bytes)) => {
             Ok(IoResolveWireResponse::Execute {
                 input: Some(IoResolveWireInput::Inline(bytes)),
+                claim_id,
             })
         }
         // Winner, fetch input from a remote ref.
         Some(io_resolve_response::Response::ExecuteRemote(data)) => {
             Ok(IoResolveWireResponse::Execute {
                 input: Some(IoResolveWireInput::Remote(IoRemoteRef::from_proto(data)?)),
+                claim_id,
             })
         }
         // Already finished; output lives at this remote ref.
@@ -369,6 +427,7 @@ fn encode_io_resolved_request(request: &IoResolvedWireRequest) -> Result<Vec<u8>
     Ok(crate::proto::IoResolvedRequest {
         key: Some(proto_coordination_key(&request.key)?),
         outcome: Some(outcome),
+        claim_id: request.claim_id.unwrap_or(0),
     }
     .encode_to_vec())
 }
@@ -390,6 +449,7 @@ fn decode_io_resolved_request(bytes: &[u8]) -> Result<IoResolvedWireRequest, Str
     };
     Ok(IoResolvedWireRequest {
         key: coordination_key_from_proto(request.key.ok_or("I/O resolved missing key")?)?,
+        claim_id: (request.claim_id != 0).then_some(request.claim_id),
         outputs,
     })
 }
@@ -404,7 +464,7 @@ async fn registry_resolution_response(
 ) -> DandelionResult<IoResolveWireResponse> {
     Ok(match resolution {
         // Winner: inline owner-local input bytes, or leave a remote ref.
-        RegistryIoResolution::Execute(original_data) => {
+        RegistryIoResolution::Execute(original_data, claim_id) => {
             let input = match original_data
                 .map(|data| registry.inline_local_io_input(data))
                 .transpose()
@@ -413,11 +473,15 @@ async fn registry_resolution_response(
                 Err(error) => {
                     // Publish failure so waiters are not left hanging.
                     let message = error.to_string();
-                    registry.publish_io_resolution_inner(key, Err(message.clone()))?;
+                    registry.publish_io_resolution_inner(
+                        key,
+                        Some(claim_id),
+                        Err(message.clone()),
+                    )?;
                     return Ok(IoResolveWireResponse::Failed(message));
                 }
             };
-            IoResolveWireResponse::Execute { input }
+            IoResolveWireResponse::Execute { input, claim_id }
         }
         // Already finished; reuse the stored output.
         RegistryIoResolution::Completed(data) => IoResolveWireResponse::Completed { data },
@@ -447,9 +511,14 @@ async fn registry_resolution_response(
 }
 
 #[cfg(feature = "at-least-once")]
-fn completion_record(key: &IoCoordinationKey, outputs: &[IoRemoteRef]) -> IoCompletionRecord {
+fn completion_record(
+    key: &IoCoordinationKey,
+    outputs: &[IoRemoteRef],
+    claim_id: Option<u64>,
+) -> IoCompletionRecord {
     let set_names = get_system_function_output_sets(key.function);
     IoCompletionRecord {
+        claim_id,
         run_id: key.run_id,
         io_path: key.io_path.clone(),
         function: key.function,
@@ -937,6 +1006,8 @@ struct ExportRegistryInner {
     cancelled_io_runs: HashSet<dandelion_commons::RunId>,
     #[cfg(feature = "exactly-once")]
     io_node_sessions: HashMap<u64, IoNodeSession>,
+    #[cfg(feature = "exactly-once")]
+    next_io_claim_id: u64,
     #[cfg(feature = "at-least-once")]
     durable_store: Option<DurableExportStore>,
 }
@@ -976,6 +1047,8 @@ impl ExportRegistry {
                 cancelled_io_runs: HashSet::new(),
                 #[cfg(feature = "exactly-once")]
                 io_node_sessions: HashMap::new(),
+                #[cfg(feature = "exactly-once")]
+                next_io_claim_id: 1,
                 #[cfg(feature = "at-least-once")]
                 durable_store: None,
             })),
@@ -1022,6 +1095,8 @@ impl ExportRegistry {
                 cancelled_io_runs: HashSet::new(),
                 #[cfg(feature = "exactly-once")]
                 io_node_sessions: HashMap::new(),
+                #[cfg(feature = "exactly-once")]
+                next_io_claim_id: 1,
                 durable_store: Some(DurableExportStore {
                     directory,
                     next_data_id,
@@ -1101,7 +1176,8 @@ impl ExportRegistry {
                 .collect::<DandelionResult<Vec<_>>>()
         })
         .transpose()?;
-        let mut inner = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock().unwrap();
+        let inner = &mut *guard;
         if inner.cancelled_io_runs.contains(&key.run_id) {
             return Ok(RegistryIoResolution::Failed(
                 "I/O invocation was cancelled".to_string(),
@@ -1127,13 +1203,16 @@ impl ExportRegistry {
                     return Ok(RegistryIoResolution::Completed(output));
                 }
                 // First live caller for this key wins and later callers wait on this channel.
+                let claim_id = inner.next_io_claim_id;
+                inner.next_io_claim_id += 1;
                 let (result, _) = watch::channel(None);
                 entry.insert(IoResolutionState::Running {
+                    claim_id,
                     worker_node_id: requester_node_id,
                     worker_incarnation: requester_incarnation,
                     result,
                 });
-                Ok(RegistryIoResolution::Execute(original_data))
+                Ok(RegistryIoResolution::Execute(original_data, claim_id))
             }
             std::collections::hash_map::Entry::Occupied(entry) => match entry.get() {
                 // Duplicate: subscribe until the winner publishes.
@@ -1155,40 +1234,76 @@ impl ExportRegistry {
         }
     }
 
+    /// Decides whether a submitted result may be committed without changing the registry.
+    #[cfg(feature = "exactly-once")]
+    fn check_io_claim(
+        &self,
+        key: &IoCoordinationKey,
+        claim_id: Option<u64>,
+        outcome: &Result<Vec<IoRemoteRef>, String>,
+    ) -> IoClaimDecision {
+        let inner = self.inner.lock().unwrap();
+        io_claim_decision(inner.io_resolutions.get(key), claim_id, outcome)
+    }
+
     #[cfg(feature = "exactly-once")]
     fn publish_io_resolution_inner(
         &self,
         key: IoCoordinationKey,
+        claim_id: Option<u64>,
         outcome: Result<Vec<IoRemoteRef>, String>,
-    ) -> DandelionResult<()> {
+    ) -> DandelionResult<IoClaimDecision> {
         let mut inner = self.inner.lock().unwrap();
         if inner.cancelled_io_runs.contains(&key.run_id) {
             return Err(export_registry_error(
                 "Cannot publish a cancelled I/O invocation",
             ));
         }
-        let terminal = || match &outcome {
-            Ok(outputs) => IoResolutionState::Completed(outputs.clone()),
-            Err(error) => IoResolutionState::Failed(error.clone()),
+        let decision = io_claim_decision(inner.io_resolutions.get(&key), claim_id, &outcome);
+        if decision != IoClaimDecision::Accepted {
+            return Ok(decision);
+        }
+        let (terminal, shared_outcome) = match outcome {
+            Ok(outputs) => (
+                IoResolutionState::Completed(outputs.clone()),
+                SharedIoResult::Completed(outputs),
+            ),
+            Err(error) => (
+                IoResolutionState::Failed(error.clone()),
+                SharedIoResult::Failed(error),
+            ),
         };
-        let shared_outcome = match &outcome {
-            Ok(outputs) => SharedIoResult::Completed(outputs.clone()),
-            Err(error) => SharedIoResult::Failed(error.clone()),
-        };
-        match inner.io_resolutions.entry(key) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(terminal());
-            }
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                if let IoResolutionState::Running { result, .. } = entry.get() {
-                    let result = result.clone();
-                    entry.insert(terminal());
-                    result.send_replace(Some(shared_outcome));
-                }
-                // Completed and failed states are terminal: the first result wins.
+        if let Some(IoResolutionState::Running { result, .. }) =
+            inner.io_resolutions.insert(key, terminal)
+        {
+            result.send_replace(Some(shared_outcome));
+        }
+        Ok(decision)
+    }
+
+    /// Commits a result delivered by a remote worker: check the claim, log it durably, then
+    /// publish it so waiters wake.
+    #[cfg(feature = "exactly-once")]
+    async fn commit_delivered_io_resolution(
+        &self,
+        key: IoCoordinationKey,
+        claim_id: Option<u64>,
+        outcome: Result<Vec<IoRemoteRef>, String>,
+    ) -> DandelionResult<IoClaimDecision> {
+        let decision = self.check_io_claim(&key, claim_id, &outcome);
+        if decision != IoClaimDecision::Accepted {
+            return Ok(decision);
+        }
+        // Durable log first so a restart can recover Completed instead of re-electing.
+        if let Ok(outputs) = &outcome {
+            let disposition =
+                accept_delivered_io_completion_record(&completion_record(&key, outputs, claim_id))
+                    .await?;
+            if disposition == IoCompletionDisposition::Delete {
+                return Ok(IoClaimDecision::Rejected);
             }
         }
-        Ok(())
+        self.publish_io_resolution_inner(key, claim_id, outcome)
     }
 
     /// Marks a worker connection as active and returns the token identifying this session.
@@ -1256,12 +1371,12 @@ impl ExportRegistry {
         });
     }
 
-    /// recovery path: retained worker completion so `/io/resolve` waiters wake.
+    /// Owner side of a journaled worker completion delivered over the queue connection.
     #[cfg(feature = "exactly-once")]
-    pub fn publish_io_resolution_from_record(
+    pub async fn accept_io_completion_delivery(
         &self,
         record: &IoCompletionRecord,
-    ) -> DandelionResult<()> {
+    ) -> DandelionResult<IoCompletionDisposition> {
         let key = record.completion_key()?;
         let coordination_key = IoCoordinationKey {
             run_id: key.run_id,
@@ -1297,7 +1412,17 @@ impl ExportRegistry {
                 }
             })
             .collect::<DandelionResult<Vec<_>>>()?;
-        self.publish_io_resolution_inner(coordination_key, Ok(references))
+        Ok(
+            match self
+                .commit_delivered_io_resolution(coordination_key, record.claim_id, Ok(references))
+                .await?
+            {
+                IoClaimDecision::Accepted | IoClaimDecision::AlreadyCommitted => {
+                    IoCompletionDisposition::Retain
+                }
+                IoClaimDecision::Rejected => IoCompletionDisposition::Delete,
+            },
+        )
     }
 
     #[cfg(feature = "exactly-once")]
@@ -2315,7 +2440,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             let export_batch_id = committed.batch_id;
             let exported = committed.references;
 
-            let record = completion_record(&completion.key, &exported);
+            let record = completion_record(&completion.key, &exported, completion.claim_id);
 
             // skip journal entry for local owner
             #[cfg(feature = "checkpointed-at-least-once")]
@@ -2475,7 +2600,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
             };
 
             Ok(match response {
-                IoResolveWireResponse::Execute { input } => IoResolveOutcome::Execute {
+                IoResolveWireResponse::Execute { input, claim_id } => IoResolveOutcome::Execute {
+                    claim_id,
                     input: input.map(|input| match input {
                         IoResolveWireInput::Inline(bytes) => {
                             let size = bytes.len();
@@ -2548,9 +2674,14 @@ impl RemoteDataClient for HttpRemoteDataClient {
             };
 
             if completion.owner_node_id == self.local_registry.node_id {
+                let mut rejected = self.local_registry.check_io_claim(
+                    &completion.key,
+                    completion.claim_id,
+                    &wire_outcome,
+                ) == IoClaimDecision::Rejected;
                 // skip journal entry for local owner
-                if let Ok(outputs) = &wire_outcome {
-                    let record = completion_record(&completion.key, outputs);
+                if let (false, Ok(outputs)) = (rejected, &wire_outcome) {
+                    let record = completion_record(&completion.key, outputs, completion.claim_id);
                     if let Some(recorder) = recorder.as_mut() {
                         recorder
                             .record(dandelion_commons::records::RecordPoint::IoOwnerApprovalStart);
@@ -2561,23 +2692,41 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         recorder
                             .record(dandelion_commons::records::RecordPoint::IoOwnerApprovalEnd);
                     }
-                    if let Err(error) = approval {
-                        for data_id in &exported_data_ids {
-                            let _ = self
-                                .local_registry
-                                .delete_durable_exported_data(*data_id)
-                                .await;
+                    match approval {
+                        Ok(IoCompletionDisposition::Retain) => (),
+                        Ok(IoCompletionDisposition::Delete) => rejected = true,
+                        Err(error) => {
+                            for data_id in &exported_data_ids {
+                                let _ = self
+                                    .local_registry
+                                    .delete_durable_exported_data(*data_id)
+                                    .await;
+                            }
+                            wire_outcome = Err(error.to_string());
+                            completion_error = Some(error);
                         }
-                        wire_outcome = Err(error.to_string());
-                        completion_error = Some(error);
                     }
                 }
-                let publish = self
-                    .local_registry
-                    .publish_io_resolution_inner(completion.key, wire_outcome);
+                let publish = if rejected {
+                    Ok(IoClaimDecision::Rejected)
+                } else {
+                    self.local_registry.publish_io_resolution_inner(
+                        completion.key,
+                        completion.claim_id,
+                        wire_outcome,
+                    )
+                };
                 if let Some(batch_id) = export_batch_id {
                     self.local_registry.finish_durable_export_batch(batch_id);
                 }
+                let publish = match publish {
+                    Ok(IoClaimDecision::Rejected) => {
+                        warn!("Coordinated I/O result was rejected, its claim was taken over");
+                        Err(io_claim_lost_error())
+                    }
+                    Ok(_) => Ok(()),
+                    Err(error) => Err(error),
+                };
                 if let Err(error) = publish {
                     for data_id in &exported_data_ids {
                         let _ = self
@@ -2597,7 +2746,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             // so delivery can resume after a worker or connection restart.
             let delivery_record = match &wire_outcome {
                 Ok(outputs) => {
-                    let record = completion_record(&completion.key, outputs);
+                    let record = completion_record(&completion.key, outputs, completion.claim_id);
                     match self
                         .local_registry
                         .append_io_completion_record(&record, recorder.clone())
@@ -2634,6 +2783,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             let url = self.io_url(completion.owner_node_id, "resolved")?;
             let request = IoResolvedWireRequest {
                 key: completion.key,
+                claim_id: completion.claim_id,
                 outputs: wire_outcome,
             };
             let body = match encode_io_resolved_request(&request) {
@@ -2644,9 +2794,12 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     ))
                 }
             };
-            loop {
+            let rejected = loop {
                 match self.client.post(&url).body(body.clone()).send().await {
-                    Ok(response) if response.status().is_success() => break,
+                    Ok(response) if response.status().is_success() => break false,
+                    Ok(response) if response.status() == reqwest::StatusCode::CONFLICT => {
+                        break true
+                    }
                     Ok(response) => warn!(
                         "Owner rejected coordinated I/O completion with {}, retrying",
                         response.status()
@@ -2657,9 +2810,21 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     ),
                 }
                 tokio::time::sleep(DURABLE_FETCH_RETRY_INTERVAL).await;
-            }
+            };
             if let Some(recorder) = recorder.as_mut() {
                 recorder.record(dandelion_commons::records::RecordPoint::IoResolvedDeliveryEnd);
+            }
+            if rejected {
+                warn!("Owner rejected coordinated I/O result, its claim was taken over");
+                if let Some(record) = delivery_record {
+                    self.local_registry
+                        .apply_io_completion_ack(
+                            &record.completion_key()?,
+                            IoCompletionDisposition::Delete,
+                        )
+                        .await?;
+                }
+                return Err(io_claim_lost_error());
             }
             if let Some(record) = delivery_record {
                 if let Some(recorder) = recorder.as_mut() {
@@ -2780,17 +2945,21 @@ async fn handle_io_resolved(
         Ok(request) => request,
         Err(error) => return bad_request(format!("Invalid I/O resolved message: {}", error)),
     };
-    // Durable log first so a restart can recover Completed instead of re-electing.
-    if let Ok(outputs) = &request.outputs {
-        if let Err(error) =
-            append_delivered_io_completion_record(&completion_record(&request.key, outputs)).await
-        {
-            return bad_request(format!("Failed to persist I/O completion: {}", error));
+    match export_registry
+        .commit_delivered_io_resolution(request.key, request.claim_id, request.outputs)
+        .await
+    {
+        Ok(IoClaimDecision::Accepted | IoClaimDecision::AlreadyCommitted) => {
+            Ok(Response::new(ExportedBody::from_bytes(Vec::new())))
         }
-    }
-    match export_registry.publish_io_resolution_inner(request.key, request.outputs) {
-        Ok(()) => Ok(Response::new(ExportedBody::from_bytes(Vec::new()))),
-        Err(error) => bad_request(error.to_string()),
+        Ok(IoClaimDecision::Rejected) => {
+            let mut response = Response::new(ExportedBody::new_error(
+                "I/O claim was taken over by another worker".to_string(),
+            ));
+            *response.status_mut() = StatusCode::CONFLICT;
+            Ok(response)
+        }
+        Err(error) => bad_request(format!("Failed to commit I/O completion: {}", error)),
     }
 }
 
@@ -3030,6 +3199,7 @@ mod checkpoint_tests {
             run_id: RunId::now_v7(),
             io_path: vec![3].into(),
             function: machine_interface::function_driver::functions::SystemFunction::HTTP,
+            claim_id: None,
             outputs: vec![IoCompletionOutputSet {
                 set_index: 0,
                 set_name: "headers".to_string(),
@@ -3338,10 +3508,11 @@ mod tests {
             .resolve_io(resolve_request.clone())
             .await
             .unwrap();
-        let (input_context, input_position) = match winner_resolution {
+        let (input_context, input_position, claim_id) = match winner_resolution {
             IoResolveOutcome::Execute {
                 input: Some(IoResolveInput::Inline { context, position }),
-            } => (context, position),
+                claim_id,
+            } => (context, position, claim_id),
             _ => panic!("first worker should execute with owner-local input bytes"),
         };
         assert_eq!(
@@ -3395,6 +3566,7 @@ mod tests {
                     context: output_context,
                 }]),
                 recorder: None,
+                claim_id: Some(claim_id),
             })
             .await
             .unwrap();
@@ -3432,12 +3604,13 @@ mod tests {
             data_id: 4,
             size: 21,
         };
-        assert!(matches!(
-            registry
-                .begin_io_resolution(key.clone(), 0, Some(original.clone()))
-                .unwrap(),
-            RegistryIoResolution::Execute(Some(data)) if data == original
-        ));
+        let claim_id = match registry
+            .begin_io_resolution(key.clone(), 0, Some(original.clone()))
+            .unwrap()
+        {
+            RegistryIoResolution::Execute(Some(data), claim_id) if data == original => claim_id,
+            _ => panic!("first resolve should execute with the original input"),
+        };
         let mut waiter = match registry.begin_io_resolution(key.clone(), 1, None).unwrap() {
             RegistryIoResolution::Wait(waiter) => waiter,
             _ => panic!("second resolve should wait"),
@@ -3446,6 +3619,7 @@ mod tests {
         registry
             .publish_io_resolution_inner(
                 key,
+                Some(claim_id),
                 Ok(vec![
                     IoRemoteRef {
                         node_id: 8,
@@ -3476,12 +3650,17 @@ mod tests {
             size: 29,
         };
         let responses = [
-            IoResolveWireResponse::Execute { input: None },
+            IoResolveWireResponse::Execute {
+                input: None,
+                claim_id: 1,
+            },
             IoResolveWireResponse::Execute {
                 input: Some(IoResolveWireInput::Inline(vec![0, 1, 2, 255])),
+                claim_id: 2,
             },
             IoResolveWireResponse::Execute {
                 input: Some(IoResolveWireInput::Remote(remote.clone())),
+                claim_id: 3,
             },
             IoResolveWireResponse::Completed {
                 data: remote.clone(),
@@ -3512,11 +3691,13 @@ mod tests {
 
         let resolved = IoResolvedWireRequest {
             key: coordination_key(),
+            claim_id: Some(4),
             outputs: Ok(vec![remote]),
         };
         let encoded = encode_io_resolved_request(&resolved).unwrap();
         let decoded = decode_io_resolved_request(&encoded).unwrap();
         assert_eq!(resolved.key, decoded.key);
+        assert_eq!(resolved.claim_id, decoded.claim_id);
         assert_eq!(resolved.outputs, decoded.outputs);
     }
 
@@ -3549,6 +3730,7 @@ mod tests {
         assert_eq!(
             IoResolveWireResponse::Execute {
                 input: Some(IoResolveWireInput::Inline(expected)),
+                claim_id: 1,
             },
             response
         );
@@ -3604,6 +3786,7 @@ mod tests {
         assert_eq!(
             IoResolveWireResponse::Execute {
                 input: Some(IoResolveWireInput::Remote(remote)),
+                claim_id: 1,
             },
             response
         );
@@ -3613,17 +3796,21 @@ mod tests {
     async fn io_failure_is_terminal_for_waiters_and_later_resolves() {
         let registry = ExportRegistry::new(1);
         let key = coordination_key();
-        assert!(matches!(
-            registry.begin_io_resolution(key.clone(), 0, None).unwrap(),
-            RegistryIoResolution::Execute(None)
-        ));
+        let claim_id = match registry.begin_io_resolution(key.clone(), 0, None).unwrap() {
+            RegistryIoResolution::Execute(None, claim_id) => claim_id,
+            _ => panic!("first resolve should execute"),
+        };
         let mut waiter = match registry.begin_io_resolution(key.clone(), 1, None).unwrap() {
             RegistryIoResolution::Wait(waiter) => waiter,
             _ => panic!("second resolve should wait"),
         };
 
         registry
-            .publish_io_resolution_inner(key.clone(), Err("same failure".to_string()))
+            .publish_io_resolution_inner(
+                key.clone(),
+                Some(claim_id),
+                Err("same failure".to_string()),
+            )
             .unwrap();
         waiter.changed().await.unwrap();
         assert_eq!(
@@ -3643,6 +3830,7 @@ mod tests {
         registry
             .publish_io_resolution_inner(
                 key.clone(),
+                None,
                 Ok(vec![IoRemoteRef {
                     node_id: 2,
                     data_id: 5,
@@ -3662,6 +3850,7 @@ mod tests {
         let registry = ExportRegistry::new(1);
         let key = coordination_key();
         let recovered_record = IoCompletionRecord {
+            claim_id: None,
             run_id: key.run_id,
             io_path: key.io_path.clone(),
             function: key.function,
@@ -3716,10 +3905,10 @@ mod tests {
     fn disconnected_waiter_does_not_block_completion() {
         let registry = ExportRegistry::new(1);
         let key = coordination_key();
-        assert!(matches!(
-            registry.begin_io_resolution(key.clone(), 0, None).unwrap(),
-            RegistryIoResolution::Execute(None)
-        ));
+        let claim_id = match registry.begin_io_resolution(key.clone(), 0, None).unwrap() {
+            RegistryIoResolution::Execute(None, claim_id) => claim_id,
+            _ => panic!("first resolve should execute"),
+        };
         let waiter = registry.begin_io_resolution(key.clone(), 1, None).unwrap();
         assert!(matches!(waiter, RegistryIoResolution::Wait(_)));
         drop(waiter);
@@ -3727,6 +3916,7 @@ mod tests {
         registry
             .publish_io_resolution_inner(
                 key.clone(),
+                Some(claim_id),
                 Ok(vec![
                     IoRemoteRef {
                         node_id: 4,
@@ -3755,7 +3945,7 @@ mod tests {
             registry
                 .begin_io_resolution_from_node(key.clone(), 0, 2, 1, None)
                 .unwrap(),
-            RegistryIoResolution::Execute(None)
+            RegistryIoResolution::Execute(None, _)
         ));
         let mut old_waiter = match registry
             .begin_io_resolution_from_node(key.clone(), 0, 3, 1, None)
@@ -3775,7 +3965,7 @@ mod tests {
             registry
                 .begin_io_resolution_from_node(key.clone(), 0, 3, 1, None)
                 .unwrap(),
-            RegistryIoResolution::Execute(None)
+            RegistryIoResolution::Execute(None, _)
         ));
         assert!(matches!(
             registry
@@ -3807,10 +3997,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(
-            registry.begin_io_resolution(key.clone(), 0, None).unwrap(),
-            RegistryIoResolution::Execute(None)
-        ));
+        let claim_id = match registry.begin_io_resolution(key.clone(), 0, None).unwrap() {
+            RegistryIoResolution::Execute(None, claim_id) => claim_id,
+            _ => panic!("first resolve should execute"),
+        };
 
         let expected = b"durable synchronous IO output".to_vec();
         let output = IoCompletedOutput {
@@ -3839,6 +4029,7 @@ mod tests {
                 recorder: Some(recorder.clone()),
                 #[cfg(not(feature = "timestamp"))]
                 recorder: None,
+                claim_id: Some(claim_id),
             })
             .await
             .unwrap();
@@ -3908,7 +4099,10 @@ mod tests {
             .unwrap();
         let client = HttpRemoteDataClient::new(BTreeMap::new(), registry.clone());
         let key = coordination_key();
-        registry.begin_io_resolution(key.clone(), 0, None).unwrap();
+        let claim_id = match registry.begin_io_resolution(key.clone(), 0, None).unwrap() {
+            RegistryIoResolution::Execute(None, claim_id) => claim_id,
+            _ => panic!("first resolve should execute"),
+        };
 
         let bytes = b"temporary coordinated output".to_vec();
         client
@@ -3927,6 +4121,7 @@ mod tests {
                     context: Arc::new(ReadOnlyContext::from_boxed(bytes.into_boxed_slice()).unwrap()),
                 }]),
                 recorder: None,
+                claim_id: Some(claim_id),
             })
             .await
             .unwrap();
@@ -3987,7 +4182,7 @@ mod tests {
             .await
             .unwrap();
         assert!(registry
-            .publish_io_resolution_inner(key, Ok(Vec::new()))
+            .publish_io_resolution_inner(key, None, Ok(Vec::new()))
             .is_err());
         assert!(data_ids
             .iter()
