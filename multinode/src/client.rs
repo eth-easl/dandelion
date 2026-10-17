@@ -595,11 +595,16 @@ async fn remote_queue_server_logic(
                                 }
                             };
                             #[cfg(feature = "exactly-once")]
-                            let accepted =
-                                export_registry.accept_io_completion_delivery(&record).await;
+                            let disposition =
+                                match export_registry.accept_io_completion_delivery(&record).await {
+                                    Ok(disposition) => disposition,
+                                    Err(err) => {
+                                        error!("Failed to persist worker IO completion: {}", err);
+                                        continue;
+                                    }
+                                };
                             #[cfg(not(feature = "exactly-once"))]
-                            let accepted = machine_interface::function_driver::system_driver::recovery_log::accept_delivered_io_completion_record(&record).await;
-                            let disposition = match accepted {
+                            let disposition = match machine_interface::function_driver::system_driver::recovery_log::accept_delivered_io_completion_record(&record).await {
                                 Ok(disposition) => disposition,
                                 Err(err) => {
                                     error!("Failed to persist worker IO completion: {}", err);
