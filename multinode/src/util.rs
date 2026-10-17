@@ -164,6 +164,23 @@ pub(crate) fn system_function_ptod(proto_function: i32) -> DandelionResult<Syste
     }
 }
 
+#[cfg(feature = "at-least-once")]
+pub(crate) fn io_path_dtop(
+    path: &machine_interface::function_driver::system_driver::IoPath,
+) -> Vec<u64> {
+    path.indices().iter().map(|&index| index as u64).collect()
+}
+
+#[cfg(feature = "at-least-once")]
+pub(crate) fn io_path_ptod(
+    path: Vec<u64>,
+) -> machine_interface::function_driver::system_driver::IoPath {
+    path.into_iter()
+        .map(|index| index as usize)
+        .collect::<Vec<_>>()
+        .into()
+}
+
 pub(crate) fn system_function_dtop(
     dandelion_function: &SystemFunction,
 ) -> DandelionResult<proto::SystemFunction> {
@@ -220,7 +237,7 @@ fn try_item_data_dtop(
                     function: system_function_dtop(&function)? as i32,
                     data: Some(Box::new(data)),
                     run_id: String::new(),
-                    composition_set_id: 0,
+                    io_path: Vec::new(),
                     item_identifier: String::new(),
                     item_key: 0,
                     original_size: original_position.size as u64,
@@ -253,7 +270,7 @@ fn try_item_data_dtop(
                         function: system_function_dtop(&function)? as i32,
                         data: Some(Box::new(data)),
                         run_id: coordination.run_id.to_string(),
-                        composition_set_id: coordination.composition_set_id as u64,
+                        io_path: io_path_dtop(&coordination.io_path),
                         item_identifier: coordination.item_identifier,
                         item_key: coordination.item_key,
                         original_size: original_position.size as u64,
@@ -314,7 +331,7 @@ fn item_data_and_ref(
                         function: system_function_dtop(function).unwrap() as i32,
                         data: Some(Box::new(data)),
                         run_id: String::new(),
-                        composition_set_id: 0,
+                        io_path: Vec::new(),
                         item_identifier: String::new(),
                         item_key: 0,
                         original_size: original_position.size as u64,
@@ -351,7 +368,7 @@ fn item_data_and_ref(
                             function: system_function_dtop(function).unwrap() as i32,
                             data: Some(Box::new(data)),
                             run_id: coordination.run_id.to_string(),
-                            composition_set_id: coordination.composition_set_id as u64,
+                            io_path: io_path_dtop(&coordination.io_path),
                             item_identifier: coordination.item_identifier.clone(),
                             item_key: coordination.item_key,
                             original_size: original_position.size as u64,
@@ -407,7 +424,7 @@ fn item_data_ptod(
                 set_index,
                 data: input_data,
                 run_id: _,
-                composition_set_id: _,
+                io_path: _,
                 item_identifier: _,
                 item_key: _,
                 original_size,
@@ -436,7 +453,7 @@ fn item_data_ptod(
                 set_index,
                 data: input_data,
                 run_id,
-                composition_set_id,
+                io_path,
                 item_identifier,
                 item_key,
                 original_size,
@@ -449,7 +466,7 @@ fn item_data_ptod(
                             machine_interface::function_driver::system_driver::IoCoordination {
                                 run_id: dandelion_commons::RunId::parse_str(&run_id)
                                     .expect("Serialized run id should be a valid UUID"),
-                                composition_set_id: composition_set_id as usize,
+                                io_path: io_path_ptod(io_path),
                                 item_identifier,
                                 item_key,
                                 owner_node_id: Some(owner_node_id),

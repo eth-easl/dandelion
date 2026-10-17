@@ -27,7 +27,7 @@ message IoData {
     ItemData data = 3;
     // Stable identity and ownership metadata for lazy I/O coordination and recovery.
     string run_id = 4;
-    uint64 composition_set_id = 5;
+    repeated uint64 io_path = 5;
     string item_identifier = 6;
     uint64 item_key = 7;
     uint64 original_size = 8;
@@ -124,7 +124,7 @@ message IoCompletionDelivery {
 
 message IoCompletionAcknowledgement {
     string run_id = 1;
-    uint64 composition_set_id = 2;
+    repeated uint64 io_path = 2;
     string function = 3;
     string identifier = 4;
     uint64 item_key = 5;
@@ -134,7 +134,7 @@ message IoCompletionAcknowledgement {
 
 message IoCoordinationKey {
     string run_id = 1;
-    uint64 composition_set_id = 2;
+    repeated uint64 io_path = 2;
     SystemFunction function = 3;
     string identifier = 4;
     uint64 item_key = 5;

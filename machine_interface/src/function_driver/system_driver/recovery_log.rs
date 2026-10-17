@@ -19,7 +19,8 @@ use tokio::sync::{mpsc, oneshot};
 
 #[cfg(feature = "at-least-once")]
 use crate::{
-    composition::RemoteData, function_driver::functions::SystemFunction,
+    composition::RemoteData,
+    function_driver::{functions::SystemFunction, system_driver::IoPath},
     memory_domain::read_only::ReadOnlyContext,
 };
 
@@ -43,9 +44,7 @@ static RECOVERED_IO_OUTPUTS: OnceLock<
 #[derive(Debug, Clone)]
 pub struct IoCompletionRecord {
     pub run_id: RunId,
-    /// Composition output-set id, shifted by the nested call's offset, so it identifies the IO
-    /// function uniquely within a run_id scope (including nested compositions).
-    pub composition_set_id: usize,
+    pub io_path: IoPath,
     pub function: SystemFunction,
     pub outputs: Vec<IoCompletionOutputSet>,
 }
@@ -68,7 +67,7 @@ struct LocalCompletionCommitRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IoCompletionKey {
     pub run_id: RunId,
-    pub composition_set_id: usize,
+    pub io_path: IoPath,
     pub function: SystemFunction,
     pub identifier: String,
     pub item_key: u64,
@@ -89,7 +88,7 @@ impl IoCompletionRecord {
         }
         Ok(IoCompletionKey {
             run_id: self.run_id,
-            composition_set_id: self.composition_set_id,
+            io_path: self.io_path.clone(),
             function: self.function,
             identifier: first.identifier.clone(),
             item_key: first.key,
@@ -137,7 +136,7 @@ pub enum RecoveredIoOutput {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RecoveredIoKey {
     run_id: RunId,
-    composition_set_id: usize,
+    io_path: IoPath,
 }
 
 #[cfg(feature = "at-least-once")]
@@ -518,14 +517,12 @@ pub fn parse_io_completion_line(line: &str) -> DandelionResult<Option<IoCompleti
             RunId::parse_str(raw)
                 .map_err(|_| internal_error("Invalid run_id in IO completion record"))
         })?;
-    let composition_set_id = fields
-        .get("composition_set_id")
+    let io_path = fields
+        .get("io_path")
         .copied()
-        .ok_or(internal_error(
-            "Missing composition_set_id field in IO completion record",
-        ))?
-        .parse::<usize>()
-        .map_err(|_| internal_error("Invalid composition_set_id in IO completion record"))?;
+        .ok_or(internal_error("Missing io_path field in IO completion record"))?
+        .parse::<IoPath>()
+        .map_err(|_| internal_error("Invalid io_path in IO completion record"))?;
     let function = SystemFunction::from(fields.get("function").copied().ok_or(internal_error(
         "Missing function field in IO completion record",
     ))?);
@@ -534,7 +531,7 @@ pub fn parse_io_completion_line(line: &str) -> DandelionResult<Option<IoCompleti
     )?)?;
     Ok(Some(IoCompletionRecord {
         run_id,
-        composition_set_id,
+        io_path,
         function,
         outputs,
     }))
@@ -631,7 +628,7 @@ mod cleanup_tests {
     fn completion(run_id: RunId, data_id: u64) -> IoCompletionRecord {
         IoCompletionRecord {
             run_id,
-            composition_set_id: 3,
+            io_path: IoPath::from(vec![3]),
             function: SystemFunction::HTTP,
             outputs: vec![IoCompletionOutputSet {
                 set_index: 0,
@@ -663,7 +660,7 @@ mod cleanup_tests {
         };
         let records = vec![IoCompletionRecord {
             run_id,
-            composition_set_id: 3,
+            io_path: IoPath::from(vec![3]),
             function: SystemFunction::HTTP,
             outputs: vec![
                 IoCompletionOutputSet {
@@ -876,7 +873,7 @@ pub fn install_recovered_io_records(
         let recovery_entry = recovered_outputs
             .entry(RecoveredIoKey {
                 run_id,
-                composition_set_id: record.composition_set_id,
+                io_path: record.io_path,
             })
             .or_default();
 
@@ -914,7 +911,7 @@ pub fn install_recovered_io_records(
 pub fn recovered_io_item_locations(
     run_id: RunId,
     function: SystemFunction,
-    composition_set_id: usize,
+    io_path: &IoPath,
     output_count: usize,
     identifier: &str,
     key: u64,
@@ -925,7 +922,7 @@ pub fn recovered_io_item_locations(
 
     let recovery_entry = recovered_outputs.get(&RecoveredIoKey {
         run_id,
-        composition_set_id,
+        io_path: io_path.clone(),
     })?;
     let item_outputs = recovery_entry.get(&RecoveredIoItemKey {
         function,
@@ -943,7 +940,7 @@ pub fn recovered_io_item_locations(
 pub fn recovered_io_item_location(
     run_id: RunId,
     function: SystemFunction,
-    composition_set_id: usize,
+    io_path: &IoPath,
     set_index: usize,
     identifier: &str,
     key: u64,
@@ -954,7 +951,7 @@ pub fn recovered_io_item_location(
     recovered_outputs
         .get(&RecoveredIoKey {
             run_id,
-            composition_set_id,
+            io_path: io_path.clone(),
         })?
         .get(&RecoveredIoItemKey {
             function,
@@ -1166,8 +1163,8 @@ pub fn format_io_completion_line(record: &IoCompletionRecord) -> DandelionResult
 #[cfg(feature = "at-least-once")]
 fn io_completion_line(record: &IoCompletionRecord, payload_b64: &str) -> String {
     format!(
-        "event=io_function_completed run_id={} composition_set_id={} function={} payload_b64={}\n",
-        record.run_id, record.composition_set_id, record.function, payload_b64
+        "event=io_function_completed run_id={} io_path={} function={} payload_b64={}\n",
+        record.run_id, record.io_path, record.function, payload_b64
     )
 }
 

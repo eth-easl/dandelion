@@ -621,8 +621,9 @@ async fn remote_queue_server_logic(
                                 .send(queue_message::QueueMessage::IoCompletionAck(
                                     IoCompletionAcknowledgement {
                                         run_id: completion_key.run_id.to_string(),
-                                        composition_set_id: completion_key.composition_set_id
-                                            as u64,
+                                        io_path: crate::util::io_path_dtop(
+                                            &completion_key.io_path,
+                                        ),
                                         function: completion_key.function.to_string(),
                                         identifier: completion_key.identifier,
                                         item_key: completion_key.item_key,
@@ -1084,7 +1085,6 @@ async fn dispatcher_call(
                 caching,
                 UncoordinatedIo,
                 recorder,
-                None,
             )
             .await
     };
@@ -1453,17 +1453,7 @@ async fn remote_queue_client_logic(
                                     break;
                                 }
                             };
-                            let composition_set_id = match usize::try_from(
-                                acknowledgement.composition_set_id,
-                            ) {
-                                Ok(composition_set_id) => composition_set_id,
-                                Err(_) => {
-                                    error!(
-                                        "Owner sent an IO completion acknowledgement with an invalid composition set id"
-                                    );
-                                    break;
-                                }
-                            };
+                            let io_path = crate::util::io_path_ptod(acknowledgement.io_path);
                             let function = match acknowledgement.function.as_str() {
                                 "HTTP" => SystemFunction::HTTP,
                                 "MEMCACHED" => SystemFunction::MEMCACHED,
@@ -1476,7 +1466,7 @@ async fn remote_queue_client_logic(
                             };
                             let completion_key = IoCompletionKey {
                                 run_id,
-                                composition_set_id,
+                                io_path,
                                 function,
                                 identifier: acknowledgement.identifier,
                                 item_key: acknowledgement.item_key,

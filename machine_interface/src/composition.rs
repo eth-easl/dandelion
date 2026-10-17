@@ -361,7 +361,7 @@ pub trait RemoteDataClient: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct IoCoordinationKey {
     pub run_id: dandelion_commons::RunId,
-    pub composition_set_id: usize,
+    pub io_path: crate::function_driver::system_driver::IoPath,
     pub function: SystemFunction,
     pub identifier: String,
     pub item_key: u64,

@@ -126,7 +126,6 @@ pub fn single_input_fixed(
                 false,
                 UncoordinatedIo,
                 recorder,
-                None,
             ));
         recorder = Recorder::new(
             dandelion_commons::RunId::nil(),
@@ -143,7 +142,6 @@ pub fn single_input_fixed(
                 false,
                 UncoordinatedIo,
                 recorder,
-                None,
             ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
@@ -265,7 +263,6 @@ pub fn multiple_input_fixed(
                 false,
                 UncoordinatedIo,
                 recorder,
-                None,
             ));
         recorder = Recorder::new(
             dandelion_commons::RunId::nil(),
@@ -282,7 +279,6 @@ pub fn multiple_input_fixed(
                 false,
                 UncoordinatedIo,
                 recorder,
-                None,
             ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,

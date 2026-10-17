@@ -41,7 +41,6 @@ pub fn single_domain_and_engine_basic(
             false,
             UncoordinatedIo,
             recorder,
-            None,
         ));
     match result {
         Ok(_) => (),
@@ -95,7 +94,6 @@ pub fn single_domain_and_engine_matmul(
             false,
             UncoordinatedIo,
             recorder,
-            None,
         ));
     let out_sets = match result {
         Ok(context) => context,

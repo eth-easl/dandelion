@@ -530,7 +530,7 @@ async fn resolve_checkpointed_io_item(
     } = request;
     let IoCoordination {
         run_id,
-        composition_set_id,
+        io_path,
         item_identifier,
         item_key,
         owner_node_id,
@@ -558,7 +558,7 @@ async fn resolve_checkpointed_io_item(
             owner_node_id,
             key: IoCoordinationKey {
                 run_id,
-                composition_set_id,
+                io_path,
                 function,
                 identifier: item_identifier.clone(),
                 item_key,
@@ -628,7 +628,7 @@ async fn resolve_io_item_exactly_once(
     } = request;
     let IoCoordination {
         run_id,
-        composition_set_id,
+        io_path,
         item_identifier,
         item_key,
         owner_node_id,
@@ -637,7 +637,7 @@ async fn resolve_io_item_exactly_once(
     let remote_client = crate::composition::get_remote_data_client().ok();
     let coordination_key = IoCoordinationKey {
         run_id,
-        composition_set_id,
+        io_path,
         function,
         identifier: item_identifier.clone(),
         item_key,

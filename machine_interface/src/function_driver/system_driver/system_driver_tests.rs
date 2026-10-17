@@ -93,7 +93,6 @@ fn get_http(
         SystemFunction::HTTP,
         CompositionSet::from_context(input_context),
         UncoordinatedIo,
-        0,
         test_recorder(),
     )
     .unwrap();
@@ -165,7 +164,6 @@ dolore magna aliquyam erat, sed diam voluptua."#,
         SystemFunction::HTTP,
         CompositionSet::from_context(input_context),
         UncoordinatedIo,
-        0,
         test_recorder(),
     )
     .unwrap();

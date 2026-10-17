@@ -78,10 +78,67 @@ pub struct IoData {
 }
 
 #[cfg(feature = "at-least-once")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(from = "Vec<usize>", into = "Vec<usize>")]
+pub struct IoPath(Arc<[usize]>);
+
+#[cfg(feature = "at-least-once")]
+impl IoPath {
+    pub fn child(&self, index: usize) -> Self {
+        Self(self.0.iter().copied().chain([index]).collect())
+    }
+
+    pub fn indices(&self) -> &[usize] {
+        &self.0
+    }
+}
+
+#[cfg(feature = "at-least-once")]
+impl From<Vec<usize>> for IoPath {
+    fn from(indices: Vec<usize>) -> Self {
+        Self(indices.into())
+    }
+}
+
+#[cfg(feature = "at-least-once")]
+impl From<IoPath> for Vec<usize> {
+    fn from(path: IoPath) -> Self {
+        path.0.to_vec()
+    }
+}
+
+#[cfg(feature = "at-least-once")]
+impl std::fmt::Display for IoPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            return write!(f, "/");
+        }
+        for index in self.0.iter() {
+            write!(f, "/{}", index)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "at-least-once")]
+impl std::str::FromStr for IoPath {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        raw.split('/')
+            .skip(1)
+            .filter(|segment| !segment.is_empty())
+            .map(str::parse)
+            .collect::<Result<Vec<usize>, _>>()
+            .map(Self::from)
+    }
+}
+
+#[cfg(feature = "at-least-once")]
 #[derive(Debug, Clone)]
 pub struct IoCoordination {
     pub run_id: RunId,
-    pub composition_set_id: usize,
+    pub io_path: IoPath,
     pub item_identifier: String,
     pub item_key: u64,
     /// Filled when the lazy reference crosses a node boundary; `None` means the current node owns
@@ -96,34 +153,21 @@ pub struct CoordinatedIoData {
     pub request: IoData,
 }
 
-pub trait IoReferencePolicy: Copy {
-    const NEEDS_COMPOSITION_NAMESPACE: bool = false;
-
-    /// Enter a nested call's deterministic range of composition set IDs.
-    fn nested(self, _offset: usize) -> Self {
-        self
+pub trait IoReferencePolicy: Clone {
+    fn nested(&self, _index: usize) -> Self {
+        self.clone()
     }
 
     /// Returns the lazy/reference data and, when recovery substituted a completed output, its
     /// restored item size.
-    fn wrap(
-        self,
-        request: IoData,
-        item: &DataItem,
-        composition_set_id: usize,
-    ) -> (ItemData, Option<usize>);
+    fn wrap(&self, request: IoData, item: &DataItem) -> (ItemData, Option<usize>);
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct UncoordinatedIo;
 
 impl IoReferencePolicy for UncoordinatedIo {
-    fn wrap(
-        self,
-        request: IoData,
-        _item: &DataItem,
-        _composition_set_id: usize,
-    ) -> (ItemData, Option<usize>) {
+    fn wrap(&self, request: IoData, _item: &DataItem) -> (ItemData, Option<usize>) {
         (ItemData::IoData(request), None)
     }
 }
@@ -137,10 +181,10 @@ pub fn async_io_policy(_run_id: RunId) -> AsyncIoPolicy {
 }
 
 #[cfg(feature = "at-least-once")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RecoverableIo {
     pub run_id: RunId,
-    composition_offset: usize,
+    io_path: IoPath,
 }
 
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
@@ -150,39 +194,25 @@ pub type AsyncIoPolicy = RecoverableIo;
 pub fn async_io_policy(run_id: RunId) -> AsyncIoPolicy {
     RecoverableIo {
         run_id,
-        composition_offset: 0,
+        io_path: IoPath::default(),
     }
 }
 
 #[cfg(feature = "at-least-once")]
 impl IoReferencePolicy for RecoverableIo {
-    const NEEDS_COMPOSITION_NAMESPACE: bool = true;
-
-    fn nested(self, offset: usize) -> Self {
+    fn nested(&self, index: usize) -> Self {
         Self {
-            composition_offset: self
-                .composition_offset
-                .checked_add(offset)
-                .expect("Composition I/O namespace exhausted"),
-            ..self
+            run_id: self.run_id,
+            io_path: self.io_path.child(index),
         }
     }
 
-    fn wrap(
-        self,
-        request: IoData,
-        item: &DataItem,
-        composition_set_id: usize,
-    ) -> (ItemData, Option<usize>) {
-        let composition_set_id = self
-            .composition_offset
-            .checked_add(composition_set_id)
-            .expect("Composition I/O namespace exhausted");
+    fn wrap(&self, request: IoData, item: &DataItem) -> (ItemData, Option<usize>) {
         #[cfg(not(feature = "exactly-once"))]
         if let Some(output) = recovery_log::recovered_io_item_location(
             self.run_id,
             request.function,
-            composition_set_id,
+            &self.io_path,
             request.set_index,
             &item.ident,
             item.key.into(),
@@ -201,7 +231,7 @@ impl IoReferencePolicy for RecoverableIo {
             ItemData::CoordinatedIoData(CoordinatedIoData {
                 coordination: IoCoordination {
                     run_id: self.run_id,
-                    composition_set_id,
+                    io_path: self.io_path.clone(),
                     item_identifier: item.ident.clone(),
                     item_key: item.key.into(),
                     owner_node_id: None,
@@ -221,7 +251,6 @@ pub fn convert_to_references<P: IoReferencePolicy>(
     function: SystemFunction,
     mut inputs: Vec<Option<CompositionSet>>,
     io_policy: P,
-    composition_set_id: usize,
     _recorder: Recorder,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
     // check that the function id contains string correcpsonding to system function
@@ -265,7 +294,6 @@ pub fn convert_to_references<P: IoReferencePolicy>(
                         set_index,
                     },
                     &item,
-                    composition_set_id,
                 );
                 items.push((
                     DataItem {

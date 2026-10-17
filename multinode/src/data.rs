@@ -182,8 +182,7 @@ fn proto_coordination_key(
 ) -> Result<crate::proto::IoCoordinationKey, String> {
     Ok(crate::proto::IoCoordinationKey {
         run_id: key.run_id.to_string(),
-        composition_set_id: u64::try_from(key.composition_set_id)
-            .map_err(|_| "I/O coordination composition_set_id does not fit u64".to_string())?,
+        io_path: crate::util::io_path_dtop(&key.io_path),
         function: crate::util::system_function_dtop(&key.function)
             .map_err(|error| error.to_string())? as i32,
         identifier: key.identifier.clone(),
@@ -207,8 +206,7 @@ fn coordination_key_from_proto(
     Ok(IoCoordinationKey {
         run_id: dandelion_commons::RunId::parse_str(&key.run_id)
             .map_err(|error| format!("Invalid I/O run id: {}", error))?,
-        composition_set_id: usize::try_from(key.composition_set_id)
-            .map_err(|_| "I/O coordination composition_set_id does not fit usize".to_string())?,
+        io_path: crate::util::io_path_ptod(key.io_path),
         function,
         identifier: key.identifier,
         item_key: key.item_key,
@@ -413,7 +411,7 @@ fn completion_record(key: &IoCoordinationKey, outputs: &[IoRemoteRef]) -> IoComp
     let set_names = get_system_function_output_sets(key.function);
     IoCompletionRecord {
         run_id: key.run_id,
-        composition_set_id: key.composition_set_id,
+        io_path: key.io_path.clone(),
         function: key.function,
         outputs: outputs
             .iter()
@@ -1014,7 +1012,7 @@ impl ExportRegistry {
         let recovered = recovered_io_item_locations(
             key.run_id,
             key.function,
-            key.composition_set_id,
+            &key.io_path,
             output_count,
             &key.identifier,
             key.item_key,
@@ -1157,7 +1155,7 @@ impl ExportRegistry {
         let key = record.completion_key()?;
         let coordination_key = IoCoordinationKey {
             run_id: key.run_id,
-            composition_set_id: key.composition_set_id,
+            io_path: key.io_path,
             function: key.function,
             identifier: key.identifier,
             item_key: key.item_key,
@@ -2917,7 +2915,7 @@ mod checkpoint_tests {
             .unwrap();
         let record = IoCompletionRecord {
             run_id: RunId::now_v7(),
-            composition_set_id: 3,
+            io_path: vec![3].into(),
             function: machine_interface::function_driver::functions::SystemFunction::HTTP,
             outputs: vec![IoCompletionOutputSet {
                 set_index: 0,
@@ -3174,7 +3172,7 @@ mod tests {
     fn coordination_key() -> IoCoordinationKey {
         IoCoordinationKey {
             run_id: RunId::now_v7(),
-            composition_set_id: 17,
+            io_path: vec![17].into(),
             function: machine_interface::function_driver::functions::SystemFunction::HTTP,
             identifier: "request".to_string(),
             item_key: 3,
@@ -3550,7 +3548,7 @@ mod tests {
         let key = coordination_key();
         let recovered_record = IoCompletionRecord {
             run_id: key.run_id,
-            composition_set_id: key.composition_set_id,
+            io_path: key.io_path.clone(),
             function: key.function,
             outputs: vec![
                 IoCompletionOutputSet {
