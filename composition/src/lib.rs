@@ -28,6 +28,8 @@ pub trait Registry {
     fn id_exists(&self, id: &str) -> bool;
     /// Get min_set_bytes for a function.
     fn get_min_set_bytes(&self, id: &FunctionId) -> DandelionResult<Vec<usize>>;
+    /// Number of input and output sets of a registered composition, None if `id` is not a composition.
+    fn composition_signature(&self, id: &str) -> Option<(usize, usize)>;
 }
 
 /// Functions from the queue side required to execute compositions.
@@ -37,6 +39,7 @@ pub trait Executor {
         &mut self,
         function_id: FunctionId,
         composition_idx: usize,
+        expansion: Option<Arc<ExpansionTemplate>>,
         inv_input_iter: T,
     );
 }
@@ -49,11 +52,23 @@ pub(crate) struct InputSetTemplate {
 }
 
 #[derive(Debug)]
+pub enum ExpandSource { Output(usize), Forwarded(usize) }
+
+#[derive(Debug)]
+pub struct ExpansionTemplate {
+    /// target composition params, in order
+    pub sources: Vec<ExpandSource>,
+    /// None here means: we can expand into any composition with a matching signature
+    pub targets: Option<Vec<FunctionId>>,
+}
+
+#[derive(Debug)]
 pub(crate) struct FunctionTemplate {
     id: FunctionId,
     params: Vec<Option<InputSetTemplate>>,
     join_order: Arc<Vec<usize>>,
     returns: Vec<Option<usize>>,
+    expansion: Option<Arc<ExpansionTemplate>>
 }
 
 #[derive(Debug)]
@@ -86,6 +101,15 @@ impl CompositionTemplate {
             )))
         })
     }
+
+    pub fn num_params(&self) -> usize {
+        self.params.len()
+    }
+    
+    pub fn num_returns(&self) -> usize {
+        self.returns.len()
+    }
+    
 
     pub fn num_functions(&self) -> usize {
         self.functions.len()
@@ -128,7 +152,7 @@ impl Composition {
 
         let mut functions = Vec::with_capacity(template.functions.len());
         for (i, f) in template.functions.iter().enumerate() {
-            let mut function = Function::new(i, f.id.clone(), f.join_order.clone());
+            let mut function = Function::new(i, f.id.clone(), f.join_order.clone(), f.expansion.clone());
             let mut inputs = Vec::with_capacity(f.params.len());
             for in_opt in f.params.iter() {
                 if let Some(in_templ) = in_opt {

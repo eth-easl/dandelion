@@ -27,6 +27,10 @@ impl Registry for NoRegistry {
     fn get_min_set_bytes(&self, _id: &FunctionId) -> DandelionResult<Vec<usize>> {
         Ok(Vec::new())
     }
+    
+    fn composition_signature(&self, _id: &str) -> Option<(usize, usize)> {
+        None
+    }
 }
 
 fn main() {

@@ -49,10 +49,37 @@ fn ident<'src>(
 }
 
 #[derive(Debug)]
+struct ExpansionDecl<'src> {
+    /// input sets of the expansion target, in order
+    sets: Vec<Ident<'src>>,
+    /// allowed targets, None if any composition with a matching signature is allowed
+    targets: Option<Vec<Spanned<Ident<'src>>>>,
+}
+
+impl<'src> FunctionDecl<'src> {
+    /// Names an application can bind: the function's own params, followed by the sets that are
+    /// forwarded to the expansion without passing through the function.
+    fn application_params(&self) -> Vec<Ident<'src>> {
+        let mut params = self.params.clone();
+        if let Some(expansion) = &self.expansion {
+            params.extend(
+                expansion
+                    .sets
+                    .iter()
+                    .filter(|set| !self.returns.contains(set))
+                    .copied(),
+            );
+        }
+        params
+    }
+}
+
+#[derive(Debug)]
 struct FunctionDecl<'src> {
     name: Ident<'src>,
     params: Vec<Ident<'src>>,
     returns: Vec<Ident<'src>>,
+    expansion: Option<ExpansionDecl<'src>>
 }
 type SpannedFunctionDecl<'src> = Spanned<FunctionDecl<'src>>;
 
@@ -140,6 +167,29 @@ pub(crate) struct Parser<'src, R: Registry> {
 
 impl<'src, R: Registry> Parser<'src, R> {
     pub(crate) fn new(registry: &'src R) -> Self {
+        // expands (...) [into (...)]
+        let expansion = just("expands")
+            .padded_by(pad())
+            .ignore_then(
+                ident()
+                .padded_by(pad())
+                .separated_by(just(','))
+                .collect::<Vec<_>>()
+                .delimited_by(just('(').padded_by(pad()), just(')').padded_by(pad()))
+            )
+            .then(
+                just("into")
+                    .padded_by(pad())
+                    .ignore_then(ident()
+                        .map_with(|v, e| Spanned::new(v, e.span().into_range()))
+                        .padded_by(pad())
+                        .separated_by(just(','))
+                        .collect::<Vec<_>>()
+                        .delimited_by(just('(').padded_by(pad()), just(')').padded_by(pad())))
+                    .or_not(),
+            )
+            .map(|(sets, targets)| ExpansionDecl { sets, targets });
+
         let function_decl = just("function")
             .padded_by(pad())
             .ignore_then(ident().padded_by(pad()))
@@ -158,11 +208,13 @@ impl<'src, R: Registry> Parser<'src, R> {
                     .collect::<Vec<_>>()
                     .delimited_by(just('('), just(')')),
             )
+            .then(expansion.or_not())
             .then_ignore(just(";").padded_by(pad()))
-            .map(|((name, params), returns)| FunctionDecl {
+            .map(|(((name, params), returns), expansion)| FunctionDecl {
                 name,
                 params,
                 returns,
+                expansion
             })
             .map_with(|v, e| Spanned::new(v, e.span().into_range()));
 
@@ -342,6 +394,9 @@ impl<'src, R: Registry> Parser<'src, R> {
                 }
             }
         }
+        // check if all expansion types
+        builder.check_expansion_targets().map_err(|e| vec![e])?;
+
         Ok(builder.collect())
     }
 }

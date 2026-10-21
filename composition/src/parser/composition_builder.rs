@@ -1,19 +1,19 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
-    sync::Arc,
+    collections::{HashMap, HashSet, hash_map::Entry}, sync::Arc, vec,
 };
 
 use dandelion_commons::{dandelion_err, CompositionError, DandelionError, FunctionId};
 use memory::data::Metadata;
 
 use crate::{
-    parser::{
+    CompositionTemplate, ExpandSource, ExpansionTemplate, FunctionTemplate, InputSetTemplate, parser::{
         ErrorDiagnostic, FunctionDecl, Registry, Span, SpannedCompositionDecl,
         SpannedFunctionApplication, SpannedFunctionDecl, Statement,
-    },
-    sharding::{JoinStrategy, Sharding},
-    CompositionTemplate, FunctionTemplate, InputSetTemplate,
+    }, sharding::{JoinStrategy, Sharding},
 };
+
+/// the set name of the special expand set
+const EXPAND_SET: &str = "__expand";
 
 /// Builds the compositions from the parser outputs validating them and building the correct join
 /// orders required by the JoinIterators (that compute the shardings) in the process.
@@ -22,6 +22,9 @@ pub(super) struct CompositionBuilder<'src, R: Registry> {
     declared_functions: HashMap<&'src str, &'src FunctionDecl<'src>>,
     composition_ids: HashSet<&'src str>,
     compositions: Vec<(FunctionId, CompositionTemplate, Metadata)>,
+    /// declarations with an `into` list, checked once all compositions of the module are known
+    expansion_decls: Vec<&'src SpannedFunctionDecl<'src>>,
+
 }
 
 impl<'src, R: Registry> CompositionBuilder<'src, R> {
@@ -31,6 +34,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             declared_functions: HashMap::new(),
             composition_ids: HashSet::new(),
             compositions: Vec::new(),
+            expansion_decls: Vec::new(),
         }
     }
 
@@ -38,10 +42,73 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         &mut self,
         decl: &'src SpannedFunctionDecl<'src>,
     ) -> Result<(), ErrorDiagnostic> {
+        // helper function for a composition error due to invalid function decl
+        let invalid = |msg: String| {
+            ErrorDiagnostic::new(
+                decl.span.clone(),
+                dandelion_err!(DandelionError::Composition(
+                    CompositionError::InvalidFunctionDeclaration(msg)
+                )),
+            )
+        };
+        
+        // set names starting with "__" are reserved for the system, e.g. the __expand set
+        if let Some(name) = decl
+            .v
+            .params
+            .iter()
+            .chain(decl.v.returns.iter())
+            .find(|name| name.starts_with("__"))
+        {
+            return Err(invalid(format!(
+                "Set name '{}' in declaration of {} uses the reserved prefix '__'.",
+                name, decl.v.name
+            )));
+        }
+
+        // check that the expansion set also don't use names starting with "__"
+        if let Some(expansion) = &decl.v.expansion {
+            let mut seen = HashSet::new();
+            for set in expansion.sets.iter() {
+                if set.starts_with("__") {
+                    return Err(invalid(format!(
+                        "Expansion set '{}' of {} uses the reserved prefix '__'.",
+                        set, decl.v.name
+                    )));
+                }
+                // forwarded sets must not shadow an input of the function itself
+                if decl.v.params.contains(set) {
+                    return Err(invalid(format!(
+                        "Expansion set '{}' of {} is also an input of the function.",
+                        set, decl.v.name
+                    )));
+                }
+                if !seen.insert(*set) {
+                    return Err(invalid(format!(
+                        "Expansion set '{}' of {} is listed more than once.",
+                        set, decl.v.name
+                    )));
+                }
+            }
+        }
+
+        // depending on if the current function can expand, we check additional things
+        let returns = match &decl.v.expansion {
+            Some(_) => [decl.v.returns.as_slice(), &[EXPAND_SET]].concat(),
+            None => decl.v.returns.clone(),
+        };
+
         self.registry
-            .check_declaration(decl.v.name, &decl.v.params, &decl.v.returns)
-            .map_err(|err| ErrorDiagnostic::new(decl.span.clone(), err))?;
+        .check_declaration(decl.v.name, &decl.v.params, &returns)
+        .map_err(|err| ErrorDiagnostic::new(decl.span.clone(), err))?;
+        
+        // remember all the decls with expansion supported
+        if decl.v.expansion.as_ref().is_some_and(|e| e.targets.is_some()) {
+            self.expansion_decls.push(decl);
+        }
+
         self.declared_functions.insert(decl.v.name, &decl.v);
+
         Ok(())
     }
 
@@ -61,7 +128,12 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 )),
             )
         })?;
-        if fdecl.params.len() < fappl.v.args.len() || fdecl.returns.len() < fappl.v.rets.len() {
+
+        // all input params (including forwarded sets from expansions)
+        let params = fdecl.application_params();
+        let num_params = params.len();
+
+        if params.len() < fappl.v.args.len() || fdecl.returns.len() < fappl.v.rets.len() {
             return Err(ErrorDiagnostic::new(
                 fappl.span.clone(),
                 dandelion_err!(DandelionError::Composition(
@@ -72,7 +144,6 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 )),
             ));
         }
-        let num_params = fdecl.params.len();
 
         // find the indices of the sets in the function application by looking though the definition
         let mut input_templates = Vec::new();
@@ -82,8 +153,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         let mut arg_spans: Vec<Option<Span>> = Vec::new();
         arg_spans.resize(num_params, None);
         for arg in fappl.v.args.iter() {
-            if let Some(arg_set_idx) = fdecl
-                .params
+            if let Some(arg_set_idx) = params
                 .iter()
                 .position(|param_name| arg.v.name == *param_name)
             {
@@ -131,8 +201,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             let mut curr_strategy = JoinStrategy::Cross;
             for (i, arg_name) in strategy.join_strategy_order.iter().enumerate() {
                 // find argument set index
-                let arg_set_idx = fdecl
-                    .params
+                let arg_set_idx = params
                     .iter()
                     .position(|param_name| *param_name == *arg_name)
                     .ok_or_else(|| {
@@ -264,11 +333,37 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 ));
             }
         }
+
+        let expansion_templ = fdecl.expansion.as_ref().map(|e| {
+            // forwarded sets are numbered in the order they appear in the expands list, which is the
+            // same order application_params() appends them to the function's inputs
+            let mut num_forwarded = 0;
+            let sources = e
+                .sets
+                .iter()
+                .map(|set| match fdecl.returns.iter().position(|ret| ret == set) {
+                    // look up the set from sources in the fdecl return sets. If it occurs in the return sets it is an output
+                    // if not, it must be a forwarded set
+                    Some(out_idx) => ExpandSource::Output(out_idx),
+                    None => {
+                        num_forwarded += 1;
+                        ExpandSource::Forwarded(num_forwarded - 1)
+                    }
+                })
+                .collect();
+            let targets = e
+                .targets
+                .as_ref()
+                .map(|targets| targets.iter().map(|t| Arc::new(t.v.to_string())).collect());
+            Arc::new(ExpansionTemplate { sources, targets })
+        });
+
         Ok(FunctionTemplate {
             id: Arc::new(fdecl.name.to_string()),
             params: input_templates,
             join_order: Arc::new(join_order),
             returns: outputs,
+            expansion: expansion_templ,
         })
     }
 
@@ -289,6 +384,25 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             ));
         }
         self.composition_ids.insert(comp.v.name);
+
+        // set names starting with "__" are reserved for the system, e.g. the __expand set
+        if let Some(name) = comp
+            .v
+            .params
+            .iter()
+            .chain(comp.v.returns.iter())
+            .find(|name| name.starts_with("__"))
+        {
+            return Err(ErrorDiagnostic::new(
+                comp.span.clone(),
+                dandelion_err!(DandelionError::Composition(
+                    CompositionError::InvalidFunctionDeclaration(format!(
+                        "Set name '{}' in composition {} uses the reserved prefix '__'.",
+                        name, comp.v.name
+                    ))
+                )),
+            ));
+        }
 
         // add composition input sets
         let mut data_set_counter = 0usize;
@@ -496,6 +610,51 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         }
         Ok(())
     }
+
+    /// Checks that every `into` target of an expanding function is a composition with the signature
+    /// `(expands list) => (function returns)`. Runs after all items of the module were processed, so
+    /// a target may be defined after the declaration that names it (needed for recursion).
+    pub(super) fn check_expansion_targets(&self) -> Result<(), ErrorDiagnostic> {
+        for decl in self.expansion_decls.iter() {
+            let expansion = decl
+                .v
+                .expansion
+                .as_ref()
+                .expect("only expanding declarations are collected");
+            // the target receives the expands list and must produce the function's declared returns
+            let expected = (expansion.sets.len(), decl.v.returns.len());
+
+            for target in expansion.targets.iter().flatten() {
+                // compositions from this module first, then the ones already registered
+                let signature = self
+                    .compositions
+                    .iter()
+                    .find(|(id, _, _)| id.as_str() == target.v)
+                    .map(|(_, templ, _)| (templ.params.len(), templ.returns.len()))
+                    .or_else(|| self.registry.composition_signature(target.v));
+
+                let msg = match signature {
+                    Some(sig) if sig == expected => continue,
+                    Some((params, returns)) => format!(
+                        "Expansion target '{}' of {} takes {} and returns {} sets, but {} and {} are required.",
+                        target.v, decl.v.name, params, returns, expected.0, expected.1
+                    ),
+                    None => format!(
+                        "Expansion target '{}' of {} is not a composition.",
+                        target.v, decl.v.name
+                    ),
+                };
+                return Err(ErrorDiagnostic::new(
+                    target.span.clone(),
+                    dandelion_err!(DandelionError::Composition(
+                        CompositionError::InvalidFunctionDeclaration(msg)
+                    )),
+                ));
+            }
+        }
+        Ok(())
+    }
+
 
     pub(super) fn collect(self) -> Vec<(FunctionId, CompositionTemplate, Metadata)> {
         self.compositions

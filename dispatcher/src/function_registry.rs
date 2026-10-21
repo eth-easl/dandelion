@@ -78,6 +78,7 @@ fn fmap_insert_function(
     func_meta: Metadata,
 ) -> DandelionResult<()> {
     match fmap.get_mut(&(*key)) {
+        // if function with this id exists already, inspect existing function and if needed throw an error
         Some(entry) => {
             let func_info = match entry {
                 FunctionType::Function(info) => info,
@@ -106,6 +107,7 @@ fn fmap_insert_function(
             // TODO: check that metadata matches existing one
             lock_guard.push(Arc::new(func_alt));
         }
+        // if function with this id does not exist yet, insert it
         None => {
             let func_info = FunctionInfo {
                 alternatives: Arc::new(RwLock::new(vec![Arc::new(func_alt)])),
@@ -348,4 +350,19 @@ impl composition::Registry for FunctionRegistry {
             )),
         }
     }
+
+    fn composition_signature(&self, id: &str) -> Option<(usize, usize)> {
+        let lock_guard = self
+            .function_map
+            .read()
+            .expect("Function registry lock poisoned!");
+        match lock_guard.get(id) {
+            Some(FunctionType::Composition(comp_info)) => Some((
+                comp_info.composition.num_params(),
+                comp_info.composition.num_returns(),
+            )),
+            _ => None,
+        }
+    }
+    
 }

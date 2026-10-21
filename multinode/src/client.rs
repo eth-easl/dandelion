@@ -296,6 +296,7 @@ async fn remote_queue_server_logic(
                             break;
                         }
                     }
+                    // remote worker node is requesting work
                     remote_message::RemoteMessage::WorkRequest(work_request) => {
                         debug_assert!(data_option.is_none());
                         // For now just send one matching function
@@ -424,6 +425,8 @@ async fn remote_queue_server_logic(
                             }
                         }
                     }
+                    // case that the worker node has sent a Response containing responses for
+                    // some invocation
                     remote_message::RemoteMessage::Response(response) => {
                         debug_assert!(data_option.is_none());
                         trace!(
@@ -720,6 +723,8 @@ pub async fn remote_queue_server(
             return;
         }
     };
+
+    // extract NodeInfo received from worker node and add resources into own queue
     let NodeInfo {
         version,
         id: node_id,
@@ -1328,12 +1333,14 @@ pub async fn remote_queue_client(
 
     // start sender loop
     let (remote_message_sender, remote_message_reciever) = mpsc::channel(64);
+    // everything that is received via remote_message_reciever is forwarded to the write_socket
     let sender_handle = spawn(remote_queue_client_sender(
         write_socket,
         remote_message_reciever,
     ));
     // start receiver loop
     let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
+    // everythinng that is received via the read_socket is forwarded to poll_option_receiver
     let receiver_handle = spawn(remote_queue_client_receiver(
         read_socket,
         poll_option_sender.clone(),

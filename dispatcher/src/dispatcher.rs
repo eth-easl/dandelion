@@ -3,7 +3,7 @@ use crate::{
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
-use composition::{AnyShardingMode, Composition, CompositionTemplate, Executor};
+use composition::{AnyShardingMode, Composition, CompositionTemplate, Executor, ExpansionTemplate};
 use dandelion_commons::{
     err_dandelion,
     records::{RecordPoint, Recorder},
@@ -66,6 +66,7 @@ impl<'a> Executor for CompositionExecutor<'a> {
         &mut self,
         function_id: FunctionId,
         composition_idx: usize,
+        expansion: Option<Arc<ExpansionTemplate>>,
         inv_input_iter: T,
     ) {
         let dispatcher = self.dispatcher;

@@ -191,7 +191,7 @@ mod tests {
     fn blocking_consumer_is_retained_and_notified_on_completion() {
         let set = CompositionSet::new();
         // `set` notifying its blocking consumer below is what resolves the function.
-        let mut consumer = Function::new(0, Arc::new("Consumer".to_string()), vec![0].into());
+        let mut consumer = Function::new(0, Arc::new("Consumer".to_string()), vec![0].into(), None);
         consumer.update_io(&[Some((Sharding::All, false))], vec![], vec![]);
         let consumer = Arc::new(consumer);
         set.add_blocking_consumer(consumer.clone(), 0, false);
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn streaming_only_single_param_consumer_is_not_retained_but_still_completes() {
         let set = CompositionSet::new();
-        let mut consumer = Function::new(0, Arc::new("Consumer".to_string()), vec![0].into());
+        let mut consumer = Function::new(0, Arc::new("Consumer".to_string()), vec![0].into(), None);
         consumer.update_io(&[Some((Sharding::Each, false))], vec![], vec![]);
         let consumer = Arc::new(consumer);
         set.add_non_blocking_consumer(consumer.clone(), 0);

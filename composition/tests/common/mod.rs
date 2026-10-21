@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use composition::{Composition, CompositionTemplate, Executor, Registry};
+use composition::{Composition, CompositionTemplate, Executor, ExpansionTemplate, Registry};
 use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, FunctionId,
     FunctionRegistryError,
@@ -56,11 +56,13 @@ impl TestRegistry {
 
 impl Registry for TestRegistry {
     fn check_declaration(&self, id: &str, params: &[&str], rets: &[&str]) -> DandelionResult<()> {
+        // checks if function with id is present in registry
         let (reg_params, reg_rets) = self.functions.get(id).ok_or_else(|| {
             dandelion_err!(DandelionError::Parsing(format!(
                 "unknown function '{id}' in test registry"
             )))
         })?;
+        // check if parameter names and return set parameters match the parameters defined in the registered function
         let params_match = reg_params
             .iter()
             .map(String::as_str)
@@ -91,6 +93,11 @@ impl Registry for TestRegistry {
             )),
         }
     }
+
+    fn composition_signature(&self, _id: &str) -> Option<(usize, usize)> {
+        None
+    }
+    
 }
 
 /// Parses `src` and returns the single composition named `name`, panicking with the rendered
@@ -145,6 +152,7 @@ impl Executor for InvocationQueue {
         &mut self,
         function_id: FunctionId,
         composition_idx: usize,
+        expansion: Option<Arc<ExpansionTemplate>>,
         inv_input_iter: T,
     ) {
         self.0

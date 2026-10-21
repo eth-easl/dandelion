@@ -43,6 +43,7 @@ async fn delete_service_loop(
     }
 }
 
+/// server side code of the "remote queue" protocol
 async fn remote_queue_server(
     queue_port: u16,
     queue: WorkQueue,
@@ -72,6 +73,7 @@ async fn remote_queue_server(
     }
 }
 
+/// client side code of the "remote queue" protocol
 async fn remote_queue_client(
     remote_url: String,
     dispatcher: &'static Dispatcher,
@@ -370,39 +372,44 @@ fn main() {
     {
         let node_id = config.node_id;
         let export_registry = ExportRegistry::new(node_id);
-        let client_shutdown_option = if multinode_settings.queue_server.node_id == node_id {
-            let (remote_data_deletion_sender, remote_data_deletion_receiver) =
-                mpsc::unbounded_channel();
-            system_runtime.spawn(delete_service_loop(remote_data_deletion_receiver));
+        let client_shutdown_option = 
+            // If current node is master node, no other node can shut it down
+            // TODO: split shutdown_option selection from remote_queue_server spawning
+            if multinode_settings.queue_server.node_id == node_id {
+                let (remote_data_deletion_sender, remote_data_deletion_receiver) =
+                    mpsc::unbounded_channel();
+                system_runtime.spawn(delete_service_loop(remote_data_deletion_receiver));
 
-            let queue_server_port =
-                multinode::config::queue_server_port(&multinode_settings.queue_server.url)
-                    .unwrap_or_else(|err| panic!("Invalid queue server entry: {}", err));
-            // listen for other nodes trying to poll from local work queue
-            system_runtime.spawn(remote_queue_server(
-                queue_server_port,
-                work_queue,
-                export_registry.clone(),
-                remote_data_deletion_sender.clone(),
-            ));
-            None
-        } else {
-            // start a thread to check if we should be checking remote queues
-            let (shutdown_sender, shutdown_receiver) = watch::channel(false);
-            let (completion_sender, completion_receiver) = oneshot::channel();
-            let registry_clone = export_registry.clone();
-            system_runtime.spawn(remote_queue_client(
-                multinode::config::tcp_address(&multinode_settings.queue_server.url),
-                dispatcher,
-                registry_clone,
-                work_queue,
-                std::time::Duration::from_millis(config.multinode_reconnect_interval_ms),
-                shutdown_receiver,
-                completion_sender,
-            ));
-            Some((shutdown_sender, completion_receiver))
-        };
-
+                let queue_server_port =
+                    multinode::config::queue_server_port(&multinode_settings.queue_server.url)
+                        .unwrap_or_else(|err| panic!("Invalid queue server entry: {}", err));
+                // listen for other nodes trying to poll from local work queue
+                system_runtime.spawn(remote_queue_server(
+                    queue_server_port,
+                    work_queue,
+                    export_registry.clone(),
+                    remote_data_deletion_sender.clone(),
+                ));
+                None
+            } else {
+                // Case: we are not the master node
+                // start a thread to check if we should be checking remote queues
+                let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+                let (completion_sender, completion_receiver) = oneshot::channel();
+                let registry_clone = export_registry.clone();
+                system_runtime.spawn(remote_queue_client(
+                    multinode::config::tcp_address(&multinode_settings.queue_server.url),
+                    dispatcher,
+                    registry_clone,
+                    work_queue,
+                    std::time::Duration::from_millis(config.multinode_reconnect_interval_ms),
+                    shutdown_receiver,
+                    completion_sender,
+                ));
+                Some((shutdown_sender, completion_receiver))
+            };
+        
+        // Get address and port for own data server and start it
         let data_server_urls = multinode_settings.data_server_urls();
         let data_server_address = data_server_urls
             .get(&node_id)
@@ -411,6 +418,8 @@ fn main() {
             .unwrap_or_else(|err| {
                 panic!("Invalid data server entry for node {}: {}", node_id, err)
             });
+
+        // Start data server to allow worker nodes to fetch data by id
         system_runtime.spawn(multinode::data::service_loop(
             data_server_port,
             export_registry.clone(),

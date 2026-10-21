@@ -6,4 +6,5 @@ mod common;
 
 mod basic;
 mod errors;
+mod expansion;
 mod joins;
