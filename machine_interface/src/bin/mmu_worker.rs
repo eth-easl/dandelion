@@ -70,6 +70,7 @@ fn main() {
     // set pagetable protection flags
     // TODO: make sure get_free_space return a rw region
     let protection_flags: Vec<(u32, Position)> = serde_json::from_str(&args[6]).unwrap();
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
     for position in protection_flags.iter() {
         unsafe {
             let mut flags: ProtFlags = ProtFlags::PROT_READ;
@@ -79,12 +80,20 @@ fn main() {
             if position.0 & PF_W == PF_W {
                 flags |= ProtFlags::PROT_WRITE
             }
+            let aligned_offset = position.1.offset - (position.1.offset % page_size);
+            let aligned_end = (position.1.offset + position.1.size).div_ceil(page_size) * page_size;
+            let aligned_size = aligned_end - aligned_offset;
             mprotect(
-                std::ptr::NonNull::new_unchecked(position.1.offset as *mut libc::c_void),
-                position.1.size,
+                std::ptr::NonNull::new_unchecked(aligned_offset as *mut libc::c_void),
+                aligned_size,
                 flags,
             )
-            .expect("mprotect failed!");
+            .unwrap_or_else(|err| {
+                panic!(
+                    "mprotect failed at offset {:#x} (size {:#x}): {}",
+                    aligned_offset, aligned_size, err
+                )
+            });
         }
     }
 
