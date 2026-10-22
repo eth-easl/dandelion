@@ -18,6 +18,8 @@ pub enum DandelionError {
     Multinode(MultinodeError),
     /// Error while parsing a composition.
     Parsing(String),
+    /// Runtime error when trying to expand a function
+    InvalidExpansion(String),
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations

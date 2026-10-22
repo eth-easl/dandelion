@@ -3,7 +3,7 @@ use crate::{
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
-use composition::{AnyShardingMode, Composition, CompositionTemplate, Executor, ExpansionTemplate};
+use composition::{AnyShardingMode, Composition, CompositionTemplate, Executor, ExpandSource, ExpansionTemplate};
 use dandelion_commons::{
     err_dandelion,
     records::{RecordPoint, Recorder},
@@ -20,9 +20,7 @@ use machine_interface::{
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
 };
 use memory::{
-    context::{MemoryDomain, MemoryResource},
-    data::Metadata,
-    DataItem, DataSet,
+    DataItem, DataSet, context::{ContextTrait, MemoryDomain, MemoryResource}, data::Metadata,
 };
 use std::{
     collections::BTreeMap,
@@ -47,6 +45,8 @@ struct CompositionExecutor<'a> {
     children: Vec<Option<Vec<Recorder>>>,
     /// Results of all invocations that are still outstanding.
     awaited: FuturesUnordered<InvocationFuture<'a>>,
+    /// current expansion_depth
+    expansion_depth: usize,
 }
 
 impl<'a> CompositionExecutor<'a> {
@@ -86,6 +86,8 @@ impl<'a> Executor for CompositionExecutor<'a> {
                         dispatcher.any_sharding_mode.clone(),
                         &dispatcher.function_registry,
                     );
+
+                    let expansion_depth = self.expansion_depth;
                     self.awaited.push(Box::pin(async move {
                         dispatcher
                             .queue_composition(
@@ -94,6 +96,7 @@ impl<'a> Executor for CompositionExecutor<'a> {
                                 input,
                                 caching,
                                 recorder,
+                                expansion_depth,
                             )
                             .await
                             .map(|items| (composition_idx, items))
@@ -121,9 +124,16 @@ impl<'a> Executor for CompositionExecutor<'a> {
             }
             FunctionType::Function(info) => {
                 let function_alternatives = info.alternatives.read().unwrap().clone();
-                // the recorders are needed again once the results arrive
+                
+                // inputs after the function's own ones are forwarded sets, which only the expansion receives
+                let num_own_inputs = info.metadata.input_sets.len();
                 let mut recorders = Vec::new();
-                let work_iter = inv_input_iter.into_iter().map(|input| {
+                let mut forwarded_sets = Vec::new();
+                let work_iter = inv_input_iter.into_iter().map(|mut input| {
+                    forwarded_sets.push(match expansion {
+                        Some(_) => input.split_off(num_own_inputs),
+                        None => Vec::new(),
+                    });
                     let recorder = self.new_child_recorder(&function_id, composition_idx);
                     recorders.push(recorder.clone());
                     WorkToDo::FunctionArguments {
@@ -142,11 +152,23 @@ impl<'a> Executor for CompositionExecutor<'a> {
                     .enqueue_many(work_iter, composition_id)
                 {
                     Ok(promises) => {
-                        for (promise, mut recorder) in promises.into_iter().zip(recorders) {
+                        let depth = self.expansion_depth;
+                        for ((promise, mut recorder), forwarded) in promises.into_iter().zip(recorders).zip(forwarded_sets) {
+                            let expansion = expansion.clone();
                             self.awaited.push(Box::pin(async move {
-                                let result = promise.await;
+                                let outputs = promise.await?.get_data_items();
                                 recorder.record(RecordPoint::FutureReturn);
-                                result.map(|work| (composition_idx, work.get_data_items()))
+                                let outputs = match expansion {
+                                    None => outputs,
+                                    Some(exp) => {
+                                        // the actual expand step
+                                        dispatcher
+                                            .expand(composition_id, caching, depth, &exp, outputs, forwarded, recorder)
+                                            .await?
+                                    }
+                                };
+                                Ok((composition_idx, outputs))
+                                
                             }));
                         }
                     }
@@ -171,6 +193,9 @@ pub struct Dispatcher {
 }
 
 pub type ExecutionOutput = Vec<Arc<Vec<DataItem>>>;
+/// Maximum number of nested expansions, guards against runaway recursion.
+const MAX_EXPANSION_DEPTH: usize = 64;
+
 
 impl Dispatcher {
     pub fn init(
@@ -326,6 +351,7 @@ impl Dispatcher {
                 inputs,
                 caching,
                 recorder.clone(),
+                0
             )
             .await?;
 
@@ -341,6 +367,7 @@ impl Dispatcher {
         inputs: Vec<DataSet>,
         caching: bool,
         recorder: Recorder,
+        depth: usize,
     ) -> DandelionResult<ExecutionOutput> {
         // build up ready sets
         trace!("queue composition");
@@ -352,6 +379,7 @@ impl Dispatcher {
             recorder,
             children: vec![None; composition.num_functions()],
             awaited: FuturesUnordered::new(),
+            expansion_depth: depth,
         };
 
         composition.start_execution(inputs, &mut ready_invocations);
@@ -455,11 +483,155 @@ impl Dispatcher {
                     input_sets,
                     caching,
                     recorder,
+                    0
                 )
                 .await
             }
         }
     }
+
+        /// Handles the outputs of one invocation of an expanding function. Without an expansion
+    /// request the outputs are returned as they are (minus the `__expand` set). Otherwise the
+    /// requested composition is run as nested composition and its outputs replace the ones of the
+    /// invocation.
+    async fn expand(
+        &self,
+        composition_id: usize,
+        caching: bool,
+        depth: usize,
+        expansion: &ExpansionTemplate,
+        mut outputs: ExecutionOutput,
+        forwarded: Vec<DataSet>,
+        recorder: Recorder,
+    ) -> DandelionResult<ExecutionOutput> {
+        // __expand is always the last output set of an expanding function
+        let Some(expand_set) = outputs.pop() else {
+            return Ok(outputs);
+        };
+        let target_item = match expand_set.as_slice() {
+            // case: __expand set is empty -> the function does not expand. The normal function outputs are directly returned.
+            [] => return Ok(outputs),
+            // case: __expand contains directly one data item -> the function expands to the composition described by it.
+            [item] => item.clone(),
+            items => {
+                return err_dandelion!(DandelionError::InvalidExpansion(format!(
+                    "Function wrote {} items to __expand, at most one is allowed.",
+                    items.len()
+                )))
+            }
+        };
+        if depth >= MAX_EXPANSION_DEPTH {
+            return err_dandelion!(DandelionError::InvalidExpansion(format!(
+                "Maximum expansion depth of {} exceeded.",
+                MAX_EXPANSION_DEPTH
+            )));
+        }
+
+        // read target composition from the __expand set entry
+        let target_id: FunctionId =
+            Arc::new(self.read_expansion_target(target_item, composition_id).await?);
+        
+        // check if target_id returned by the function at runtime is in allowed target compositions 
+        // (the functions defined after the "into" part)
+        if let Some(targets) = &expansion.targets {
+            if !targets.contains(&target_id) {
+                return err_dandelion!(DandelionError::InvalidExpansion(format!(
+                    "Expansion target '{}' is not in the allowed targets {:?}.",
+                    target_id, targets
+                )));
+            }
+        }
+
+        // extract composition from the registry by id
+        let Ok(FunctionType::Composition(target)) = self.function_registry.get_function(&target_id)
+        else {
+            return err_dandelion!(DandelionError::InvalidExpansion(format!(
+                "Expansion target '{}' is not a registered composition.",
+                target_id
+            )));
+        };
+        
+        // the target takes the expands list and must produce the function's declared outputs
+        if target.composition.num_params() != expansion.sources.len()
+            || target.composition.num_returns() != outputs.len()
+        {
+            return err_dandelion!(DandelionError::InvalidExpansion(format!(
+                "Expansion target '{}' takes {} and returns {} sets, but {} and {} are required.",
+                target_id,
+                target.composition.num_params(),
+                target.composition.num_returns(),
+                expansion.sources.len(),
+                outputs.len()
+            )));
+        }
+
+        let inputs = expansion
+            .sources
+            .iter()
+            .map(|source| match source {
+                ExpandSource::Output(idx) => DataSet::from_items(outputs[*idx].clone()),
+                ExpandSource::Forwarded(idx) => forwarded[*idx].clone(),
+            })
+            .collect();
+        let composition = Composition::from_template(
+            &target.composition,
+            self.any_sharding_mode.clone(),
+            &self.function_registry,
+        );
+        let child_recorder = Recorder::new_from_parent(target_id, &recorder);
+        // boxed, as queue_composition can lead back to expand
+        Box::pin(self.queue_composition(
+            composition_id,
+            composition,
+            inputs,
+            caching,
+            child_recorder,
+            depth + 1,
+        ))
+        .await
+    }
+
+    /// Reads the name of the composition an invocation wants to expand into from its `__expand`
+    /// item, fetching the item first if it is not local (e.g. the function ran on another node).
+    async fn read_expansion_target(
+        &self,
+        item: DataItem,
+        composition_id: usize,
+    ) -> DandelionResult<String> {
+        let item = if item.is_local() {
+            item
+        } else {
+            let resolved = self
+                .work_queue
+                .enqueue(
+                    WorkToDo::SetsToResolve {
+                        input_sets: vec![DataSet::from_items(Arc::new(vec![item]))],
+                    },
+                    composition_id,
+                )?
+                .await?
+                .get_data_items();
+            match resolved.first().and_then(|set| set.first()) {
+                Some(item) => item.clone(),
+                None => {
+                    return err_dandelion!(DandelionError::InvalidExpansion(
+                        "Could not resolve the __expand item.".to_string()
+                    ))
+                }
+            }
+        };
+        let local = item.local_ref()?;
+        let mut buffer = vec![0u8; local.pos.size];
+        local.ctx.read(local.pos.offset, &mut buffer)?;
+        match String::from_utf8(buffer) {
+            // tolerate trailing newlines, e.g. from writing the name with fprintf
+            Ok(name) => Ok(name.trim().to_string()),
+            Err(_) => err_dandelion!(DandelionError::InvalidExpansion(
+                "Expansion target name is not valid UTF-8.".to_string()
+            )),
+        }
+    }
+
 }
 
 #[cfg(feature = "log_function_stdio")]
