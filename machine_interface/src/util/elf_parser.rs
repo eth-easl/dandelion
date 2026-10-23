@@ -74,7 +74,7 @@ struct ElfPhdr {
     _p_paddr: u64,
     p_filesz: u64,
     p_memsz: u64,
-    _p_align: u64,
+    p_align: u64,
 }
 
 fn parse_phdr_table(
@@ -99,7 +99,7 @@ fn parse_phdr_table(
                 p_filesz: (pf.parse_offset)(file, &mut offset),
                 p_memsz: (pf.parse_offset)(file, &mut offset),
                 p_flags: (pf.parse_word)(file, &mut offset),
-                _p_align: (pf.parse_offset)(file, &mut offset),
+                p_align: (pf.parse_offset)(file, &mut offset),
             })
         } else {
             phdr_table.push(ElfPhdr {
@@ -110,7 +110,7 @@ fn parse_phdr_table(
                 _p_paddr: (pf.parse_offset)(file, &mut offset),
                 p_filesz: (pf.parse_offset)(file, &mut offset),
                 p_memsz: (pf.parse_offset)(file, &mut offset),
-                _p_align: (pf.parse_offset)(file, &mut offset),
+                p_align: (pf.parse_offset)(file, &mut offset),
             })
         }
     }
@@ -310,13 +310,18 @@ impl ParsedElf {
         for program_header in &self.program_header_table {
             // check if section occupies memory during execution
             if program_header.p_type == 0x1 {
+                let alignment = if program_header.p_align > 0 {
+                    program_header.p_align as usize
+                } else {
+                    DEFAULT_ALIGNMENT
+                };
                 let mut start = program_header.p_vaddr as usize;
                 let mut end = start + program_header.p_memsz as usize;
-                if !start.is_multiple_of(DEFAULT_ALIGNMENT) {
-                    start -= start % DEFAULT_ALIGNMENT;
+                if !start.is_multiple_of(alignment) {
+                    start -= start % alignment;
                 }
-                if !end.is_multiple_of(DEFAULT_ALIGNMENT) {
-                    end += DEFAULT_ALIGNMENT - end % DEFAULT_ALIGNMENT;
+                if !end.is_multiple_of(alignment) {
+                    end += alignment - end % alignment;
                 }
                 protection_requirement.push((
                     program_header.p_flags,
