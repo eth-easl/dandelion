@@ -1,0 +1,11 @@
+function classify (pics) => (tagged_pics, archives);
+function compress (pics, archives) => (put_requests);
+function HTTP (requests) => (headers, bodies);
+
+compositon image_process (images) => (status) {
+    classify (pics = all images) => (classified = tagged_pics, fetch_requests = archives);
+    HTTP (requests = each fetch_requests) => (fetched_archives = bodies);
+    compress (pics = keyed classified, archives = keyed fetched_archives) => 
+        (store_requests = put_requests) by classified left fetched_archives;
+    HTTP (requests = each store_requests) => (status = headers);
+}

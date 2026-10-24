@@ -3,22 +3,19 @@ name = "machine_interface"
 version = "0.1.0"
 edition = "2021"
 
-[lints]
-workspace = true
-
 [package.metadata.cargo-machete]
 ignored = ["openssl"]
 
 [features]
 # TODO remove as default feature and check everyting also works with no default feature
 default = ["std"]
-std = []
-cheri = ["std"]
-mmu = ["std"]
-kvm = ["std", "dep:kvm-bindings", "dep:kvm-ioctls"]
+std = ["memory/std"]
+cheri = ["std", "memory/cheri"]
+mmu = ["std", "memory/mmu"]
+kvm = ["std", "memory/kvm", "dep:kvm-bindings", "dep:kvm-ioctls"]
 backend_debug = []
 blocking_queue = []
-timestamp = ["dandelion_commons/timestamp"]
+timestamp = ["dandelion_commons/timestamp", "memory/timestamp"]
 vendored-ssl = ["dep:openssl"]
 test_export = []
 
@@ -31,23 +28,24 @@ criterion = "0.4"
 regex = "1.7.1"
 test-log = "0.2.16"
 
+[lints]
+workspace = true
+
 [dependencies]
 # project internal dependencies
 dandelion_commons = { path = "../dandelion_commons" }
-dparser = {path = "../dparser"}
+memory = { path = "../memory" }
 
 # FFI dependencies
 libc = "0.2"
 nix = { version = "0.31", features = ["mman", "fs", "ptrace", "sched"] }
 
 # general dependencies
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 core_affinity = { version = "0.8"}
 futures = { version = "0.3.28" }
 tokio = { version = "1.38.2", features = ["full"] }
 log = "0.4.20"
-itertools = {version = "0.11", default-features = false, features = ["use_alloc"]}
 strum = { version = "0.27", features = ["derive"] }
 num_cpus = "1.16.0"
 

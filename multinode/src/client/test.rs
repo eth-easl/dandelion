@@ -22,10 +22,10 @@ use futures::{
     FutureExt,
 };
 use machine_interface::{
-    function_driver::{functions::FunctionAlternative, Metadata},
+    function_driver::functions::FunctionAlternative,
     machine_config::{self, IntoEnumIterator},
-    memory_domain::malloc::MallocMemoryDomain,
 };
+use memory::{context::malloc::MallocMemoryDomain, data::Metadata};
 use tokio::sync::mpsc;
 
 const EXPECTED_ERROR: DandelionError = DandelionError::NotImplemented;
@@ -33,7 +33,7 @@ const EXPECTED_ERROR: DandelionError = DandelionError::NotImplemented;
 async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::EngineType) {
     let function_id = Arc::new("dummy_function".to_string());
     let result = work_queue
-        .do_work(
+        .enqueue(
             machine_interface::function_driver::WorkToDo::FunctionArguments {
                 function_id: function_id.clone(),
                 function_alternatives: vec![Arc::new(FunctionAlternative {
@@ -54,6 +54,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
             },
             0,
         )
+        .expect("Should be able to get a promise")
         .await;
     let error = if let Err(error) = result {
         error.error
@@ -72,17 +73,18 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
 fn test_remote_queue_server() {
     let work_queue = WorkQueue::init();
     // add an initial amount of remote cores, since that message is processed before the main state machine starts
-    work_queue.add_remote_cores(2);
+    work_queue.system_info.add_remote_cores(2);
     let engine_type = machine_config::EngineType::iter().next().unwrap();
     let (remote_data_deletion_sender, _remote_data_deletion_receiver) = mpsc::unbounded_channel();
 
     let (queue_option_sender, queue_option_receiver) = mpsc::channel(64);
     let (queue_message_sender, mut queue_message_receiver) = mpsc::channel(64);
+    let (cancel_sender, _cancel_receiver) = mpsc::unbounded_channel();
 
     let mut context = Context::from_waker(Waker::noop());
     let mut server_future = Box::pin(remote_queue_server_logic(
         queue_option_receiver,
-        queue_option_sender.clone(),
+        cancel_sender,
         queue_message_sender,
         work_queue.clone(),
         ExportRegistry::new(1),

@@ -1,8 +1,6 @@
-use crate::{
-    memory_domain::{transfer_memory, Context, MemoryDomain},
-    DataRequirementList,
-};
+use crate::DataRequirementList;
 use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
+use memory::context::{transfer_memory, Context, MemoryDomain};
 use std::sync::Arc;
 
 #[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
@@ -36,10 +34,10 @@ pub fn load_static(
     let static_set = static_context.content[0]
         .as_ref()
         .ok_or(dandelion_err!(DandelionError::ConfigMissmatch))?;
-    if static_set.buffers.len() != requirement_list.static_requirements.len() {
+    if static_set.items.len() != requirement_list.static_requirements.len() {
         return err_dandelion!(DandelionError::ConfigMissmatch);
     }
-    let layout = &static_set.buffers;
+    let layout = &static_set.items;
     let static_pairs = layout
         .iter()
         .zip(requirement_list.static_requirements.iter());

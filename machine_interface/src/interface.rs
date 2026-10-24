@@ -1,10 +1,11 @@
-use crate::{
-    memory_domain::{Context, ContextState, ContextTrait},
-    DataItem, DataSet, Position,
-};
+use crate::Position;
 use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
 use libc::{c_int, size_t, uintptr_t};
 use log::trace;
+use memory::{
+    context::{Context, ContextTrait},
+    DataSet,
+};
 extern crate alloc;
 
 pub trait SizedIntTrait
@@ -85,8 +86,7 @@ pub mod _native {
             Ok(ptr as uintptr_t)
         }
         fn to_native(self) -> DandelionResult<usize> {
-            #[allow(clippy::unnecessary_cast)]
-            Ok(self as usize)
+            Ok(self)
         }
     }
 }
@@ -126,13 +126,14 @@ struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
 pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Context,
     system_data_offset: usize,
+    input_set_names: &[(String, Option<DataSet>)],
     output_set_names: &[String],
 ) -> DandelionResult<()> {
     // prepare information to set up input sets, output sets and input buffers
     let input_buffer_number = context
         .content
         .iter()
-        .map(|set_opt| set_opt.as_ref().map(|set| set.buffers.len()).unwrap_or(0))
+        .map(|set_opt| set_opt.as_ref().map(|set| set.items.len()).unwrap_or(0))
         .sum();
     let input_set_number = context.content.len();
     let output_set_number = output_set_names.len();
@@ -153,21 +154,26 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         return err_dandelion!(DandelionError::OutOfMemory);
     }
     // start writing input set info structs
-    for c in 0..context.content.len() {
+    // TODO: removed the set identifier -> to completely remove it here we might need to change
+    //       the dlibc?
+    for (c, (name, _)) in input_set_names
+        .iter()
+        .enumerate()
+        .take(context.content.len())
+    {
         // get name and length
-        let (name, buffer_len) = context.content[c]
+        let buffer_len = context.content[c]
             .as_ref()
-            .map(|set| (set.ident.clone(), set.buffers.len()))
-            .unwrap_or((String::from(""), 0));
-        let name_length = name.len();
-        // find space and write string
-        let mut string_offset = 0;
-        if name_length != 0 {
-            string_offset = context.get_free_space_and_write_slice(name.as_bytes())? as usize;
-        }
+            .map(|set| set.items.len())
+            .unwrap_or(0);
+        let string_offset = if !name.is_empty() {
+            context.get_free_space_and_write_slice(name.as_bytes())? as usize
+        } else {
+            0
+        };
         input_sets.push(IoSetInfo::<PtrT, SizeT> {
             ident: ptr_t!(string_offset),
-            ident_len: size_t!(name_length),
+            ident_len: size_t!(name.len()),
             offset: size_t!(input_buffers.len()),
         });
         // find buffers
@@ -175,7 +181,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
             let (name, offset, size, key) = context.content[c]
                 .as_ref()
                 .map(|set| {
-                    let buffer = &set.buffers[b];
+                    let buffer = &set.items[b];
                     (
                         buffer.ident.clone(),
                         buffer.data.offset,
@@ -277,10 +283,13 @@ pub fn write_heap_end<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context.write(offset, &[heap_end])
 }
 
+// TODO: change to consume context and return Vec<Vec<DataItem>>
+// Currently need to keep it this way, because KVM contexts to be changed after.
+// Introduce subslicing interface on context types, then can apply this here to get DataItems only covering the specific range of each element.
 pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Context,
     base_address: usize,
-) -> DandelionResult<()> {
+) -> DandelionResult<(i32, Vec<Vec<(String, u32, Position)>>)> {
     context.clear_metadata();
     // read the system buffer
     let mut system_struct = DandelionSystemData::<PtrT, SizeT>::default();
@@ -289,13 +298,12 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     // get exit value
     let exit_value = system_struct.exit_code;
     log::trace!("function exited with code: {}", exit_value);
-    context.state = ContextState::Run(exit_value);
 
     // get output set number +1 for sentinel set
     let output_set_number = usize!(system_struct.output_sets_len);
     log::trace!("output set number: {}", output_set_number);
     if output_set_number == 0 {
-        return Ok(());
+        return Ok((exit_value, Vec::new()));
     }
     let output_buffers_offset: usize = usize_ptr!(system_struct.output_bufs);
     // load output set info, + 1 to include sentinel set
@@ -351,27 +359,18 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
             one_past_last_buffer
         );
         if first_buffer >= one_past_last_buffer {
-            output_sets.push(None);
+            output_sets.push(Vec::new());
             continue;
         }
 
-        let ident_offset = usize_ptr!(output_set_info[output_set].ident);
         let ident_length = usize!(output_set_info[output_set].ident_len);
-        let set_ident_string = if ident_length > 0 {
-            let mut set_ident = vec![0u8; ident_length];
-            context.read(ident_offset, &mut set_ident)?;
-            String::from_utf8(set_ident).or(err_dandelion!(DandelionError::UserError(
-                dandelion_commons::UserError::InvalidIdentifier,
-            )))?
-        } else {
-            "".to_string()
-        };
         let buffer_number = one_past_last_buffer - first_buffer;
-        let mut buffers = Vec::new();
+        let mut buffers = Vec::with_capacity(buffer_number);
         if buffers.try_reserve(buffer_number).is_err() {
             return err_dandelion!(DandelionError::OutOfMemory);
         }
-        for output_buffer in output_buffers[first_buffer..one_past_last_buffer].iter() {
+        // let mut total_size = 0;
+        for output_buffer in &output_buffers[first_buffer..one_past_last_buffer] {
             let buffer_ident_offset = usize_ptr!(output_buffer.ident);
             let buffer_ident_length = usize!(output_buffer.ident_len);
             let data_offset = usize_ptr!(output_buffer.data);
@@ -393,22 +392,17 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
                 data_length,
                 key
             );
-            buffers.push(DataItem {
-                ident: ident_string,
-                data: Position {
+            buffers.push((
+                ident_string,
+                key as u32,
+                Position {
                     offset: data_offset,
                     size: data_length,
                 },
-                key: key as u32,
-            });
-            context.occupy_space(data_offset, data_length)?;
+            ));
         }
         // always need to push the set, to keep the numbering
-        output_sets.push(Some(DataSet {
-            ident: set_ident_string,
-            buffers,
-        }));
+        output_sets.push(buffers);
     }
-    context.content = output_sets;
-    Ok(())
+    Ok((exit_value, output_sets))
 }

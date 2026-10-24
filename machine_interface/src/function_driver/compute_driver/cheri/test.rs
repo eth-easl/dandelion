@@ -4,9 +4,9 @@ use crate::{
         functions::{Function, FunctionConfig},
         Driver,
     },
-    memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
     Position,
 };
+use memory::context::{malloc::MallocMemoryDomain, MemoryDomain};
 
 #[test]
 fn test_loader_basic() {
@@ -14,7 +14,7 @@ fn test_loader_basic() {
         "{}/tests/data/test_elf_cheri_basic",
         env!("CARGO_MANIFEST_DIR")
     );
-    let malloc_domain = MallocMemoryDomain::init(crate::memory_domain::MemoryResource::None)
+    let malloc_domain = MallocMemoryDomain::init(memory::context::MemoryResource::None)
         .expect("Should be able to get malloc domain");
     let driver = CheriDriver {};
     let Function {
@@ -22,7 +22,7 @@ fn test_loader_basic() {
         context,
         config,
     } = driver
-        .parse_function(elf_path, &malloc_domain)
+        .parse_function(elf_path, malloc_domain.as_ref())
         .expect("Parsing should work");
     println!("requirements: {:?}", requirements);
     // check requirement list to be list of programm header info for after load
@@ -75,7 +75,7 @@ fn test_loader_basic() {
     let layout = &context.content[0]
         .as_ref()
         .expect("Set should be present")
-        .buffers;
+        .items;
     for (index, item) in layout.into_iter().enumerate() {
         assert_eq!(
             expected_offset, item.data.offset,

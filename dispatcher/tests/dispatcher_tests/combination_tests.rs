@@ -1,16 +1,14 @@
-use super::{check_matrix, setup_dispatcher, zero_id};
-use dandelion_commons::records::Recorder;
+use super::{check_matrix, run_composition, setup_dispatcher};
 use machine_interface::{
-    composition::{
-        Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ShardingMode,
-    },
-    function_driver::{functions::SystemFunction, ComputeResource},
+    function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
-    memory_domain::{read_only::ReadOnlyContext, MemoryResource},
-    DataItem, DataSet, Position,
 };
-use std::sync::Arc;
-use std::{collections::BTreeMap, time::Instant};
+use memory::{
+    context::{
+        read_only::ReadOnlyContext, ContextDataItem, ContextDataSet, MemoryDomain, MemoryResource,
+    },
+    DataSet, Position,
+};
 
 struct HttpServer {
     proc_child: std::process::Child,
@@ -43,16 +41,16 @@ impl Drop for HttpServer {
         let _ = self.proc_child.wait();
     }
 }
-pub fn fetch_compute(
+pub fn fetch_compute<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     compute_engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher(
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
         relative_path,
-        vec![(String::from(""), None)],
-        vec![String::from("")],
+        vec![(String::from("A"), None)],
+        vec![String::from("Out")],
         compute_engine_type,
         engine_resource,
         memory_resource,
@@ -68,60 +66,37 @@ pub fn fetch_compute(
     let data_len = data.len();
     let mut in_context = ReadOnlyContext::from_boxed(data.into_bytes().into_boxed_slice())
         .expect("Should be able to create read only context");
-    in_context.content = vec![Some(DataSet {
-        ident: String::from("request"),
-        buffers: vec![DataItem {
+    let data_size = data_len * core::mem::size_of::<u8>();
+    in_context.content = vec![Some(ContextDataSet {
+        items: vec![ContextDataItem {
             ident: String::from(""),
             data: Position {
                 offset: 0,
-                size: data_len * core::mem::size_of::<u8>(),
+                size: data_size,
             },
             key: 0,
         }],
+        total_size: data_size,
     })];
 
-    let composition = Composition {
-        dependencies: vec![
-            FunctionDependencies {
-                function: Arc::new(SystemFunction::HTTP.to_string()),
-                join_info: (vec![0], vec![]),
-                input_set_ids: vec![Some(InputSetDescriptor {
-                    composition_id: 0,
-                    sharding: ShardingMode::Each,
-                    optional: false,
-                })],
-                output_set_ids: vec![None, Some(1)],
-            },
-            FunctionDependencies {
-                function: function_id,
-                join_info: (vec![0], vec![]),
-                input_set_ids: vec![Some(InputSetDescriptor {
-                    composition_id: 1,
-                    sharding: ShardingMode::Each,
-                    optional: false,
-                })],
-                output_set_ids: vec![Some(2)],
-            },
-        ],
-        output_map: BTreeMap::from([(2, 0)]),
-    };
+    let composition = r#"
+        function HTTP(requests) => (headers, bodies);
+        function test_function(A) => (Out);
+        composition FetchCompute(Requests) => (Result) {
+            HTTP(requests = each Requests) => (Bodies = bodies);
+            test_function(A = each Bodies) => (Result = Out);
+        }
+    "#;
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
-
-    let inputs = CompositionSet::from_context(in_context);
-    let mut result_sets = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder))
-        .unwrap();
+    let inputs = DataSet::from_context(in_context);
+    let result_sets = run_composition(&dispatcher, composition, inputs);
     assert_eq!(1, result_sets.len());
 
     // check the matmul output
-    let mul_set = result_sets[0].take().unwrap();
-    assert_eq!(1, mul_set.len());
-    let (mul_item, mul_data) = mul_set.into_iter().next().unwrap();
+    assert_eq!(1, result_sets[0].len());
+    let mul_item = &result_sets[0][0];
     assert_eq!(0, mul_item.key);
-    check_matrix(&mul_data, &mul_item, 2, vec![5, 11, 11, 25]);
+    check_matrix(mul_item, 2, vec![5, 11, 11, 25]);
 
     drop(keep_alive);
 }

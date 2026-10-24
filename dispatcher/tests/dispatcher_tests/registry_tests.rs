@@ -1,11 +1,16 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
 use dandelion_commons::records::Recorder;
 use machine_interface::{
-    composition::CompositionSet,
-    function_driver::{ComputeResource, Metadata},
+    function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
-    memory_domain::{read_only::ReadOnlyContext, Context, MemoryResource},
-    DataItem, DataSet, Position,
+};
+use memory::{
+    context::{
+        read_only::ReadOnlyContext, Context, ContextDataItem, ContextDataSet, MemoryDomain,
+        MemoryResource,
+    },
+    data::Metadata,
+    DataSet, Position,
 };
 use std::{sync::Arc, time::Instant, vec};
 
@@ -15,16 +20,17 @@ fn create_context(matrix: Box<[u64]>) -> Context {
     let mat_len = matrix.len();
     let mut fixed = ReadOnlyContext::from_boxed(matrix)
         .expect("Should be able to make context from boxed array");
-    fixed.content.push(Some(DataSet {
-        ident: String::from(""),
-        buffers: vec![DataItem {
+    let data_size = mat_len * core::mem::size_of::<u64>();
+    fixed.content.push(Some(ContextDataSet {
+        items: vec![ContextDataItem {
             ident: String::from(""),
             data: Position {
                 offset: 0,
-                size: mat_len * core::mem::size_of::<u64>(),
+                size: data_size,
             },
             key: 0,
         }],
+        total_size: data_size,
     }));
     fixed
 }
@@ -32,7 +38,7 @@ fn create_context(matrix: Box<[u64]>) -> Context {
 /// tests with a single set fixed in the metadata
 /// check once for the ouput being correct in absence of an input set for the fixed one,
 /// and once for correct behavior if there is a set provided for the fixed one
-pub fn single_input_fixed(
+pub fn single_input_fixed<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
@@ -40,21 +46,13 @@ pub fn single_input_fixed(
 ) {
     // set up input sets
     let mat_a_composition_set =
-        CompositionSet::from_context(create_context(Box::new([1u64, 2u64])))[0]
-            .take()
-            .unwrap();
+        DataSet::from_context(create_context(Box::new([1u64, 2u64]))).remove(0);
     let mat_b_composition_set =
-        CompositionSet::from_context(create_context(Box::new([1u64, 3u64])))[0]
-            .take()
-            .unwrap();
+        DataSet::from_context(create_context(Box::new([1u64, 3u64]))).remove(0);
     let mat_c_composition_set =
-        CompositionSet::from_context(create_context(Box::new([1u64, 5u64])))[0]
-            .take()
-            .unwrap();
+        DataSet::from_context(create_context(Box::new([1u64, 5u64]))).remove(0);
     let mat_fault_composition_set =
-        CompositionSet::from_context(create_context(Box::new([1u64, 100u64])))[0]
-            .take()
-            .unwrap();
+        DataSet::from_context(create_context(Box::new([1u64, 100u64]))).remove(0);
     let expected = [11, 11, 17];
     let in_set_names = vec![
         (String::from(""), None),
@@ -62,7 +60,7 @@ pub fn single_input_fixed(
         (String::from(""), None),
     ];
     let out_set_names = vec![String::from("")];
-    let (dispatcher, _) = setup_dispatcher(
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
         relative_path,
         in_set_names.clone(),
         out_set_names.clone(),
@@ -90,10 +88,7 @@ pub fn single_input_fixed(
                     .expect("Path should be valid string")
                     .to_string(),
                 Metadata {
-                    input_sets: local_names
-                        .into_iter()
-                        .map(|(name, set)| (name, set.map(|s| s.into_local())))
-                        .collect(),
+                    input_sets: local_names.into_iter().collect(),
                     output_sets: out_set_names.clone(),
                     min_set_bytes: vec![],
                 },
@@ -105,11 +100,11 @@ pub fn single_input_fixed(
             .into_iter()
             .filter(|index| *index != i)
             .collect::<Vec<_>>();
-        let mut inputs = vec![None; 3];
-        inputs[input_sets[0]] = Some(mat_b_composition_set.clone());
-        inputs[input_sets[1]] = Some(mat_c_composition_set.clone());
+        let mut inputs = vec![DataSet::default(); 3];
+        inputs[input_sets[0]] = mat_b_composition_set.clone();
+        inputs[input_sets[1]] = mat_c_composition_set.clone();
         let mut overwrite_inputs = inputs.clone();
-        overwrite_inputs[i] = Some(mat_fault_composition_set.clone());
+        overwrite_inputs[i] = mat_fault_composition_set.clone();
 
         let mut recorder = Recorder::new(function_id.clone(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
@@ -137,21 +132,19 @@ pub fn single_input_fixed(
         };
         assert_eq!(1, out_sets.len());
         assert_eq!(1, overwrite_sets.len());
-        let mut result_iter = out_sets[0].as_ref().unwrap().into_iter();
-        let (result_item, result_set) = result_iter.next().unwrap();
-        assert!(result_iter.next().is_none());
-        let mut overwrite_iter = overwrite_sets[0].as_ref().unwrap().into_iter();
-        let (overwrite_item, overwrite_set) = overwrite_iter.next().unwrap();
-        assert!(overwrite_iter.next().is_none());
+        assert_eq!(1, out_sets[0].len());
+        assert_eq!(1, overwrite_sets[0].len());
+        let result_item = &out_sets[0][0];
+        let overwrite_item = &overwrite_sets[0][0];
         assert_eq!(0, result_item.key);
         assert_eq!(0, overwrite_item.key);
-        check_matrix(result_set, result_item, 1, vec![expected[i]]);
-        check_matrix(overwrite_set, overwrite_item, 1, vec![expected[i]]);
+        check_matrix(result_item, 1, vec![expected[i]]);
+        check_matrix(overwrite_item, 1, vec![expected[i]]);
     }
 }
 
 /// check functionallity with multiple fixed inputs with and without input provided for the fixed sets
-pub fn multiple_input_fixed(
+pub fn multiple_input_fixed<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
@@ -159,21 +152,13 @@ pub fn multiple_input_fixed(
 ) {
     // set up input sets
     let mat_a_composition_set =
-        CompositionSet::from_context(create_context(Box::new([1u64, 2u64])))[0]
-            .take()
-            .unwrap();
+        DataSet::from_context(create_context(Box::new([1u64, 2u64]))).remove(0);
     let mat_b_composition_set =
-        CompositionSet::from_context(create_context(Box::new([1u64, 3u64])))[0]
-            .take()
-            .unwrap();
+        DataSet::from_context(create_context(Box::new([1u64, 3u64]))).remove(0);
     let mat_c_composition_set =
-        CompositionSet::from_context(create_context(Box::new([1u64, 5u64])))[0]
-            .take()
-            .unwrap();
+        DataSet::from_context(create_context(Box::new([1u64, 5u64]))).remove(0);
     let mat_fault_composition_set =
-        CompositionSet::from_context(create_context(Box::new([1u64, 100u64])))[0]
-            .take()
-            .unwrap();
+        DataSet::from_context(create_context(Box::new([1u64, 100u64]))).remove(0);
     let expected = [11, 11, 17];
 
     let in_set_names = vec![
@@ -182,7 +167,7 @@ pub fn multiple_input_fixed(
         (String::from(""), None),
     ];
     let out_set_names = vec![String::from("")];
-    let (dispatcher, _) = setup_dispatcher(
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
         relative_path,
         in_set_names.clone(),
         out_set_names.clone(),
@@ -215,10 +200,7 @@ pub fn multiple_input_fixed(
                     .expect("Path should be valid string")
                     .to_string(),
                 Metadata {
-                    input_sets: local_names
-                        .into_iter()
-                        .map(|(name, set_op)| (name, set_op.map(|set| set.into_local())))
-                        .collect(),
+                    input_sets: local_names.into_iter().collect(),
                     output_sets: out_set_names.clone(),
                     min_set_bytes: vec![],
                 },
@@ -226,11 +208,11 @@ pub fn multiple_input_fixed(
             .expect("should be able to update function");
 
         // prepare inputs
-        let mut inputs = vec![None; 3];
-        inputs[i] = Some(mat_a_composition_set.clone());
+        let mut inputs = vec![DataSet::default(); 3];
+        inputs[i] = mat_a_composition_set.clone();
         let mut overwrite_inputs = inputs.clone();
-        overwrite_inputs[fixed_sets[0]] = Some(mat_fault_composition_set.clone());
-        overwrite_inputs[fixed_sets[1]] = Some(mat_fault_composition_set.clone());
+        overwrite_inputs[fixed_sets[0]] = mat_fault_composition_set.clone();
+        overwrite_inputs[fixed_sets[1]] = mat_fault_composition_set.clone();
 
         let mut recorder = Recorder::new(function_id.clone(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
@@ -258,16 +240,14 @@ pub fn multiple_input_fixed(
         };
         assert_eq!(1, out_sets.len());
         assert_eq!(1, overwrite_sets.len());
-        let mut result_iter = out_sets[0].as_ref().unwrap().into_iter();
-        let (result_item, result_set) = result_iter.next().unwrap();
-        assert!(result_iter.next().is_none());
-        let mut overwrite_iter = overwrite_sets[0].as_ref().unwrap().into_iter();
-        let (overwrite_item, overwrite_set) = overwrite_iter.next().unwrap();
-        assert!(overwrite_iter.next().is_none());
+        assert_eq!(1, out_sets[0].len());
+        assert_eq!(1, overwrite_sets[0].len());
+        let result_item = &out_sets[0][0];
+        let overwrite_item = &overwrite_sets[0][0];
         assert_eq!(0, result_item.key);
         assert_eq!(0, overwrite_item.key);
-        check_matrix(result_set, result_item, 1, vec![expected[i]]);
-        check_matrix(overwrite_set, overwrite_item, 1, vec![expected[i]]);
+        check_matrix(result_item, 1, vec![expected[i]]);
+        check_matrix(overwrite_item, 1, vec![expected[i]]);
     }
 }
 
@@ -275,7 +255,7 @@ pub fn multiple_input_fixed(
 fn test_insert_composition_with_http_func() {
     use std::collections::BTreeMap;
 
-    use machine_interface::composition::AnyShardingMode;
+    use composition::AnyShardingMode;
     let work_queue = dispatcher::queue::WorkQueue::init();
     let dispatcher = dispatcher::dispatcher::Dispatcher::init(
         dispatcher::resource_pool::ResourcePool {

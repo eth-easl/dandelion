@@ -10,22 +10,19 @@ use core::{
 };
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, PromiseError};
 use futures::task::AtomicWaker;
-use std::{
-    mem::MaybeUninit,
-    sync::{atomic::Ordering::Acquire, Arc},
-};
+use std::sync::{Arc, Mutex};
 
 // debt sets content on drop so this is both the alive flag and the content lock
 static DEBT_ALIVE: u8 = 0b0000_0001;
 static PROMISE_ALIVE: u8 = 0b0000_0010;
-static ABORT_SET: u8 = 0b0000_0100;
+// set while the debt still accesses the slot, cleared by the debt after its last access (the wake)
+static DEBT_REF: u8 = 0b0000_0100;
 
 type AbortHandle = Box<dyn FnOnce() + Send + 'static>;
 
 struct PromiseData {
-    /// Abort handle, only to be called once, as long as this value
-    ///non null that means the function has not been aborted or terminated on it's own
-    abort_handle: MaybeUninit<AbortHandle>,
+    /// Abort handle, taken out when called, dropped together with the data otherwise
+    abort_handle: Mutex<Option<AbortHandle>>,
     /// Points to raw box of the results the engine has put in there
     results: Cell<DandelionResult<WorkDone>>,
     waker: AtomicWaker,
@@ -116,12 +113,12 @@ impl PromiseBuffer {
         let data_ptr = self.internal.get_promise_data()?;
         let data = unsafe { &mut (&mut *data_ptr).data };
         let default = ManuallyDrop::new(PromiseData {
-            abort_handle: MaybeUninit::uninit(),
+            abort_handle: Mutex::new(None),
             results: Cell::new(err_dandelion!(DandelionError::PromiseError(
                 PromiseError::DroppedDebt
             ))),
             waker: AtomicWaker::new(),
-            flags: AtomicU8::new(DEBT_ALIVE | PROMISE_ALIVE),
+            flags: AtomicU8::new(DEBT_ALIVE | DEBT_REF | PROMISE_ALIVE),
         });
         *data = default;
 
@@ -149,11 +146,12 @@ impl Promise {
     }
     fn abort_internal(&mut self) {
         let data = unsafe { &(&*self.data).data };
-        // check there is an abort handle and the debt has not already been dropped
-        let flags = data.flags.load(Acquire);
-        if flags & (ABORT_SET | DEBT_ALIVE) == (ABORT_SET | DEBT_ALIVE) {
-            let abort_hanlder = unsafe { data.abort_handle.assume_init_read() };
-            abort_hanlder();
+        let abort_handler = take_abort_handle(data);
+        // only abort if the debt has not already been dropped
+        if data.flags.load(Ordering::Acquire) & DEBT_ALIVE != 0 {
+            if let Some(abort_handler) = abort_handler {
+                abort_handler();
+            }
         }
     }
 }
@@ -189,7 +187,8 @@ impl Drop for Promise {
         self.abort_internal();
         let data = unsafe { &(&*self.data).data };
         let previous_flags = data.flags.fetch_and(!PROMISE_ALIVE, Ordering::SeqCst);
-        if (previous_flags & DEBT_ALIVE) == 0 {
+        // the debt may still be calling the waker after clearing DEBT_ALIVE, only free once it is done
+        if (previous_flags & DEBT_REF) == 0 {
             self.origin.drop_promise_data(self.data);
         }
     }
@@ -219,21 +218,41 @@ impl Debt {
     where
         F: FnOnce() + Send + 'static,
     {
-        let data = unsafe { &mut (&mut *self.data).data };
-        data.abort_handle.write(Box::new(handle));
-        data.flags.fetch_or(ABORT_SET, Ordering::AcqRel);
+        let data = unsafe { &(&*self.data).data };
+        let old_handle = data
+            .abort_handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .replace(Box::new(handle));
+        drop(old_handle);
     }
+
+    /// Remove the abort handle, for example when the work it refers to is no longer in flight.
+    pub fn clear_abort_handle(&self) {
+        let data = unsafe { &(&*self.data).data };
+        drop(take_abort_handle(data));
+    }
+}
+
+fn take_abort_handle(data: &PromiseData) -> Option<AbortHandle> {
+    return data
+        .abort_handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
 }
 
 impl Drop for Debt {
     fn drop(&mut self) {
         let data = unsafe { &(&*self.data).data };
-        // mark debt as dropped
-        let previous_flags = data.flags.fetch_and(!DEBT_ALIVE, Ordering::SeqCst);
+        // mark debt as dropped, this publishes the result to the promise
+        data.flags.fetch_and(!DEBT_ALIVE, Ordering::SeqCst);
 
         // call waker, if the promise has been dropped the waker should be able to deal with a delayed signal
         data.waker.wake();
 
+        // release the reference to the slot, after this the debt must not touch the data anymore
+        let previous_flags = data.flags.fetch_and(!DEBT_REF, Ordering::SeqCst);
         if previous_flags & PROMISE_ALIVE == 0 {
             self.origin.as_ref().drop_promise_data(self.data);
         }
