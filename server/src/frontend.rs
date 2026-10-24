@@ -665,7 +665,8 @@ async fn drop_lost_checkpoints(
                 continue;
             };
             if unreachable_nodes.contains(&node_id) {
-                continue;
+                lost = true;
+                break;
             }
             match client
                 .durable_data_size(RemoteData::durable(node_id, data_id))
@@ -682,6 +683,8 @@ async fn drop_lost_checkpoints(
                         data_id, node_id, run_id, err
                     );
                     unreachable_nodes.insert(node_id);
+                    lost = true;
+                    break;
                 }
             }
         }
