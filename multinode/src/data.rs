@@ -689,6 +689,10 @@ impl hyper::body::Body for ExportedBody {
 const DURABLE_DATA_ID_START: u64 = 1 << 63;
 const DURABLE_FETCH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 #[cfg(feature = "at-least-once")]
+const DURABLE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(feature = "at-least-once")]
+const DURABLE_SIZE_HEADER: &str = "x-dandelion-durable-size";
+#[cfg(feature = "at-least-once")]
 const DURABLE_DATA_FILE_EXTENSION: &str = "data";
 #[cfg(feature = "at-least-once")]
 const NEXT_DURABLE_DATA_ID_FILE: &str = "next_data_id";
@@ -2361,8 +2365,25 @@ impl ExportRegistry {
     }
 
     pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
+        #[cfg(feature = "at-least-once")]
+        if is_durable_data_id(data_id) && self.durable_data_size(data_id).is_none() {
+            return err_dandelion!(DandelionError::Multinode(MultinodeError::DataLost(format!(
+                "Unknown durable data id {}",
+                data_id
+            ))));
+        }
         let exported_data = self.get_exported_data(data_id)?;
         Ok((exported_data.context, exported_data.position))
+    }
+
+    #[cfg(feature = "at-least-once")]
+    pub fn durable_data_size(&self, data_id: u64) -> Option<usize> {
+        self.inner
+            .lock()
+            .unwrap()
+            .durable_data
+            .get(&data_id)
+            .map(|exported| exported.position.size)
     }
 
     /// A future that completes the next time the export registry has no transient items in it.
@@ -2499,11 +2520,12 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     }
                 };
                 if !response.status().is_success() {
+                    let lost = !durable || response.status() == reqwest::StatusCode::NOT_FOUND;
                     let status = response.status().to_string();
-                    return err_dandelion!(DandelionError::Multinode(if durable {
-                        MultinodeError::RequestFailed(status)
-                    } else {
+                    return err_dandelion!(DandelionError::Multinode(if lost {
                         MultinodeError::DataLost(status)
+                    } else {
+                        MultinodeError::RequestFailed(status)
                     }));
                 }
                 let mut size = 0;
@@ -2583,11 +2605,12 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     }
                 };
                 if !response.status().is_success() {
+                    let lost = !durable || response.status() == reqwest::StatusCode::NOT_FOUND;
                     let status = response.status().to_string();
-                    return err_dandelion!(DandelionError::Multinode(if durable {
-                        MultinodeError::RequestFailed(status)
-                    } else {
+                    return err_dandelion!(DandelionError::Multinode(if lost {
                         MultinodeError::DataLost(status)
+                    } else {
+                        MultinodeError::RequestFailed(status)
                     }));
                 }
 
@@ -2690,6 +2713,50 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 break;
             }
             Ok(())
+        })
+    }
+
+    #[cfg(feature = "at-least-once")]
+    fn durable_data_size(
+        &self,
+        data: RemoteData,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<Option<usize>>> + Send + '_>> {
+        Box::pin(async move {
+            if data.node_id == self.local_registry.node_id {
+                return Ok(self.local_registry.durable_data_size(data.data_id));
+            }
+            let mut url = self.remote_data_url(data.node_id)?;
+            url.push_str(&data.data_id.to_string());
+            let response = self
+                .client
+                .head(&url)
+                .timeout(DURABLE_PROBE_TIMEOUT)
+                .send()
+                .await
+                .map_err(|err| {
+                    dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
+                        err.to_string()
+                    )))
+                })?;
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            if !response.status().is_success() {
+                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+                    response.status().to_string()
+                )));
+            }
+            response
+                .headers()
+                .get(DURABLE_SIZE_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<usize>().ok())
+                .map(Some)
+                .ok_or_else(|| {
+                    dandelion_err!(DandelionError::Multinode(MultinodeError::ProtocolError(
+                        "Durable data probe response has no size".to_string()
+                    )))
+                })
         })
     }
 
@@ -3285,11 +3352,31 @@ async fn handle_exported_data(
                             return not_found(err.to_string());
                         }
                         return match export_registry.get_exported_data(data_id) {
-                            Err(err) => bad_request(format!("Get failed with: {}", err)),
+                            Err(err) => not_found(format!("Get failed with: {}", err)),
                             Ok(data) => Ok(Response::new(ExportedBody::new_single(data))),
                         }
                     }
                 }
+            }
+        }
+        // Recovery checks that a checkpoint still exists and has the right size.
+        // HEAD answers that without sending the data, unlike GET.
+        #[cfg(feature = "at-least-once")]
+        &Method::HEAD => {
+            return match id_string.parse::<u64>() {
+                Err(err) => bad_request(format!("Invalid data id: {}", err)),
+                Ok(data_id) => match export_registry.durable_data_size(data_id) {
+                    None => not_found(format!("Unknown durable data id {}", data_id)),
+                    Some(size) => {
+                        let mut response = Response::new(ExportedBody {
+                            inner: VecDeque::new(),
+                        });
+                        response
+                            .headers_mut()
+                            .insert(DURABLE_SIZE_HEADER, hyper::header::HeaderValue::from(size));
+                        Ok(response)
+                    }
+                },
             }
         }
         method => return bad_request(format!("Unsupported data server method {}", method)),
@@ -3365,7 +3452,7 @@ async fn handle_exported_data(
 
     match export_registry.get_multiple_data(data_ids) {
         Ok(exports) => Ok(Response::new(ExportedBody { inner: exports })),
-        Err(err) => bad_request(err.to_string()),
+        Err(err) => not_found(err.to_string()),
     }
 }
 

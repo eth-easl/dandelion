@@ -340,6 +340,13 @@ pub trait RemoteDataClient: Send + Sync {
         data: RemoteData,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
 
+    /// Returns the stored size of a durable export, or `None` when its node no longer has it.
+    #[cfg(feature = "at-least-once")]
+    fn durable_data_size(
+        &self,
+        data: RemoteData,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<Option<usize>>> + Send + '_>>;
+
     /// Persists successful lazy-I/O outputs locally and queues their delivery to the owner.
     #[cfg(feature = "at-least-once")]
     fn publish_io_completion(

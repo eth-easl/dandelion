@@ -25,6 +25,10 @@ use crate::{
 };
 
 const IO_LOG_DIR_NAME: &str = "io_logs";
+#[cfg(feature = "at-least-once")]
+const IO_COMPLETED_EVENT: &str = "io_function_completed";
+#[cfg(feature = "at-least-once")]
+const IO_INVALIDATED_EVENT: &str = "io_function_invalidated";
 const SYNC_RUN_LOG: bool = cfg!(feature = "exactly-once");
 static RECOVERY_LOG_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static RUN_LOG_LOCKS: OnceLock<Mutex<HashMap<RunId, Arc<AsyncMutex<RunLogState>>>>> =
@@ -293,12 +297,22 @@ impl RunLogState {
                     self.terminal = true;
                     self.completions = HashMap::new();
                 }
-                Some("io_function_completed") if !self.terminal => {
+                Some(IO_COMPLETED_EVENT) if !self.terminal => {
                     if let Some(record) = parse_io_completion_line(line)? {
                         self.completions.insert(
                             record.completion_key()?,
                             encode_io_completion_payload(&record.outputs)?,
                         );
+                    }
+                }
+                Some(IO_INVALIDATED_EVENT) if !self.terminal => {
+                    if let Some(record) = parse_io_record_line(line, IO_INVALIDATED_EVENT)? {
+                        let record_key = record.completion_key()?;
+                        if self.completions.get(&record_key)
+                            == Some(&encode_io_completion_payload(&record.outputs)?)
+                        {
+                            self.completions.remove(&record_key);
+                        }
                     }
                 }
                 _ => {}
@@ -559,8 +573,13 @@ pub async fn read_run_log(run_id: RunId) -> DandelionResult<String> {
 
 #[cfg(feature = "at-least-once")]
 pub fn parse_io_completion_line(line: &str) -> DandelionResult<Option<IoCompletionRecord>> {
+    parse_io_record_line(line, IO_COMPLETED_EVENT)
+}
+
+#[cfg(feature = "at-least-once")]
+fn parse_io_record_line(line: &str, event: &str) -> DandelionResult<Option<IoCompletionRecord>> {
     let fields = parse_log_fields(line);
-    if fields.get("event").copied() != Some("io_function_completed") {
+    if fields.get("event").copied() != Some(event) {
         return Ok(None);
     }
     let run_id = fields
@@ -612,6 +631,46 @@ pub async fn load_io_completion_records(run_id: RunId) -> DandelionResult<Vec<Io
         }
     }
     Ok(records)
+}
+
+/// Returns the completion records recovery may reuse, leaving out records whose checkpoint was
+/// found missing.
+#[cfg(feature = "at-least-once")]
+pub async fn load_recoverable_io_completion_records(
+    run_id: RunId,
+) -> DandelionResult<Vec<IoCompletionRecord>> {
+    let content = read_run_log(run_id).await?;
+    recoverable_io_completion_records_in(&content)
+}
+
+#[cfg(feature = "at-least-once")]
+fn recoverable_io_completion_records_in(content: &str) -> DandelionResult<Vec<IoCompletionRecord>> {
+    let mut records: Vec<(IoCompletionKey, String, IoCompletionRecord)> = Vec::new();
+    for line in complete_log_lines(content) {
+        if let Some(record) = parse_io_completion_line(line)? {
+            records.push((
+                record.completion_key()?,
+                encode_io_completion_payload(&record.outputs)?,
+                record,
+            ));
+        } else if let Some(invalidated) = parse_io_record_line(line, IO_INVALIDATED_EVENT)? {
+            let invalidated_key = invalidated.completion_key()?;
+            let invalidated_payload = encode_io_completion_payload(&invalidated.outputs)?;
+            records.retain(|(record_key, record_payload, _)| {
+                *record_key != invalidated_key || *record_payload != invalidated_payload
+            });
+        }
+    }
+    Ok(records.into_iter().map(|(_, _, record)| record).collect())
+}
+
+/// Marks a completion record as unusable because its checkpoint is gone, so recovery runs the
+/// I/O again and accepts the new completion.
+#[cfg(feature = "at-least-once")]
+pub async fn invalidate_io_completion_record(record: &IoCompletionRecord) -> DandelionResult<()> {
+    let payload_b64 = encode_io_completion_payload(&record.outputs)?;
+    let line = io_record_line(IO_INVALIDATED_EVENT, record, &payload_b64);
+    append_run_log_line(record.run_id, &line).await
 }
 
 #[cfg(feature = "at-least-once")]
@@ -880,6 +939,44 @@ mod cleanup_tests {
             .unwrap(),
             Some(IoCompletionDisposition::Delete)
         );
+    }
+
+    #[test]
+    fn invalidated_completion_is_not_recovered_and_lets_a_rerun_win() {
+        let run_id = RunId::from_u128(13);
+        let lost = completion(run_id, 100);
+        let rerun = completion(run_id, 101);
+        let log = format!(
+            "event=invocation_submitted run_id={} request_len=0 request_b64= is_cold=false\n{}{}",
+            run_id,
+            format_io_completion_line(&lost).unwrap(),
+            io_record_line(
+                IO_INVALIDATED_EVENT,
+                &lost,
+                &encode_io_completion_payload(&lost.outputs).unwrap()
+            )
+        );
+        assert!(recoverable_io_completion_records_in(&log).unwrap().is_empty());
+        assert_eq!(
+            delivered_io_completion_disposition(&RunLogState::from_log(&log).unwrap(), &rerun)
+                .unwrap(),
+            None
+        );
+
+        let log = format!("{}{}", log, format_io_completion_line(&rerun).unwrap());
+        let recovered = recoverable_io_completion_records_in(&log).unwrap();
+        assert_eq!(1, recovered.len());
+        assert_eq!(
+            encode_io_completion_payload(&rerun.outputs).unwrap(),
+            encode_io_completion_payload(&recovered[0].outputs).unwrap()
+        );
+        assert_eq!(2, remote_io_exports_from_records(parse_all(&log)).len());
+    }
+
+    fn parse_all(log: &str) -> Vec<IoCompletionRecord> {
+        complete_log_lines(log)
+            .filter_map(|line| parse_io_completion_line(line).unwrap())
+            .collect()
     }
 
     #[test]
@@ -1229,13 +1326,18 @@ pub fn format_io_completion_line(record: &IoCompletionRecord) -> DandelionResult
 
 #[cfg(feature = "at-least-once")]
 fn io_completion_line(record: &IoCompletionRecord, payload_b64: &str) -> String {
+    io_record_line(IO_COMPLETED_EVENT, record, payload_b64)
+}
+
+#[cfg(feature = "at-least-once")]
+fn io_record_line(event: &str, record: &IoCompletionRecord, payload_b64: &str) -> String {
     let claim_field = record
         .claim_id
         .map(|claim_id| format!(" claim_id={}", claim_id))
         .unwrap_or_default();
     format!(
-        "event=io_function_completed run_id={} io_path={} function={}{} payload_b64={}\n",
-        record.run_id, record.io_path, record.function, claim_field, payload_b64
+        "event={} run_id={} io_path={} function={}{} payload_b64={}\n",
+        event, record.run_id, record.io_path, record.function, claim_field, payload_b64
     )
 }
 

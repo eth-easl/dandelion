@@ -628,10 +628,67 @@ async fn start_recovered_invocation(
     let run_id = recoverable.run_id;
     let parsed =
         parse_persisted_async_invocation_request_bytes(recoverable.request_bytes, run_id).await?;
-    let recovered_io = recovery_log::load_io_completion_records(run_id).await?;
+    let recovered_io = recovery_log::load_recoverable_io_completion_records(run_id).await?;
+    #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+    let recovered_io = if attempt > 0 {
+        drop_lost_checkpoints(run_id, recovered_io).await?
+    } else {
+        recovered_io
+    };
     recovery_log::install_recovered_io_records(run_id, recovered_io)?;
     spawn_async_invocation_attempt(dispatcher, recoverable.is_cold, parsed, attempt);
     Ok(())
+}
+
+#[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+async fn drop_lost_checkpoints(
+    run_id: RunId,
+    records: Vec<machine_interface::function_driver::system_driver::IoCompletionRecord>,
+) -> DandelionResult<Vec<machine_interface::function_driver::system_driver::IoCompletionRecord>> {
+    use machine_interface::{
+        composition::RemoteData,
+        function_driver::system_driver::{recovery_log, IoCompletionData},
+    };
+
+    let client = get_remote_data_client()?;
+    let mut kept = Vec::with_capacity(records.len());
+    for record in records {
+        let mut lost = false;
+        for item in record.outputs.iter().flat_map(|output| output.items.iter()) {
+            let IoCompletionData::Remote {
+                node_id,
+                data_id,
+                size,
+            } = item.location
+            else {
+                continue;
+            };
+            match client
+                .durable_data_size(RemoteData::durable(node_id, data_id))
+                .await
+            {
+                Ok(Some(stored_size)) if stored_size == size => {}
+                Ok(_) => {
+                    lost = true;
+                    break;
+                }
+                Err(err) => warn!(
+                    "Could not check checkpoint {} on node {} for invocation {}: {}",
+                    data_id, node_id, run_id, err
+                ),
+            }
+        }
+        if lost {
+            warn!(
+                "Checkpoint of {} for invocation {} is gone, running it again",
+                record.io_path, run_id
+            );
+            recovery_log::invalidate_io_completion_record(&record).await?;
+        } else {
+            kept.push(record);
+        }
+    }
+    Ok(kept)
 }
 
 #[cfg(feature = "at-least-once")]
@@ -711,8 +768,19 @@ pub async fn resume_recoverable_invocations(
     dispatcher: &'static Dispatcher,
 ) -> DandelionResult<()> {
     for recoverable in crate::async_invocation::list_recoverable_invocations().await? {
-        info!("Async invocation {} recovery started", recoverable.run_id);
-        start_recovered_invocation(dispatcher, recoverable, 0).await?;
+        let run_id = recoverable.run_id;
+        info!("Async invocation {} recovery started", run_id);
+        if let Err(err) = start_recovered_invocation(dispatcher, recoverable, 0).await {
+            error!("Failed to resume async invocation {}: {}", run_id, err);
+            if let Err(persist_err) =
+                crate::async_invocation::persist_failed(run_id, format!("{}", err)).await
+            {
+                error!(
+                    "Failed to mark async invocation {} as failed: {}",
+                    run_id, persist_err
+                );
+            }
+        }
     }
     Ok(())
 }
