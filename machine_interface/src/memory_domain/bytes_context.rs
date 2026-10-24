@@ -1,11 +1,7 @@
-use crate::{
-    memory_domain::{Context, ContextTrait},
-    DataItem, DataSet,
-};
-use bytes::{Buf, Bytes};
-use core::mem::size_of;
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, FrontendError};
-use log::{debug, error};
+use crate::memory_domain::ContextTrait;
+use bytes::Bytes;
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
+use log::error;
 
 pub struct BytesContext {
     frames: Vec<Bytes>,
@@ -66,6 +62,10 @@ impl ContextTrait for BytesContext {
                 offset = 0;
             }
         }
+        // Zero-length reads at EOF are valid.
+        if offset == 0 && remaining == 0 {
+            return Ok(());
+        }
         err_dandelion!(DandelionError::InvalidRead)
     }
     fn get_chunk_ref(&self, mut offset: usize, length: usize) -> DandelionResult<&[u8]> {
@@ -78,15 +78,36 @@ impl ContextTrait for BytesContext {
                 return Ok(&frame[offset..]);
             }
         }
+        if offset == 0 && length == 0 {
+            return Ok(&[]);
+        }
         err_dandelion!(DandelionError::InvalidRead)
     }
 }
 
-struct FrameBuf<'data> {
+pub struct FrameBuf<'data> {
     byte_iter: &'data Vec<Bytes>,
     remaining: usize,
     current_frame: usize,
     current_buf_offset: usize,
+}
+
+impl<'data> FrameBuf<'data> {
+    pub fn try_new(byte_iter: &'data Vec<Bytes>) -> Option<Self> {
+        let remaining = byte_iter
+            .iter()
+            .try_fold(0usize, |size, frame| size.checked_add(frame.len()))?;
+        Some(Self {
+            byte_iter,
+            remaining,
+            current_frame: 0,
+            current_buf_offset: 0,
+        })
+    }
+
+    pub fn position(&self) -> (usize, usize) {
+        (self.current_frame, self.current_buf_offset)
+    }
 }
 
 impl<'data> bytes::Buf for FrameBuf<'data> {
@@ -95,15 +116,16 @@ impl<'data> bytes::Buf for FrameBuf<'data> {
     }
 
     fn advance(&mut self, cnt: usize) {
+        assert!(cnt <= self.remaining);
         let mut to_advance = cnt;
         self.remaining -= cnt;
         while to_advance > 0 {
             let current_frame_size = self.byte_iter[self.current_frame].len();
-            if self.current_buf_offset + to_advance < current_frame_size {
+            let available = current_frame_size - self.current_buf_offset;
+            if to_advance < available {
                 self.current_buf_offset += to_advance;
                 break;
             } else {
-                let available = current_frame_size - self.current_buf_offset;
                 to_advance -= available;
                 self.current_buf_offset = 0;
                 self.current_frame += 1;
@@ -112,357 +134,10 @@ impl<'data> bytes::Buf for FrameBuf<'data> {
     }
 
     fn chunk(&self) -> &[u8] {
-        &(self.byte_iter[self.current_frame])[self.current_buf_offset..]
-    }
-}
-
-fn check_remaining<T>(buf: &impl bytes::Buf) -> DandelionResult<()> {
-    if buf.remaining() < size_of::<T>() {
-        err_dandelion!(DandelionError::RequestError(FrontendError::StreamEnd))
-    } else {
-        Ok(())
-    }
-}
-
-fn read_type_byte(buf: &mut impl bytes::Buf) -> DandelionResult<i8> {
-    check_remaining::<i8>(buf)?;
-    Ok(buf.get_i8())
-}
-
-fn read_and_check_termination(buf: &mut impl bytes::Buf) -> DandelionResult<()> {
-    check_remaining::<u8>(buf)?;
-    if buf.get_u8() == 0 {
-        Ok(())
-    } else {
-        err_dandelion!(DandelionError::RequestError(FrontendError::ViolatedSpec))
-    }
-}
-
-fn read_length(buf: &mut impl bytes::Buf) -> DandelionResult<usize> {
-    check_remaining::<i32>(buf)?;
-    usize::try_from(buf.get_i32_le()).or(err_dandelion!(DandelionError::RequestError(
-        FrontendError::ViolatedSpec,
-    )))
-}
-
-fn read_cstring(buf: &mut impl bytes::Buf) -> DandelionResult<String> {
-    // cstrings are bytes series of unkown length which are null terminated
-    let mut cstring = String::new();
-    'string_loop: while buf.remaining() > 0 {
-        let mut chunk_index = 0;
-        let chunk = buf.chunk();
-        while chunk_index < chunk.len() {
-            if chunk[chunk_index] == 0 {
-                cstring.push_str(std::str::from_utf8(&chunk[0..=chunk_index]).unwrap());
-                buf.advance(chunk_index + 1);
-                break 'string_loop;
-            }
-            chunk_index += 1;
-        }
-        cstring.push_str(std::str::from_utf8(chunk).unwrap());
-        buf.advance(chunk_index);
-    }
-    Ok(cstring)
-}
-
-fn read_and_check_cstring(buf: &mut impl bytes::Buf, expected_string: &str) -> DandelionResult<()> {
-    let cstring = read_cstring(buf)?;
-    if cstring.as_str() != expected_string {
-        debug!(
-            "Unexpeced cstring: {:?}, expected: {:?}",
-            cstring, expected_string
-        );
-        return err_dandelion!(DandelionError::RequestError(
-            FrontendError::MalformedMessage,
-        ));
-    }
-    Ok(())
-}
-
-fn read_string(buf: &mut impl bytes::Buf) -> DandelionResult<String> {
-    // get string length, remove trainling null char, as they are not needed for rust string
-    let string_length = read_length(buf)? - 1;
-    let mut byte_buffer = vec![0; string_length];
-    if buf.remaining() < string_length {
-        return err_dandelion!(DandelionError::RequestError(FrontendError::StreamEnd));
-    }
-    // the string length describes a character buffer of lenght n with a trailing null char
-    // do not copy null char
-    buf.copy_to_slice(byte_buffer.as_mut_slice());
-    // read the trailing null bytes
-    read_and_check_termination(buf)?;
-
-    let string = String::from_utf8(byte_buffer).or(err_dandelion!(
-        DandelionError::RequestError(FrontendError::ViolatedSpec,)
-    ))?;
-    Ok(string)
-}
-
-fn read_data_item(
-    buf: &mut impl bytes::Buf,
-    total_length: usize,
-) -> DandelionResult<Option<DataItem>> {
-    // check item doc type
-    let item_doc_type = read_type_byte(buf)?;
-    match item_doc_type {
-        0 => return Ok(None),
-        3 => (),
-        _ => {
-            debug!("Expected item of type doc, found: {}", item_doc_type);
-            return err_dandelion!(DandelionError::RequestError(
-                FrontendError::MalformedMessage,
-            ));
-        }
-    }
-    let _doc_name = read_cstring(buf)?;
-    let _doc_lenght = read_length(buf)?;
-
-    // allow for arbitrary ordering of data item fields
-    let mut ident = "".to_string();
-    let mut key = 0;
-    let mut offset = 0;
-    let mut size = 0;
-    let mut check: u8 = 0;
-    for _ in 0..3 {
-        let next_type = read_type_byte(buf)?;
-        match next_type {
-            2 => {
-                // -> expect the identifier part
-                read_and_check_cstring(buf, "identifier\0")?;
-                ident = read_string(buf)?;
-                check |= 1;
-            }
-            // accept key either as int64 or int32
-            16 => {
-                // -> expect the key part
-                read_and_check_cstring(buf, "key\0")?;
-                key = u32::try_from(buf.get_i32_le()).or(err_dandelion!(
-                    DandelionError::RequestError(FrontendError::MalformedMessage,)
-                ))?;
-                check |= 2;
-            }
-            18 => {
-                // -> expect the key part
-                read_and_check_cstring(buf, "key\0")?;
-                key = u32::try_from(buf.get_i64_le()).or(err_dandelion!(
-                    DandelionError::RequestError(FrontendError::MalformedMessage,)
-                ))?;
-                check |= 2;
-            }
-            5 => {
-                // -> expect the data part
-                read_and_check_cstring(buf, "data\0")?;
-                size = read_length(buf)?;
-                let _binary_subtype = read_type_byte(buf)?;
-                offset = total_length - buf.remaining();
-                buf.advance(size);
-                check |= 4;
-            }
-            x => {
-                debug!(
-                    "Got type {}, expected either 2 (string), 5 (binary_data), 16 (i32), 18 (i64)",
-                    x
-                );
-                let next_id = read_cstring(buf)?;
-                debug!("Next identifier is {}", next_id);
-                return err_dandelion!(DandelionError::RequestError(
-                    FrontendError::MalformedMessage,
-                ));
-            }
-        };
-    }
-    read_and_check_termination(buf)?;
-
-    // check that each field has been read
-    if check != 7 {
-        debug!("Some item field is missing.");
-        return err_dandelion!(DandelionError::RequestError(
-            FrontendError::MalformedMessage,
-        ));
-    }
-
-    Ok(Some(DataItem {
-        ident,
-        key,
-        data: crate::Position { offset, size },
-    }))
-}
-
-fn read_data_set(
-    buf: &mut impl bytes::Buf,
-    total_length: usize,
-) -> DandelionResult<Option<DataSet>> {
-    // check item doc type
-    let item_doc_type = read_type_byte(buf)?;
-    match item_doc_type {
-        0 => return Ok(None),
-        3 => (),
-        _ => {
-            debug!("Expected set of type doc, found: {}", item_doc_type);
-            return err_dandelion!(DandelionError::RequestError(
-                FrontendError::MalformedMessage,
-            ));
-        }
-    }
-    let _doc_name = read_cstring(buf)?;
-    let _doc_lenght = read_length(buf)?;
-
-    // allow for arbitrary ordering of data set fields
-    let mut ident = "".to_string();
-    let mut items = Vec::new();
-    let mut check: u8 = 0;
-    for _ in 0..2 {
-        let next_type = read_type_byte(buf)?;
-        match next_type {
-            2 => {
-                // -> expect the identifier part
-                read_and_check_cstring(buf, "identifier\0")?;
-                ident = read_string(buf)?;
-                check |= 1;
-            }
-            4 => {
-                // -> expect the items part
-                read_and_check_cstring(buf, "items\0")?;
-                let array_end = buf.remaining() - read_length(buf)?;
-
-                // reads all items
-                while buf.remaining() > array_end {
-                    if let Some(item) = read_data_item(buf, total_length)? {
-                        items.push(item);
-                    } else {
-                        break;
-                    }
-                }
-
-                check |= 2;
-            }
-            x => {
-                debug!("Got type {}, expected either 2 (string), 4 (array)", x);
-                let next_id = read_cstring(buf)?;
-                debug!("Next identifier is {}", next_id);
-                return err_dandelion!(DandelionError::RequestError(
-                    FrontendError::MalformedMessage,
-                ));
-            }
-        };
-    }
-    read_and_check_termination(buf)?;
-
-    // check that both fields have been read
-    if check != 3 {
-        debug!("Some set field is missing.");
-        return err_dandelion!(DandelionError::RequestError(
-            FrontendError::MalformedMessage,
-        ));
-    }
-
-    Ok(Some(DataSet {
-        ident,
-        buffers: items,
-    }))
-}
-
-impl BytesContext {
-    pub async fn from_bytes_vec(
-        frame_data: Vec<Bytes>,
-        total_size: usize,
-    ) -> DandelionResult<(Option<String>, Option<String>, Context)> {
-        let mut frame_buf = FrameBuf {
-            byte_iter: &frame_data,
-            remaining: total_size,
-            current_buf_offset: 0,
-            current_frame: 0,
-        };
-
-        // check that the actual remaining data size is equal to the expected data size
-        let bson_dict_length = read_length(&mut frame_buf)?;
-        if frame_buf.remaining() + size_of::<i32>() != bson_dict_length {
-            return err_dandelion!(DandelionError::RequestError(FrontendError::ViolatedSpec));
-        }
-
-        // allow for arbitrary ordering of the 'name' and 'sets' fields
-        let mut function_name = None;
-        let mut composition = None;
-        let mut sets = Vec::new();
-        let mut check: u8 = 0;
-        for _ in 0..2 {
-            let next_type = read_type_byte(&mut frame_buf)?;
-            match next_type {
-                2 => {
-                    // -> expect the function name or composition description part
-                    if check & 0x1 > 0 {
-                        debug!("Got second 'name' or 'composition' field");
-                        return err_dandelion!(DandelionError::RequestError(
-                            FrontendError::MalformedMessage,
-                        ));
-                    }
-                    let cstring = read_cstring(&mut frame_buf)?;
-                    if cstring.as_str() == "name\0" {
-                        function_name = Some(read_string(&mut frame_buf)?);
-                    } else if cstring.as_str() == "composition\0" {
-                        composition = Some(read_string(&mut frame_buf)?);
-                    } else {
-                        debug!("Expected either 'name' or 'composition', got {}", cstring);
-                        return err_dandelion!(DandelionError::RequestError(
-                            FrontendError::MalformedMessage,
-                        ));
-                    }
-                    check |= 1;
-                }
-                4 => {
-                    // -> expect the sets part
-                    read_and_check_cstring(&mut frame_buf, "sets\0")?;
-                    let array_end = frame_buf.remaining() - read_length(&mut frame_buf)?;
-
-                    // reads all sets
-                    while frame_buf.remaining() > array_end {
-                        if let Some(set) = read_data_set(&mut frame_buf, bson_dict_length)? {
-                            sets.push(Some(set));
-                        } else {
-                            break;
-                        }
-                    }
-
-                    check |= 2;
-                }
-                x => {
-                    debug!("Got type {}, expected either 2 (string), 4 (array)", x);
-                    let next_id = read_cstring(&mut frame_buf)?;
-                    debug!("Next identifier is {}", next_id);
-                    return err_dandelion!(DandelionError::RequestError(
-                        FrontendError::MalformedMessage,
-                    ));
-                }
-            };
-        }
-        read_and_check_termination(&mut frame_buf)?;
-
-        // check that both fields have been read
-        if check != 3 {
-            debug!("Some byte context field is missing.");
-            return err_dandelion!(DandelionError::RequestError(
-                FrontendError::MalformedMessage,
-            ));
-        }
-
-        // check that we have read the whole buffer
-        if frame_buf.remaining > 0 {
-            debug!(
-                "Finished reading bytes context but frame buffer has {} remaining",
-                frame_buf.remaining
-            );
-            return err_dandelion!(DandelionError::RequestError(FrontendError::ViolatedSpec));
-        }
-
-        // create context
-        let mut context = Context::new(
-            crate::memory_domain::ContextType::Bytes(Box::new(BytesContext { frames: frame_data })),
-            bson_dict_length,
-        );
-        context.occupy_space(0, bson_dict_length)?;
-        context.content = sets;
-
-        Ok((function_name, composition, context))
+        self.byte_iter[self.current_frame..]
+            .iter()
+            .find(|frame| !frame.is_empty())
+            .map_or(&[], |frame| &frame[self.current_buf_offset..])
     }
 }
 
@@ -488,4 +163,50 @@ fn read_test() {
         .read(2, &mut partial_read_vec)
         .expect("Partial read should succeed");
     assert_eq!(&expected_data[2..6], partial_read_vec.as_slice());
+}
+
+#[test]
+fn zero_length_reads_accept_eof_without_allowing_out_of_bounds() {
+    for (context, size) in [
+        (BytesContext::new(vec![]), 0),
+        (BytesContext::new(vec![Bytes::from(vec![1u8, 2u8, 3u8])]), 3),
+    ] {
+        context.read::<u8>(size, &mut []).unwrap();
+        assert!(context.get_chunk_ref(size, 0).unwrap().is_empty());
+        assert!(context.read::<u8>(size + 1, &mut []).is_err());
+        assert!(context.get_chunk_ref(size + 1, 0).is_err());
+        assert!(context.read(size, &mut [0u8]).is_err());
+        assert!(context.get_chunk_ref(size, 1).is_err());
+    }
+}
+
+#[test]
+fn frame_buf_handles_empty_frames_and_eof() {
+    use bytes::Buf;
+
+    for frames in [
+        vec![],
+        vec![Bytes::new()],
+        vec![Bytes::from(vec![1u8, 2u8]), Bytes::from(vec![3u8, 4u8])],
+        vec![
+            Bytes::new(),
+            Bytes::from(vec![1u8, 2u8]),
+            Bytes::new(),
+            Bytes::from(vec![3u8, 4u8]),
+            Bytes::new(),
+        ],
+    ] {
+        let mut buf = FrameBuf::try_new(&frames).unwrap();
+        if buf.has_remaining() {
+            assert_eq!(buf.chunk(), &[1u8, 2u8]);
+            buf.advance(1);
+            assert_eq!(buf.chunk(), &[2u8]);
+            buf.advance(2);
+            assert_eq!(buf.chunk(), &[4u8]);
+            buf.advance(1);
+        }
+        assert_eq!(buf.remaining(), 0);
+        assert!(buf.chunk().is_empty());
+        buf.advance(0);
+    }
 }
