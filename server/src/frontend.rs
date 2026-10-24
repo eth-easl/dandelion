@@ -651,6 +651,7 @@ async fn drop_lost_checkpoints(
     };
 
     let client = get_remote_data_client()?;
+    let mut unreachable_nodes = std::collections::HashSet::new();
     let mut kept = Vec::with_capacity(records.len());
     for record in records {
         let mut lost = false;
@@ -663,6 +664,9 @@ async fn drop_lost_checkpoints(
             else {
                 continue;
             };
+            if unreachable_nodes.contains(&node_id) {
+                continue;
+            }
             match client
                 .durable_data_size(RemoteData::durable(node_id, data_id))
                 .await
@@ -672,10 +676,13 @@ async fn drop_lost_checkpoints(
                     lost = true;
                     break;
                 }
-                Err(err) => warn!(
-                    "Could not check checkpoint {} on node {} for invocation {}: {}",
-                    data_id, node_id, run_id, err
-                ),
+                Err(err) => {
+                    warn!(
+                        "Could not check checkpoint {} on node {} for invocation {}: {}",
+                        data_id, node_id, run_id, err
+                    );
+                    unreachable_nodes.insert(node_id);
+                }
             }
         }
         if lost {
