@@ -253,29 +253,37 @@ pub struct RemoteData {
 #[derive(Debug)]
 pub struct RemoteDataInner {
     pub node_id: u64,
+    pub incarnation: u64,
     pub data_id: u64,
     delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
 }
 
 impl RemoteData {
-    pub fn new(node_id: u64, data_id: u64) -> Self {
+    pub fn new(node_id: u64, incarnation: u64, data_id: u64) -> Self {
         Self {
             inner: Arc::new(RemoteDataInner {
                 node_id,
+                incarnation,
                 data_id,
                 delete_sender: None,
             }),
         }
     }
 
+    pub fn durable(node_id: u64, data_id: u64) -> Self {
+        Self::new(node_id, 0, data_id)
+    }
+
     pub fn delete_on_drop(
         node_id: u64,
+        incarnation: u64,
         data_id: u64,
         delete_sender: mpsc::UnboundedSender<RemoteData>,
     ) -> Self {
         Self {
             inner: Arc::new(RemoteDataInner {
                 node_id,
+                incarnation,
                 data_id,
                 delete_sender: Some(delete_sender),
             }),
@@ -294,7 +302,11 @@ impl Deref for RemoteData {
 impl Drop for RemoteDataInner {
     fn drop(&mut self) {
         if let Some(delete_sender) = &self.delete_sender {
-            if let Err(err) = delete_sender.send(RemoteData::new(self.node_id, self.data_id)) {
+            if let Err(err) = delete_sender.send(RemoteData::new(
+                self.node_id,
+                self.incarnation,
+                self.data_id,
+            )) {
                 error!(
                     "Failed to send remote data deletion message for node_id {}, data_id {}: {}",
                     self.node_id, self.data_id, err

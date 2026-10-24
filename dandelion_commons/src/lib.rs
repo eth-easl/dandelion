@@ -128,6 +128,62 @@ impl DError {
     }
 }
 
+pub fn is_system_error(error: &DandelionError) -> bool {
+    match error {
+        DandelionError::Multinode(error) => match error {
+            MultinodeError::DataLost(_) => true,
+            MultinodeError::DeserializationError(_)
+            | MultinodeError::ConnectionFailed(_)
+            | MultinodeError::RequestFailed(_)
+            | MultinodeError::ConfigError(_)
+            | MultinodeError::ProtocolError(_)
+            | MultinodeError::BufferGone => false,
+        },
+        DandelionError::WorkQueueFull => true,
+        DandelionError::Dispatcher(_)
+        | DandelionError::DomainError(_)
+        | DandelionError::PromiseError(_)
+        | DandelionError::FunctionRegistry(_)
+        | DandelionError::RequestError(_)
+        | DandelionError::UserError(_)
+        | DandelionError::NotImplemented
+        | DandelionError::MalformedConfig
+        | DandelionError::Composition(_)
+        | DandelionError::UnknownSymbol
+        | DandelionError::ContextReadOnlyLayout
+        | DandelionError::ContextMissmatch
+        | DandelionError::OutOfMemory
+        | DandelionError::MemoryAllocationError
+        | DandelionError::ContextFull
+        | DandelionError::ReadMisaligned
+        | DandelionError::InvalidRead
+        | DandelionError::WriteMisaligned
+        | DandelionError::InvalidWrite
+        | DandelionError::EmptyDataSet
+        | DandelionError::UsizeTypeConversionError
+        | DandelionError::ContextSyncError
+        | DandelionError::ConfigMissmatch
+        | DandelionError::EngineResourceError
+        | DandelionError::NoRunningFunction
+        | DandelionError::EngineAlreadyRunning
+        | DandelionError::EngineError
+        | DandelionError::NoEngineAvailable
+        | DandelionError::MmuWorkerError
+        | DandelionError::InvalidSystemFuncName
+        | DandelionError::MalformedSystemFuncArg(_)
+        | DandelionError::InvalidSystemFuncArg(_)
+        | DandelionError::SystemFuncResponseError
+        | DandelionError::CalledSystemFuncParser
+        | DandelionError::MemcachedError
+        | DandelionError::RecordLockFailure
+        | DandelionError::RecorderNotAvailable
+        | DandelionError::FileError
+        | DandelionError::UnauthorizedSyscall
+        | DandelionError::SegmentationFault
+        | DandelionError::OtherProctionError => false,
+    }
+}
+
 impl PartialEq<DError> for DandelionError {
     fn eq(&self, other: &DError) -> bool {
         self.eq(&other.error)
@@ -343,4 +399,34 @@ pub enum MultinodeError {
     ProtocolError(String),
     /// ???
     BufferGone,
+    DataLost(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lost_data_and_full_queue_are_system_errors() {
+        assert!(is_system_error(&DandelionError::Multinode(
+            MultinodeError::DataLost("gone".to_string())
+        )));
+        assert!(is_system_error(&DandelionError::WorkQueueFull));
+    }
+
+    #[test]
+    fn application_and_internal_errors_are_not_system_errors() {
+        assert!(!is_system_error(&DandelionError::Multinode(
+            MultinodeError::RequestFailed("function failed".to_string())
+        )));
+        assert!(!is_system_error(&DandelionError::Multinode(
+            MultinodeError::ConnectionFailed("owner".to_string())
+        )));
+        assert!(!is_system_error(&DandelionError::SegmentationFault));
+        assert!(!is_system_error(&DandelionError::OutOfMemory));
+        assert!(!is_system_error(&DandelionError::SystemFuncResponseError));
+        assert!(!is_system_error(&DandelionError::UserError(
+            UserError::SegmentationFault
+        )));
+    }
 }

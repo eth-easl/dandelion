@@ -331,36 +331,44 @@ pub async fn wait_for_result(run_id: RunId) -> DandelionResult<Option<Vec<u8>>> 
 pub async fn list_recoverable_invocations() -> DandelionResult<Vec<RecoverableInvocation>> {
     let mut recoverable = Vec::new();
     for run_id in list_run_log_ids().await? {
-        let content = read_run_log(run_id).await?;
-        let parsed = parse_run_log(&content);
-        if parsed.state != Some(AsyncInvocationState::Running) {
-            continue;
+        if let Some(invocation) = load_recoverable_invocation(run_id).await? {
+            recoverable.push(invocation);
         }
-        let Some(submission) = parsed.submission else {
-            continue;
-        };
-        let is_cold = submission
-            .is_cold
-            .ok_or(internal_error(
-                "Missing is_cold field in async invocation submission record",
-            ))?
-            .parse::<bool>()
-            .map_err(|_| {
-                internal_error("Invalid is_cold field in async invocation submission record")
-            })?;
-        let request_bytes = decode_base64(
-            submission.request_b64.ok_or(internal_error(
-                "Missing request_b64 field in async invocation submission record",
-            ))?,
-            "request_b64",
-        )?;
-        recoverable.push(RecoverableInvocation {
-            run_id,
-            request_bytes,
-            is_cold,
-        });
     }
     Ok(recoverable)
+}
+
+pub async fn load_recoverable_invocation(
+    run_id: RunId,
+) -> DandelionResult<Option<RecoverableInvocation>> {
+    let content = read_run_log(run_id).await?;
+    let parsed = parse_run_log(&content);
+    if parsed.state != Some(AsyncInvocationState::Running) {
+        return Ok(None);
+    }
+    let Some(submission) = parsed.submission else {
+        return Ok(None);
+    };
+    let is_cold = submission
+        .is_cold
+        .ok_or(internal_error(
+            "Missing is_cold field in async invocation submission record",
+        ))?
+        .parse::<bool>()
+        .map_err(|_| {
+            internal_error("Invalid is_cold field in async invocation submission record")
+        })?;
+    let request_bytes = decode_base64(
+        submission.request_b64.ok_or(internal_error(
+            "Missing request_b64 field in async invocation submission record",
+        ))?,
+        "request_b64",
+    )?;
+    Ok(Some(RecoverableInvocation {
+        run_id,
+        request_bytes,
+        is_cold,
+    }))
 }
 
 #[cfg(test)]

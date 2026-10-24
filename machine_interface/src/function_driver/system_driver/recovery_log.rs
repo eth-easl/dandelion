@@ -636,7 +636,7 @@ fn remote_io_exports_from_records(records: Vec<IoCompletionRecord>) -> Vec<Remot
                 } = item.location
                 {
                     if seen.insert((node_id, data_id)) {
-                        exports.push(RemoteData::new(node_id, data_id));
+                        exports.push(RemoteData::durable(node_id, data_id));
                     }
                 }
             }
@@ -955,7 +955,7 @@ pub fn install_recovered_io_records(
                         data_id,
                         size,
                     } => RecoveredIoOutput::Remote {
-                        data: RemoteData::new(*node_id, *data_id),
+                        data: RemoteData::durable(*node_id, *data_id),
                         size: *size,
                     },
                 };

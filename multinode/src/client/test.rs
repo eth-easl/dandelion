@@ -654,3 +654,18 @@ fn test_remote_queue_client_prefetch() {
         remote_message => panic!("Expected prefetch work request, not {:?}", remote_message),
     }
 }
+
+#[test]
+fn worker_data_loss_survives_error_message() {
+    let lost = DandelionError::Multinode(dandelion_commons::MultinodeError::DataLost(
+        "connection refused".to_string(),
+    ));
+    assert!(matches!(
+        crate::client::remote_worker_error(lost.to_string()),
+        dandelion_commons::MultinodeError::DataLost(_)
+    ));
+    assert!(matches!(
+        crate::client::remote_worker_error(DandelionError::SegmentationFault.to_string()),
+        dandelion_commons::MultinodeError::RequestFailed(_)
+    ));
+}

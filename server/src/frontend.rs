@@ -45,6 +45,10 @@ use tokio::{
 
 #[cfg(feature = "at-least-once")]
 const IO_EXPORT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(feature = "at-least-once")]
+const RETRY_BACKOFF_START: Duration = Duration::from_secs(1);
+#[cfg(feature = "at-least-once")]
+const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(60);
 
 fn default_path() -> String {
     String::new()
@@ -489,15 +493,50 @@ fn spawn_async_invocation(
     is_cold: bool,
     parsed: ParsedInvocationRequest,
 ) {
+    spawn_async_invocation_attempt(dispatcher, is_cold, parsed, 0);
+}
+
+#[cfg(feature = "at-least-once")]
+fn retry_backoff(attempt: u32) -> Duration {
+    RETRY_BACKOFF_START
+        .saturating_mul(1 << attempt.min(6))
+        .min(RETRY_BACKOFF_MAX)
+}
+
+#[cfg(feature = "at-least-once")]
+async fn persist_with_retry<F, Fut>(run_id: RunId, mut persist: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = DandelionResult<()>>,
+{
+    let mut attempt = 0u32;
+    while let Err(err) = persist().await {
+        error!(
+            "Failed to persist terminal state of async invocation {} (attempt {}): {}",
+            run_id, attempt, err
+        );
+        tokio::time::sleep(retry_backoff(attempt)).await;
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+#[cfg(feature = "at-least-once")]
+fn spawn_async_invocation_attempt(
+    dispatcher: &'static Dispatcher,
+    is_cold: bool,
+    parsed: ParsedInvocationRequest,
+    attempt: u32,
+) {
+    use machine_interface::function_driver::system_driver::recovery_log;
+
     let run_id = parsed.recorder.run_id();
-    #[cfg(feature = "at-least-once")]
-    machine_interface::function_driver::system_driver::recovery_log::activate_async_run_logging(
-        run_id,
-    );
+    recovery_log::activate_async_run_logging(run_id);
     tokio::spawn(async move {
-        info!("Async invocation {} dispatch started", run_id);
-        let dispatch_result = dispatch_async_invocation(is_cold, parsed, dispatcher).await;
-        let terminal_persisted = match dispatch_result {
+        info!(
+            "Async invocation {} dispatch started (attempt {})",
+            run_id, attempt
+        );
+        match dispatch_async_invocation(is_cold, parsed, dispatcher).await {
             Ok((function_output, recorder)) => {
                 info!("Async invocation {} dispatch completed", run_id);
                 let response_bytes = Arc::new(
@@ -505,72 +544,85 @@ fn spawn_async_invocation(
                 );
                 #[cfg(not(feature = "exactly-once"))]
                 crate::async_invocation::publish_live_result(run_id, response_bytes.clone());
-                match crate::async_invocation::persist_completed(run_id, response_bytes).await {
-                    Ok(()) => true,
-                    Err(err) => {
+                persist_with_retry(run_id, || {
+                    crate::async_invocation::persist_completed(run_id, response_bytes.clone())
+                })
+                .await;
+            }
+            Err(err) if dandelion_commons::is_system_error(&err.error) => {
+                let delay = retry_backoff(attempt);
+                warn!(
+                    "Async invocation {} hit a system error (attempt {}), restarting in {:?}: {}",
+                    run_id, attempt, delay, err
+                );
+                recovery_log::clear_recovered_io(run_id);
+                tokio::time::sleep(delay).await;
+                let next_attempt = attempt.saturating_add(1);
+                match restart_invocation(dispatcher, run_id, next_attempt).await {
+                    Ok(()) => return,
+                    Err(restart_err) => {
                         error!(
-                            "Failed to persist completed async invocation {}: {}",
-                            run_id, err
+                            "Failed to restart async invocation {}: {}",
+                            run_id, restart_err
                         );
-                        match crate::async_invocation::persist_failed(
-                            run_id,
-                            format!("Failed to persist async result: {}", err),
-                        )
-                        .await
-                        {
-                            Ok(()) => true,
-                            Err(persist_err) => {
-                                error!(
-                                    "Failed to persist fallback failure for async invocation {}: {}",
-                                    run_id, persist_err
-                                );
-                                false
-                            }
-                        }
+                        let message = format!("{}", restart_err);
+                        persist_with_retry(run_id, || {
+                            crate::async_invocation::persist_failed(run_id, message.clone())
+                        })
+                        .await;
                     }
                 }
             }
             Err(err) => {
                 warn!("Async invocation {} dispatch failed: {}", run_id, err);
-                match crate::async_invocation::persist_failed(run_id, format!("{}", err)).await {
-                    Ok(()) => true,
-                    Err(persist_err) => {
-                        error!(
-                            "Failed to persist failed async invocation {}: {}",
-                            run_id, persist_err
-                        );
-                        false
-                    }
-                }
+                let message = format!("{}", err);
+                persist_with_retry(run_id, || {
+                    crate::async_invocation::persist_failed(run_id, message.clone())
+                })
+                .await;
             }
-        };
+        }
 
         // Stop accepting new checkpoint winners before taking the cleanup snapshot.
-        #[cfg(feature = "at-least-once")]
-        if terminal_persisted {
-            machine_interface::function_driver::system_driver::recovery_log::deactivate_async_run_logging(run_id);
-        }
-
+        recovery_log::deactivate_async_run_logging(run_id);
         // Durable checkpoint exports can be released once terminal invocation state is durable.
-        #[cfg(feature = "at-least-once")]
-        if terminal_persisted {
-            if let Err(err) = release_invocation_io_exports(run_id).await {
-                warn!(
-                    "Failed to release durable IO exports for terminal invocation {}: {}",
-                    run_id, err
-                );
-            }
+        if let Err(err) = release_invocation_io_exports(run_id).await {
+            warn!(
+                "Failed to release durable IO exports for terminal invocation {}: {}",
+                run_id, err
+            );
         }
-
-        #[cfg(feature = "at-least-once")]
-        if !terminal_persisted {
-            machine_interface::function_driver::system_driver::recovery_log::deactivate_async_run_logging(run_id);
-        }
-        #[cfg(feature = "at-least-once")]
-        machine_interface::function_driver::system_driver::recovery_log::clear_recovered_io(run_id);
-        #[cfg(not(feature = "at-least-once"))]
-        let _ = terminal_persisted;
+        recovery_log::clear_recovered_io(run_id);
     });
+}
+
+#[cfg(feature = "at-least-once")]
+async fn restart_invocation(
+    dispatcher: &'static Dispatcher,
+    run_id: RunId,
+    attempt: u32,
+) -> DandelionResult<()> {
+    match crate::async_invocation::load_recoverable_invocation(run_id).await? {
+        Some(recoverable) => start_recovered_invocation(dispatcher, recoverable, attempt).await,
+        None => Ok(()),
+    }
+}
+
+#[cfg(feature = "at-least-once")]
+async fn start_recovered_invocation(
+    dispatcher: &'static Dispatcher,
+    recoverable: crate::async_invocation::RecoverableInvocation,
+    attempt: u32,
+) -> DandelionResult<()> {
+    use machine_interface::function_driver::system_driver::recovery_log;
+
+    let run_id = recoverable.run_id;
+    let parsed =
+        parse_persisted_async_invocation_request_bytes(recoverable.request_bytes, run_id).await?;
+    let recovered_io = recovery_log::load_io_completion_records(run_id).await?;
+    recovery_log::install_recovered_io_records(run_id, recovered_io)?;
+    spawn_async_invocation_attempt(dispatcher, recoverable.is_cold, parsed, attempt);
+    Ok(())
 }
 
 #[cfg(feature = "at-least-once")]
@@ -650,17 +702,8 @@ pub async fn resume_recoverable_invocations(
     dispatcher: &'static Dispatcher,
 ) -> DandelionResult<()> {
     for recoverable in crate::async_invocation::list_recoverable_invocations().await? {
-        let run_id = recoverable.run_id;
-        info!("Async invocation {} recovery started", run_id);
-        let parsed =
-            parse_persisted_async_invocation_request_bytes(recoverable.request_bytes, run_id)
-                .await?;
-        let recovered_io = machine_interface::function_driver::system_driver::recovery_log::load_io_completion_records(run_id).await?;
-        machine_interface::function_driver::system_driver::recovery_log::install_recovered_io_records(
-            run_id,
-            recovered_io,
-        )?;
-        spawn_async_invocation(dispatcher, recoverable.is_cold, parsed);
+        info!("Async invocation {} recovery started", recoverable.run_id);
+        start_recovered_invocation(dispatcher, recoverable, 0).await?;
     }
     Ok(())
 }

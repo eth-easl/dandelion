@@ -195,6 +195,7 @@ fn remote_data_dtop(remote_data: &RemoteData, size: usize) -> proto::RemoteData 
         node_id: remote_data.node_id,
         data_id: remote_data.data_id,
         size: size as u64,
+        incarnation: remote_data.incarnation,
     }
 }
 
@@ -396,10 +397,17 @@ fn remote_data_ptod(
     delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
 ) -> RemoteData {
     match delete_sender {
-        Some(delete_sender) => {
-            RemoteData::delete_on_drop(remote_data.node_id, remote_data.data_id, delete_sender)
-        }
-        None => RemoteData::new(remote_data.node_id, remote_data.data_id),
+        Some(delete_sender) => RemoteData::delete_on_drop(
+            remote_data.node_id,
+            remote_data.incarnation,
+            remote_data.data_id,
+            delete_sender,
+        ),
+        None => RemoteData::new(
+            remote_data.node_id,
+            remote_data.incarnation,
+            remote_data.data_id,
+        ),
     }
 }
 

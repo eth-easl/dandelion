@@ -519,9 +519,9 @@ async fn remote_queue_server_logic(
                                     ))
                                 }
                                 proto::response::Response::ErrorMsg(error_message) => {
-                                    err_dandelion!(DandelionError::Multinode(
-                                        MultinodeError::RequestFailed(error_message)
-                                    ))
+                                    err_dandelion!(DandelionError::Multinode(remote_worker_error(
+                                        error_message
+                                    )))
                                 }
                             };
                             debt.fulfill(result)
@@ -1234,6 +1234,14 @@ fn parse_engine_type(engine_type: &str) -> DandelionResult<EngineType> {
         _ => err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
             format!("Unknown engine type {engine_type} in lazy-loaded function"),
         ))),
+    }
+}
+
+fn remote_worker_error(message: String) -> MultinodeError {
+    if message.starts_with("Multinode(DataLost(") {
+        MultinodeError::DataLost(message)
+    } else {
+        MultinodeError::RequestFailed(message)
     }
 }
 

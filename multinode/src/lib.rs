@@ -138,7 +138,7 @@ fn test_serialize_invocation_request() {
                 _ => panic!("Unexpected exported data id"),
             }
             Ok(machine_interface::composition::RemoteData::new(
-                node_id, data_id,
+                node_id, 1, data_id,
             ))
         })
         .unwrap();
@@ -157,6 +157,7 @@ fn test_serialize_invocation_request() {
             node_id,
             data_id: 0,
             size: size_of_val(&item_0_0_data) as u64,
+            incarnation: 1,
         }),
         serialized_metadata_sets[0].items[0]
             .data
@@ -174,6 +175,7 @@ fn test_serialize_invocation_request() {
             node_id,
             data_id: 1,
             size: size_of_val(&item_1_0_data) as u64,
+            incarnation: 1,
         }),
         serialized_metadata_sets[1].items[0]
             .data
@@ -189,6 +191,7 @@ fn test_serialize_invocation_request() {
             node_id,
             data_id: 2,
             size: size_of_val(&item_1_1_data) as u64,
+            incarnation: 1,
         }),
         serialized_metadata_sets[1].items[1]
             .data

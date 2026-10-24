@@ -76,6 +76,7 @@ use tokio::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct IoRemoteRef {
     node_id: u64,
+    incarnation: u64,
     data_id: u64,
     size: usize,
 }
@@ -86,6 +87,7 @@ impl IoRemoteRef {
     fn from_remote(data: &RemoteData, size: usize) -> Self {
         Self {
             node_id: data.node_id,
+            incarnation: data.incarnation,
             data_id: data.data_id,
             size,
         }
@@ -93,7 +95,10 @@ impl IoRemoteRef {
 
     #[cfg(feature = "exactly-once")]
     fn into_remote(self) -> (RemoteData, usize) {
-        (RemoteData::new(self.node_id, self.data_id), self.size)
+        (
+            RemoteData::new(self.node_id, self.incarnation, self.data_id),
+            self.size,
+        )
     }
 
     /// Encode a `(node_id, data_id, size)` remote pointer.
@@ -103,6 +108,7 @@ impl IoRemoteRef {
             node_id: self.node_id,
             data_id: self.data_id,
             size: self.size as u64,
+            incarnation: self.incarnation,
         }
     }
 
@@ -111,6 +117,7 @@ impl IoRemoteRef {
     fn from_proto(data: crate::proto::RemoteData) -> Result<Self, String> {
         Ok(Self {
             node_id: data.node_id,
+            incarnation: data.incarnation,
             data_id: data.data_id,
             size: usize::try_from(data.size)
                 .map_err(|_| "I/O remote reference size does not fit usize".to_string())?,
@@ -1630,6 +1637,7 @@ impl ExportRegistry {
                         size,
                     } => Ok(IoRemoteRef {
                         node_id,
+                        incarnation: 0,
                         data_id,
                         size,
                     }),
@@ -1668,7 +1676,11 @@ impl ExportRegistry {
             .flat_map(|references| references.iter())
             .filter_map(|reference| {
                 if seen.insert((reference.node_id, reference.data_id)) {
-                    Some(RemoteData::new(reference.node_id, reference.data_id))
+                    Some(RemoteData::new(
+                        reference.node_id,
+                        reference.incarnation,
+                        reference.data_id,
+                    ))
                 } else {
                     None
                 }
@@ -1684,7 +1696,7 @@ impl ExportRegistry {
             if let Some(pending) = inner.pending_durable_exports.remove(&batch_id) {
                 outputs.extend(pending.data_ids.into_iter().filter_map(|data_id| {
                     if seen.insert((self.node_id, data_id)) {
-                        Some(RemoteData::new(self.node_id, data_id))
+                        Some(RemoteData::durable(self.node_id, data_id))
                     } else {
                         None
                     }
@@ -1715,9 +1727,9 @@ impl ExportRegistry {
             },
         );
         if let Some(delete_sender) = delete_sender {
-            RemoteData::delete_on_drop(self.node_id, data_id, delete_sender)
+            RemoteData::delete_on_drop(self.node_id, self.incarnation, data_id, delete_sender)
         } else {
-            RemoteData::new(self.node_id, data_id)
+            RemoteData::new(self.node_id, self.incarnation, data_id)
         }
     }
 
@@ -1776,7 +1788,7 @@ impl ExportRegistry {
                 position: Position { offset: 0, size },
             },
         );
-        Ok(RemoteData::new(self.node_id, data_id))
+        Ok(RemoteData::durable(self.node_id, data_id))
     }
 
     // Claim consecutive data ids under the mutex. files are written later without the lock
@@ -1908,6 +1920,7 @@ impl ExportRegistry {
             );
             references.push(IoRemoteRef {
                 node_id: self.node_id,
+                incarnation: 0,
                 data_id,
                 size,
             });
@@ -2331,6 +2344,22 @@ impl ExportRegistry {
         self.empty_notifier.notify_waiters();
     }
 
+    fn is_current_reference(&self, incarnation: u64, data_id: u64) -> bool {
+        is_durable_data_id(data_id) || incarnation == self.incarnation
+    }
+
+    fn check_reference(&self, incarnation: u64, data_id: u64) -> DandelionResult<()> {
+        if self.is_current_reference(incarnation, data_id) {
+            return Ok(());
+        }
+        err_dandelion!(DandelionError::Multinode(MultinodeError::DataLost(
+            format!(
+                "Data {} belongs to incarnation {} of node {}, which is now incarnation {}",
+                data_id, incarnation, self.node_id, self.incarnation
+            )
+        )))
+    }
+
     pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
         let exported_data = self.get_exported_data(data_id)?;
         Ok((exported_data.context, exported_data.position))
@@ -2352,6 +2381,7 @@ impl ExportRegistry {
         if data.node_id != self.node_id {
             return Ok(IoResolveWireInput::Remote(data));
         }
+        self.check_reference(data.incarnation, data.data_id)?;
         let exported = self.get_exported_data(data.data_id)?;
         if exported.position.size != data.size {
             return Err(export_registry_error(format!(
@@ -2440,11 +2470,16 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 data.data_id
             );
             if data.node_id == self.local_registry.node_id {
+                self.local_registry
+                    .check_reference(data.incarnation, data.data_id)?;
                 return self.local_registry.fetch_context(data.data_id);
             }
 
             let mut url = self.remote_data_url(data.node_id)?;
-            url.push_str(&format!("{}", data.data_id));
+            url.push_str(&format!(
+                "{}?incarnation={}",
+                data.data_id, data.incarnation
+            ));
             let durable = is_durable_data_id(data.data_id);
             let (size, body) = 'retry: loop {
                 let mut response = match self.client.get(&url).send().await {
@@ -2459,14 +2494,17 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     }
                     Err(err) => {
                         return err_dandelion!(DandelionError::Multinode(
-                            MultinodeError::ConnectionFailed(err.to_string())
+                            MultinodeError::DataLost(err.to_string())
                         ));
                     }
                 };
                 if !response.status().is_success() {
-                    return err_dandelion!(DandelionError::Multinode(
-                        MultinodeError::RequestFailed(response.status().to_string())
-                    ));
+                    let status = response.status().to_string();
+                    return err_dandelion!(DandelionError::Multinode(if durable {
+                        MultinodeError::RequestFailed(status)
+                    } else {
+                        MultinodeError::DataLost(status)
+                    }));
                 }
                 let mut size = 0;
                 let mut body = Vec::new();
@@ -2485,7 +2523,11 @@ impl RemoteDataClient for HttpRemoteDataClient {
                             tokio::time::sleep(DURABLE_FETCH_RETRY_INTERVAL).await;
                             continue 'retry;
                         }
-                        Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
+                        Err(err) => {
+                            return err_dandelion!(DandelionError::Multinode(
+                                MultinodeError::DataLost(err.to_string())
+                            ))
+                        }
                     }
                 }
                 break (size, body);
@@ -2511,8 +2553,9 @@ impl RemoteDataClient for HttpRemoteDataClient {
         Box::pin(async move {
             // collect all ids
             let node_id = remote_items[0].node_id;
-            let mut body_data = Vec::with_capacity(remote_items.len() * size_of::<u64>());
+            let mut body_data = Vec::with_capacity(remote_items.len() * 2 * size_of::<u64>());
             for remote_item in remote_items.iter() {
+                body_data.extend(remote_item.incarnation.to_le_bytes());
                 body_data.extend(remote_item.data_id.to_le_bytes());
             }
 
@@ -2535,14 +2578,17 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     }
                     Err(err) => {
                         return err_dandelion!(DandelionError::Multinode(
-                            MultinodeError::ConnectionFailed(err.to_string())
+                            MultinodeError::DataLost(err.to_string())
                         ));
                     }
                 };
                 if !response.status().is_success() {
-                    return err_dandelion!(DandelionError::Multinode(
-                        MultinodeError::RequestFailed(response.status().to_string())
-                    ));
+                    let status = response.status().to_string();
+                    return err_dandelion!(DandelionError::Multinode(if durable {
+                        MultinodeError::RequestFailed(status)
+                    } else {
+                        MultinodeError::DataLost(status)
+                    }));
                 }
 
                 let mut size = 0;
@@ -2562,7 +2608,11 @@ impl RemoteDataClient for HttpRemoteDataClient {
                             tokio::time::sleep(DURABLE_FETCH_RETRY_INTERVAL).await;
                             continue 'retry;
                         }
-                        Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
+                        Err(err) => {
+                            return err_dandelion!(DandelionError::Multinode(
+                                MultinodeError::DataLost(err.to_string())
+                            ))
+                        }
                     }
                 }
                 break (size, body);
@@ -2599,11 +2649,20 @@ impl RemoteDataClient for HttpRemoteDataClient {
         );
         Box::pin(async move {
             if data.node_id == self.local_registry.node_id {
+                if !self
+                    .local_registry
+                    .is_current_reference(data.incarnation, data.data_id)
+                {
+                    return Ok(());
+                }
                 return self.local_registry.delete_exported_data(data.data_id).await;
             }
 
             let mut url = self.remote_data_url(data.node_id)?;
-            url.push_str(&format!("{}", data.data_id));
+            url.push_str(&format!(
+                "{}?incarnation={}",
+                data.data_id, data.incarnation
+            ));
 
             let durable = is_durable_data_id(data.data_id);
             loop {
@@ -3079,6 +3138,28 @@ async fn read_request_body(mut req: Request<Incoming>) -> Result<Vec<u8>, String
     Ok(bytes)
 }
 
+fn not_found(err_string: impl Into<String>) -> Result<Response<ExportedBody>, Infallible> {
+    let err_string = err_string.into();
+    warn!("Refused remote data request: {}", err_string);
+    let mut response = Response::new(ExportedBody::new_error(err_string));
+    *response.status_mut() = StatusCode::NOT_FOUND;
+    Ok(response)
+}
+
+fn request_incarnation(query: Option<&str>) -> Result<u64, String> {
+    let Some(query) = query else {
+        return Ok(0);
+    };
+    for pair in query.split('&') {
+        if let Some(value) = pair.strip_prefix("incarnation=") {
+            return value
+                .parse::<u64>()
+                .map_err(|err| format!("Invalid incarnation: {}", err));
+        }
+    }
+    Ok(0)
+}
+
 fn bad_request(err_string: impl Into<String>) -> Result<Response<ExportedBody>, Infallible> {
     let err_string = err_string.into();
     warn!("Failed to serve remote data request: {}", err_string);
@@ -3173,11 +3254,20 @@ async fn handle_exported_data(
     let Some(id_string) = path.strip_prefix("/data/") else {
         return bad_request(format!("Unknown data server path {}", path));
     };
+    let incarnation = match request_incarnation(req.uri().query()) {
+        Ok(incarnation) => incarnation,
+        Err(err) => return bad_request(err),
+    };
 
     match req.method() {
         &Method::DELETE => match id_string.parse::<u64>() {
             Err(err) => return bad_request(format!("Invalid data id: {}", err)),
             Ok(data_id) => {
+                if !export_registry.is_current_reference(incarnation, data_id) {
+                    return Ok(Response::new(ExportedBody {
+                        inner: VecDeque::new(),
+                    }));
+                }
                 return match export_registry.delete_exported_data(data_id).await {
                     Err(err) => bad_request(format!("Delete failed with: {}", err)),
                     Ok(()) => Ok(Response::new(ExportedBody {
@@ -3191,6 +3281,9 @@ async fn handle_exported_data(
                 match id_string.parse::<u64>() {
                     Err(err) => return bad_request(format!("Invalid data id: {}", err)),
                     Ok(data_id) => {
+                        if let Err(err) = export_registry.check_reference(incarnation, data_id) {
+                            return not_found(err.to_string());
+                        }
                         return match export_registry.get_exported_data(data_id) {
                             Err(err) => bad_request(format!("Get failed with: {}", err)),
                             Ok(data) => Ok(Response::new(ExportedBody::new_single(data))),
@@ -3259,7 +3352,18 @@ async fn handle_exported_data(
 
     drop(permit);
 
-    match export_registry.get_multiple_data(ids) {
+    if ids.len() % 2 != 0 {
+        return bad_request("Body did not contain complete (incarnation, data id) pairs");
+    }
+    let mut data_ids = Vec::with_capacity(ids.len() / 2);
+    for reference in ids.chunks_exact(2) {
+        if let Err(err) = export_registry.check_reference(reference[0], reference[1]) {
+            return not_found(err.to_string());
+        }
+        data_ids.push(reference[1]);
+    }
+
+    match export_registry.get_multiple_data(data_ids) {
         Ok(exports) => Ok(Response::new(ExportedBody { inner: exports })),
         Err(err) => bad_request(err.to_string()),
     }
@@ -3590,31 +3694,11 @@ mod checkpoint_tests {
     }
 }
 
-#[cfg(all(test, feature = "exactly-once"))]
-mod tests {
+#[cfg(test)]
+mod test_server {
     use super::*;
-    #[cfg(feature = "timestamp")]
-    use dandelion_commons::records::{RecordPoint, Recorder};
-    use dandelion_commons::RunId;
-    use machine_interface::composition::IoCompletedOutput;
-    use machine_interface::memory_domain::{read_only::ReadOnlyContext, ContextTrait};
-    use std::{path::PathBuf, sync::OnceLock, time::Duration};
 
-    fn configure_test_recovery_log() {
-        static TEST_RECOVERY_ROOT: OnceLock<PathBuf> = OnceLock::new();
-        let root = TEST_RECOVERY_ROOT.get_or_init(|| {
-            std::env::temp_dir().join(format!(
-                "dandelion-multinode-recovery-tests-{}",
-                std::process::id()
-            ))
-        });
-        machine_interface::function_driver::system_driver::recovery_log::set_recovery_log_root(
-            root.clone(),
-        )
-        .unwrap();
-    }
-
-    async fn spawn_test_data_server(
+    pub(crate) async fn spawn_test_data_server(
         export_registry: ExportRegistry,
     ) -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
@@ -3645,6 +3729,128 @@ mod tests {
         });
         (format!("http://{}", address), handle)
     }
+}
+
+#[cfg(test)]
+mod incarnation_tests {
+    use super::test_server::spawn_test_data_server;
+    use super::*;
+
+    fn insert_bytes(registry: &ExportRegistry, bytes: &[u8]) -> RemoteData {
+        let item = DataItem {
+            ident: "item".to_string(),
+            key: 0,
+            data: Position {
+                offset: 0,
+                size: bytes.len(),
+            },
+        };
+        let context = Arc::new(Context::new(
+            ContextType::Bytes(Box::new(BytesContext::new(vec![
+                bytes::Bytes::copy_from_slice(bytes),
+            ]))),
+            bytes.len(),
+        ));
+        registry.insert_function(&item, context, None)
+    }
+
+    fn assert_data_lost<T>(result: DandelionResult<T>) {
+        match result {
+            Err(err) => assert!(
+                matches!(
+                    err.error,
+                    DandelionError::Multinode(MultinodeError::DataLost(_))
+                ),
+                "expected DataLost, got {}",
+                err
+            ),
+            Ok(_) => panic!("stale reference should not resolve"),
+        }
+    }
+
+    #[tokio::test]
+    async fn restarted_node_refuses_references_from_its_previous_incarnation() {
+        let node_id = 2;
+        let crashed = ExportRegistry::new(node_id);
+        let stale = insert_bytes(&crashed, b"old");
+        drop(crashed);
+        let restarted = ExportRegistry::new(node_id);
+        let current = insert_bytes(&restarted, b"new");
+        assert_eq!(stale.data_id, current.data_id);
+        assert_ne!(stale.incarnation, current.incarnation);
+
+        let (url, server) = spawn_test_data_server(restarted.clone()).await;
+        let remote_client =
+            HttpRemoteDataClient::new(BTreeMap::from([(node_id, url)]), ExportRegistry::new(1));
+        assert_data_lost(remote_client.resolve_remote_data(stale.clone()).await);
+        let (context, position) = remote_client
+            .resolve_remote_data(current.clone())
+            .await
+            .unwrap();
+        let mut bytes = vec![0; position.size];
+        context.read(position.offset, &mut bytes).unwrap();
+        assert_eq!(b"new".to_vec(), bytes);
+
+        let item = |size| {
+            (
+                0,
+                DataItem {
+                    ident: "item".to_string(),
+                    key: 0,
+                    data: Position { offset: 0, size },
+                },
+            )
+        };
+        let mut metadata = vec![item(3), item(3)];
+        assert_data_lost(
+            remote_client
+                .resolve_multiple_data(&mut metadata, vec![current.clone(), stale.clone()])
+                .await,
+        );
+
+        remote_client.delete_remote_data(stale.clone()).await.unwrap();
+        assert!(restarted.fetch_context(current.data_id).is_ok());
+
+        let local_client = HttpRemoteDataClient::new(BTreeMap::new(), restarted.clone());
+        assert_data_lost(local_client.resolve_remote_data(stale.clone()).await);
+        local_client.delete_remote_data(stale).await.unwrap();
+        assert!(restarted.fetch_context(current.data_id).is_ok());
+        server.abort();
+    }
+
+    #[test]
+    fn durable_references_ignore_incarnation() {
+        let registry = ExportRegistry::new(1);
+        assert!(registry.is_current_reference(0, DURABLE_DATA_ID_START));
+        assert!(registry.is_current_reference(registry.get_incarnation(), 0));
+        assert!(!registry.is_current_reference(0, 0));
+    }
+}
+
+#[cfg(all(test, feature = "exactly-once"))]
+mod tests {
+    use super::test_server::spawn_test_data_server;
+    use super::*;
+    #[cfg(feature = "timestamp")]
+    use dandelion_commons::records::{RecordPoint, Recorder};
+    use dandelion_commons::RunId;
+    use machine_interface::composition::IoCompletedOutput;
+    use machine_interface::memory_domain::{read_only::ReadOnlyContext, ContextTrait};
+    use std::{path::PathBuf, sync::OnceLock, time::Duration};
+
+    fn configure_test_recovery_log() {
+        static TEST_RECOVERY_ROOT: OnceLock<PathBuf> = OnceLock::new();
+        let root = TEST_RECOVERY_ROOT.get_or_init(|| {
+            std::env::temp_dir().join(format!(
+                "dandelion-multinode-recovery-tests-{}",
+                std::process::id()
+            ))
+        });
+        machine_interface::function_driver::system_driver::recovery_log::set_recovery_log_root(
+            root.clone(),
+        )
+        .unwrap();
+    }
 
     fn context_bytes(context: &Context, position: Position) -> Vec<u8> {
         let mut bytes = vec![0; position.size];
@@ -3660,6 +3866,20 @@ mod tests {
             identifier: "request".to_string(),
             item_key: 3,
         }
+    }
+
+    async fn submitted_coordination_key() -> IoCoordinationKey {
+        let key = coordination_key();
+        machine_interface::function_driver::system_driver::recovery_log::append_submission_line(
+            key.run_id,
+            &format!(
+                "event=invocation_submitted run_id={} request_len=0 request_b64= is_cold=false\n",
+                key.run_id
+            ),
+        )
+        .await
+        .unwrap();
+        key
     }
 
     #[tokio::test]
@@ -3696,7 +3916,7 @@ mod tests {
         let node_map = BTreeMap::from([(owner_node_id, owner_url), (winner_node_id, winner_url)]);
         let winner_client = Arc::new(HttpRemoteDataClient::new(node_map.clone(), winner_registry));
         let duplicate_client = Arc::new(HttpRemoteDataClient::new(node_map, duplicate_registry));
-        let key = coordination_key();
+        let key = submitted_coordination_key().await;
         let resolve_request = IoResolveRequest {
             owner_node_id,
             key: key.clone(),
@@ -3801,6 +4021,7 @@ mod tests {
         let key = coordination_key();
         let original = IoRemoteRef {
             node_id: 9,
+            incarnation: 0,
             data_id: 4,
             size: 21,
         };
@@ -3823,11 +4044,13 @@ mod tests {
                 Ok(vec![
                     IoRemoteRef {
                         node_id: 8,
+                        incarnation: 0,
                         data_id: 11,
                         size: 4,
                     },
                     IoRemoteRef {
                         node_id: 8,
+                        incarnation: 0,
                         data_id: 12,
                         size: 9,
                     },
@@ -3846,6 +4069,7 @@ mod tests {
     fn io_resolve_wire_response_round_trips() {
         let remote = IoRemoteRef {
             node_id: 7,
+            incarnation: 13,
             data_id: 11,
             size: 29,
         };
@@ -3942,6 +4166,7 @@ mod tests {
         let key = coordination_key();
         let missing = IoRemoteRef {
             node_id: 3,
+            incarnation: 0,
             data_id: 999,
             size: 10,
         };
@@ -3972,6 +4197,7 @@ mod tests {
         let registry = ExportRegistry::new(3);
         let remote = IoRemoteRef {
             node_id: 9,
+            incarnation: 0,
             data_id: 4,
             size: 21,
         };
@@ -4033,6 +4259,7 @@ mod tests {
                 None,
                 Ok(vec![IoRemoteRef {
                     node_id: 2,
+                    incarnation: 0,
                     data_id: 5,
                     size: 7,
                 }]),
@@ -4120,11 +4347,13 @@ mod tests {
                 Ok(vec![
                     IoRemoteRef {
                         node_id: 4,
+                        incarnation: 0,
                         data_id: 1,
                         size: 2,
                     },
                     IoRemoteRef {
                         node_id: 4,
+                        incarnation: 0,
                         data_id: 2,
                         size: 3,
                     },
@@ -4298,7 +4527,7 @@ mod tests {
             .await
             .unwrap();
         let client = HttpRemoteDataClient::new(BTreeMap::new(), registry.clone());
-        let key = coordination_key();
+        let key = submitted_coordination_key().await;
         let claim_id = match registry.begin_io_resolution(key.clone(), 0, None).unwrap() {
             RegistryIoResolution::Execute(None, claim_id) => claim_id,
             _ => panic!("first resolve should execute"),
