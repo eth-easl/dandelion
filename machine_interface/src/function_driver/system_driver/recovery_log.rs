@@ -1215,7 +1215,12 @@ pub async fn accept_delivered_io_completion_record(
     let record_key = record.completion_key()?;
     let payload_b64 = encode_io_completion_payload(&record.outputs)?;
     let line = io_completion_line(record, &payload_b64);
-    write_run_log_locked(&log_path, &mut state, line, SYNC_RUN_LOG).await?;
+    if let Err(error) = write_run_log_locked(&log_path, &mut state, line, SYNC_RUN_LOG).await {
+        if ensure_run_log_loaded(&log_path, &mut state).await.is_err() {
+            return Err(error);
+        }
+        return delivered_io_completion_disposition(&state, record)?.ok_or(error);
+    }
     state.completions.insert(record_key, payload_b64);
     Ok(IoCompletionDisposition::Retain)
 }
@@ -1338,7 +1343,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
             // check if the completion record is already in the log
             if let Some(disposition) = delivered_io_completion_disposition(&state, &request.record)?
             {
-                dispositions.push(disposition);
+                dispositions.push(Ok(disposition));
                 continue;
             }
             let record_key = request.record.completion_key()?;
@@ -1351,11 +1356,11 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
                 recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeEnd);
             }
             if let Some(winner) = appended_completions.get(&record_key) {
-                dispositions.push(if *winner == payload_b64 {
+                dispositions.push(Ok(if *winner == payload_b64 {
                     IoCompletionDisposition::Retain
                 } else {
                     IoCompletionDisposition::Delete
-                });
+                }));
                 continue;
             }
             if let Some(recorder) = recorder {
@@ -1363,7 +1368,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
             }
             appended.push_str(&io_completion_line(&request.record, &payload_b64));
             appended_completions.insert(record_key, payload_b64);
-            dispositions.push(IoCompletionDisposition::Retain);
+            dispositions.push(Ok(IoCompletionDisposition::Retain));
         }
         record_completion_requests(
             &requests,
@@ -1375,8 +1380,23 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteStart);
             }
-            write_run_log_locked(&log_path, &mut state, appended, SYNC_RUN_LOG).await?;
-            state.completions.extend(appended_completions);
+            match write_run_log_locked(&log_path, &mut state, appended, SYNC_RUN_LOG).await {
+                Ok(()) => state.completions.extend(appended_completions),
+                Err(error) => {
+                    let reloaded = ensure_run_log_loaded(&log_path, &mut state).await.is_ok();
+                    for (request, disposition) in requests.iter().zip(dispositions.iter_mut()) {
+                        if !appended_completions.contains_key(&request.record.completion_key()?) {
+                            continue;
+                        }
+                        let logged = if reloaded {
+                            delivered_io_completion_disposition(&state, &request.record)?
+                        } else {
+                            None
+                        };
+                        *disposition = logged.ok_or_else(|| error.clone());
+                    }
+                }
+            }
             for recorder in &mut journal_recorders {
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteEnd);
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
@@ -1389,7 +1409,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
     match commit {
         Ok(dispositions) => {
             for (request, disposition) in requests.into_iter().zip(dispositions) {
-                let _ = request.completion.send(Ok(disposition));
+                let _ = request.completion.send(disposition);
             }
         }
         Err(error) => {

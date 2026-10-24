@@ -202,15 +202,15 @@ enum IoCommitStart {
 /// A started commit that is aborted when dropped unless it was finished, so a cancelled request
 /// cannot leave the key committing forever.
 #[cfg(feature = "exactly-once")]
-struct IoCommitGuard<'a> {
-    registry: &'a ExportRegistry,
+struct IoCommitGuard {
+    registry: ExportRegistry,
     key: Option<IoCoordinationKey>,
     claim_id: u64,
 }
 
 #[cfg(feature = "exactly-once")]
-impl<'a> IoCommitGuard<'a> {
-    fn new(registry: &'a ExportRegistry, key: IoCoordinationKey, claim_id: u64) -> Self {
+impl IoCommitGuard {
+    fn new(registry: ExportRegistry, key: IoCoordinationKey, claim_id: u64) -> Self {
         Self {
             registry,
             key: Some(key),
@@ -225,7 +225,7 @@ impl<'a> IoCommitGuard<'a> {
 }
 
 #[cfg(feature = "exactly-once")]
-impl Drop for IoCommitGuard<'_> {
+impl Drop for IoCommitGuard {
     fn drop(&mut self) {
         if let Some(key) = self.key.take() {
             self.registry.abort_io_commit(&key, self.claim_id);
@@ -236,6 +236,15 @@ impl Drop for IoCommitGuard<'_> {
 #[cfg(feature = "exactly-once")]
 fn io_claim_lost_error() -> dandelion_commons::DError {
     export_registry_error("I/O claim was taken over by another worker")
+}
+
+#[cfg(feature = "exactly-once")]
+async fn run_io_commit_task<T: Send + 'static>(
+    commit: impl Future<Output = DandelionResult<T>> + Send + 'static,
+) -> DandelionResult<T> {
+    tokio::spawn(commit)
+        .await
+        .unwrap_or_else(|_| Err(export_registry_error("I/O commit task stopped")))
 }
 
 #[cfg(feature = "exactly-once")]
@@ -1426,11 +1435,25 @@ impl ExportRegistry {
         claim_id: Option<u64>,
         outcome: Result<Vec<IoRemoteRef>, String>,
     ) -> DandelionResult<IoCommitDecision> {
+        let registry = self.clone();
+        run_io_commit_task(async move {
+            registry.run_delivered_io_commit(key, claim_id, outcome).await
+        })
+        .await
+    }
+
+    #[cfg(feature = "exactly-once")]
+    async fn run_delivered_io_commit(
+        &self,
+        key: IoCoordinationKey,
+        claim_id: Option<u64>,
+        outcome: Result<Vec<IoRemoteRef>, String>,
+    ) -> DandelionResult<IoCommitDecision> {
         let decision = self.begin_io_commit(&key, claim_id, &outcome).await?;
         let IoCommitDecision::Commit(claim_id) = decision else {
             return Ok(decision);
         };
-        let commit = IoCommitGuard::new(self, key.clone(), claim_id);
+        let commit = IoCommitGuard::new(self.clone(), key.clone(), claim_id);
         // Durable log first so a restart can recover Completed instead of re-electing.
         if let Ok(outputs) = &outcome {
             match accept_delivered_io_completion_record(&completion_record(
@@ -1446,6 +1469,68 @@ impl ExportRegistry {
         }
         commit.finish(outcome)?;
         Ok(decision)
+    }
+
+    #[cfg(feature = "exactly-once")]
+    async fn commit_local_io_resolution(
+        &self,
+        key: IoCoordinationKey,
+        claim_id: Option<u64>,
+        outcome: Result<Vec<IoRemoteRef>, String>,
+        recorder: Option<dandelion_commons::records::Recorder>,
+    ) -> DandelionResult<Option<dandelion_commons::DError>> {
+        let registry = self.clone();
+        run_io_commit_task(async move {
+            registry.run_local_io_commit(key, claim_id, outcome, recorder).await
+        })
+        .await
+    }
+
+    #[cfg(feature = "exactly-once")]
+    async fn run_local_io_commit(
+        &self,
+        key: IoCoordinationKey,
+        claim_id: Option<u64>,
+        outcome: Result<Vec<IoRemoteRef>, String>,
+        mut recorder: Option<dandelion_commons::records::Recorder>,
+    ) -> DandelionResult<Option<dandelion_commons::DError>> {
+        let claim_id = match self.begin_io_commit(&key, claim_id, &outcome).await? {
+            IoCommitDecision::Commit(claim_id) => claim_id,
+            IoCommitDecision::AlreadyCommitted => return Ok(None),
+            IoCommitDecision::Rejected => {
+                warn!("Coordinated I/O result was rejected, its claim was taken over");
+                return Err(io_claim_lost_error());
+            }
+        };
+        let commit = IoCommitGuard::new(self.clone(), key.clone(), claim_id);
+        let Ok(outputs) = &outcome else {
+            commit.finish(outcome)?;
+            return Ok(None);
+        };
+        // skip journal entry for local owner
+        let record = completion_record(&key, outputs, Some(claim_id));
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoOwnerApprovalStart);
+        }
+        let approval = accept_local_io_completion_record(record, recorder.clone()).await;
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoOwnerApprovalEnd);
+        }
+        match approval {
+            Ok(IoCompletionDisposition::Retain) => {
+                commit.finish(outcome)?;
+                Ok(None)
+            }
+            Ok(IoCompletionDisposition::Delete) => {
+                drop(commit);
+                warn!("Coordinated I/O result was rejected, its claim was taken over");
+                Err(io_claim_lost_error())
+            }
+            Err(error) => {
+                commit.finish(Err(error.to_string()))?;
+                Ok(Some(error))
+            }
+        }
     }
 
     /// Marks a worker connection as active and returns the token identifying this session.
@@ -2818,59 +2903,25 @@ impl RemoteDataClient for HttpRemoteDataClient {
             if completion.owner_node_id == self.local_registry.node_id {
                 let commit = self
                     .local_registry
-                    .begin_io_commit(&completion.key, completion.claim_id, &wire_outcome)
+                    .commit_local_io_resolution(
+                        completion.key,
+                        completion.claim_id,
+                        wire_outcome,
+                        recorder.clone(),
+                    )
                     .await;
                 let publish = match commit {
-                    Ok(IoCommitDecision::Commit(claim_id)) => {
-                        let commit = IoCommitGuard::new(
-                            &self.local_registry,
-                            completion.key.clone(),
-                            claim_id,
-                        );
-                        let mut rejected = false;
-                        // skip journal entry for local owner
-                        if let Ok(outputs) = &wire_outcome {
-                            let record = completion_record(&completion.key, outputs, Some(claim_id));
-                            if let Some(recorder) = recorder.as_mut() {
-                                recorder.record(
-                                    dandelion_commons::records::RecordPoint::IoOwnerApprovalStart,
-                                );
-                            }
-                            let approval =
-                                accept_local_io_completion_record(record, recorder.clone()).await;
-                            if let Some(recorder) = recorder.as_mut() {
-                                recorder.record(
-                                    dandelion_commons::records::RecordPoint::IoOwnerApprovalEnd,
-                                );
-                            }
-                            match approval {
-                                Ok(IoCompletionDisposition::Retain) => (),
-                                Ok(IoCompletionDisposition::Delete) => rejected = true,
-                                Err(error) => {
-                                    for data_id in &exported_data_ids {
-                                        let _ = self
-                                            .local_registry
-                                            .delete_durable_exported_data(*data_id)
-                                            .await;
-                                    }
-                                    wire_outcome = Err(error.to_string());
-                                    completion_error = Some(error);
-                                }
-                            }
+                    Ok(Some(error)) => {
+                        for data_id in &exported_data_ids {
+                            let _ = self
+                                .local_registry
+                                .delete_durable_exported_data(*data_id)
+                                .await;
                         }
-                        if rejected {
-                            drop(commit);
-                            warn!("Coordinated I/O result was rejected, its claim was taken over");
-                            Err(io_claim_lost_error())
-                        } else {
-                            commit.finish(wire_outcome)
-                        }
+                        completion_error = Some(error);
+                        Ok(())
                     }
-                    Ok(IoCommitDecision::AlreadyCommitted) => Ok(()),
-                    Ok(IoCommitDecision::Rejected) => {
-                        warn!("Coordinated I/O result was rejected, its claim was taken over");
-                        Err(io_claim_lost_error())
-                    }
+                    Ok(None) => Ok(()),
                     Err(error) => Err(error),
                 };
                 if let Some(batch_id) = export_batch_id {
