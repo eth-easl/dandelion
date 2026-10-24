@@ -74,3 +74,45 @@ fn check_entry() {
     let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
     assert_eq!(0x401000, parsed_elf.get_entry_point());
 }
+
+#[test]
+fn check_protection_layout_le_64() {
+    let elf_buffer = load_file("test_elf_le_64", 10400);
+    let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
+    let protection_layout = parsed_elf.get_memory_protection_layout();
+    assert_eq!(4, protection_layout.len());
+
+    let expected = [
+        (4, 0x400000, 0x1000), // R, aligned to 4 KiB
+        (5, 0x401000, 0x1000), // R | E, aligned to 4 KiB
+        (4, 0x402000, 0x1000), // R, aligned to 4 KiB
+        (6, 0x404000, 0x1000), // R | W, aligned to 4 KiB
+    ];
+
+    for (index, (flags, pos)) in protection_layout.iter().enumerate() {
+        assert_eq!(expected[index].0, *flags);
+        assert_eq!(expected[index].1, pos.offset);
+        assert_eq!(expected[index].2, pos.size);
+    }
+}
+
+#[test]
+fn check_protection_layout_aarch64() {
+    let elf_buffer = load_file("test_elf_mmu_aarch64_basic", 24640);
+    let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
+    let protection_layout = parsed_elf.get_memory_protection_layout();
+    assert_eq!(4, protection_layout.len());
+
+    let expected = [
+        (4, 0x10000, 0x10000), // R, aligned to 64 KiB
+        (5, 0x20000, 0x10000), // R | E, aligned to 64 KiB
+        (6, 0x30000, 0x10000), // R | W, aligned to 64 KiB
+        (6, 0x40000, 0x10000), // R | W, aligned to 64 KiB
+    ];
+
+    for (index, (flags, pos)) in protection_layout.iter().enumerate() {
+        assert_eq!(expected[index].0, *flags);
+        assert_eq!(expected[index].1, pos.offset);
+        assert_eq!(expected[index].2, pos.size);
+    }
+}
