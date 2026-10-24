@@ -49,6 +49,8 @@ const IO_EXPORT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_BACKOFF_START: Duration = Duration::from_secs(1);
 #[cfg(feature = "at-least-once")]
 const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(60);
+#[cfg(feature = "at-least-once")]
+const MAX_RESTART_ATTEMPTS: u32 = 10;
 
 fn default_path() -> String {
     String::new()
@@ -549,7 +551,10 @@ fn spawn_async_invocation_attempt(
                 })
                 .await;
             }
-            Err(err) if dandelion_commons::is_system_error(&err.error) => {
+            Err(err)
+                if dandelion_commons::is_system_error(&err.error)
+                    && attempt < MAX_RESTART_ATTEMPTS =>
+            {
                 let delay = retry_backoff(attempt);
                 warn!(
                     "Async invocation {} hit a system error (attempt {}), restarting in {:?}: {}",
@@ -559,7 +564,8 @@ fn spawn_async_invocation_attempt(
                 tokio::time::sleep(delay).await;
                 let next_attempt = attempt.saturating_add(1);
                 match restart_invocation(dispatcher, run_id, next_attempt).await {
-                    Ok(()) => return,
+                    Ok(true) => return,
+                    Ok(false) => {}
                     Err(restart_err) => {
                         error!(
                             "Failed to restart async invocation {}: {}",
@@ -601,10 +607,13 @@ async fn restart_invocation(
     dispatcher: &'static Dispatcher,
     run_id: RunId,
     attempt: u32,
-) -> DandelionResult<()> {
+) -> DandelionResult<bool> {
     match crate::async_invocation::load_recoverable_invocation(run_id).await? {
-        Some(recoverable) => start_recovered_invocation(dispatcher, recoverable, attempt).await,
-        None => Ok(()),
+        Some(recoverable) => {
+            start_recovered_invocation(dispatcher, recoverable, attempt).await?;
+            Ok(true)
+        }
+        None => Ok(false),
     }
 }
 
