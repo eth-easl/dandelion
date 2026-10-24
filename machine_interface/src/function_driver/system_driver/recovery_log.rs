@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 #[cfg(feature = "at-least-once")]
 use dandelion_commons::err_dandelion;
 use dandelion_commons::{dandelion_err, DandelionError, DandelionResult, FrontendError, RunId};
-use log::warn;
+use log::{error, warn};
 #[cfg(feature = "at-least-once")]
 use std::collections::HashSet;
 use std::{
@@ -191,6 +191,9 @@ fn create_dir_all_durable(directory: &Path) -> DandelionResult<()> {
 
 pub fn set_recovery_log_root(root: PathBuf) -> DandelionResult<()> {
     create_dir_all_durable(&io_log_dir(&root))?;
+    if SYNC_RUN_LOG && RECOVERY_LOG_ROOT.get().is_none() {
+        resync_run_logs_blocking(&io_log_dir(&root))?;
+    }
     match RECOVERY_LOG_ROOT.set(root.clone()) {
         Ok(()) => Ok(()),
         Err(existing_root) => {
@@ -381,19 +384,31 @@ fn sync_directory_blocking(directory: &Path) -> DandelionResult<()> {
 
 fn append_run_log_blocking(log_path: &Path, content: &str, sync: bool) -> DandelionResult<()> {
     let (mut file, created) = open_run_log_blocking(log_path)?;
-    file.write_all(content.as_bytes()).map_err(|_| {
-        internal_error(format!(
-            "Failed to append invocation log {}",
-            log_path.display()
-        ))
-    })?;
-    if sync {
-        file.sync_data().map_err(|_| {
+    let length = file
+        .metadata()
+        .map_err(|_| {
             internal_error(format!(
-                "Failed to sync invocation log {}",
+                "Failed to inspect invocation log {}",
                 log_path.display()
             ))
-        })?;
+        })?
+        .len();
+    if file.write_all(content.as_bytes()).is_err() {
+        let rolled_back = file
+            .set_len(length)
+            .and_then(|()| if sync { file.sync_data() } else { Ok(()) });
+        if sync && rolled_back.is_err() {
+            abort_on_unsynced_run_log(log_path);
+        }
+        return Err(internal_error(format!(
+            "Failed to append invocation log {}",
+            log_path.display()
+        )));
+    }
+    if sync {
+        if file.sync_data().is_err() {
+            abort_on_unsynced_run_log(log_path);
+        }
         if created {
             let directory = log_path.parent().ok_or_else(|| {
                 internal_error(format!(
@@ -401,10 +416,51 @@ fn append_run_log_blocking(log_path: &Path, content: &str, sync: bool) -> Dandel
                     log_path.display()
                 ))
             })?;
-            sync_directory_blocking(directory)?;
+            if sync_directory_blocking(directory).is_err() {
+                abort_on_unsynced_run_log(log_path);
+            }
         }
     }
     Ok(())
+}
+
+fn abort_on_unsynced_run_log(log_path: &Path) -> ! {
+    error!(
+        "Failed to sync invocation log {}, its durable state is unknown, aborting",
+        log_path.display()
+    );
+    std::process::abort()
+}
+
+fn resync_run_logs_blocking(directory: &Path) -> DandelionResult<()> {
+    let resync_error = |path: &Path| {
+        internal_error(format!(
+            "Failed to resync invocation log {}",
+            path.display()
+        ))
+    };
+    let entries = fs::read_dir(directory).map_err(|_| resync_error(directory))?;
+    for entry in entries {
+        let path = entry.map_err(|_| resync_error(directory))?.path();
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("resync") => {
+                fs::remove_file(&path).map_err(|_| resync_error(path.as_path()))?;
+            }
+            Some("log") => {
+                let content = fs::read(&path).map_err(|_| resync_error(path.as_path()))?;
+                let resynced = path.with_extension("log.resync");
+                fs::File::create(&resynced)
+                    .and_then(|mut file| {
+                        file.write_all(&content)?;
+                        file.sync_data()
+                    })
+                    .and_then(|()| fs::rename(&resynced, &path))
+                    .map_err(|_| resync_error(path.as_path()))?;
+            }
+            _ => {}
+        }
+    }
+    sync_directory_blocking(directory)
 }
 
 async fn ensure_run_log_loaded(log_path: &Path, state: &mut RunLogState) -> DandelionResult<()> {
@@ -1215,12 +1271,7 @@ pub async fn accept_delivered_io_completion_record(
     let record_key = record.completion_key()?;
     let payload_b64 = encode_io_completion_payload(&record.outputs)?;
     let line = io_completion_line(record, &payload_b64);
-    if let Err(error) = write_run_log_locked(&log_path, &mut state, line, SYNC_RUN_LOG).await {
-        if ensure_run_log_loaded(&log_path, &mut state).await.is_err() {
-            return Err(error);
-        }
-        return delivered_io_completion_disposition(&state, record)?.ok_or(error);
-    }
+    write_run_log_locked(&log_path, &mut state, line, SYNC_RUN_LOG).await?;
     state.completions.insert(record_key, payload_b64);
     Ok(IoCompletionDisposition::Retain)
 }
@@ -1343,7 +1394,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
             // check if the completion record is already in the log
             if let Some(disposition) = delivered_io_completion_disposition(&state, &request.record)?
             {
-                dispositions.push(Ok(disposition));
+                dispositions.push(disposition);
                 continue;
             }
             let record_key = request.record.completion_key()?;
@@ -1356,11 +1407,11 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
                 recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeEnd);
             }
             if let Some(winner) = appended_completions.get(&record_key) {
-                dispositions.push(Ok(if *winner == payload_b64 {
+                dispositions.push(if *winner == payload_b64 {
                     IoCompletionDisposition::Retain
                 } else {
                     IoCompletionDisposition::Delete
-                }));
+                });
                 continue;
             }
             if let Some(recorder) = recorder {
@@ -1368,7 +1419,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
             }
             appended.push_str(&io_completion_line(&request.record, &payload_b64));
             appended_completions.insert(record_key, payload_b64);
-            dispositions.push(Ok(IoCompletionDisposition::Retain));
+            dispositions.push(IoCompletionDisposition::Retain);
         }
         record_completion_requests(
             &requests,
@@ -1380,23 +1431,8 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteStart);
             }
-            match write_run_log_locked(&log_path, &mut state, appended, SYNC_RUN_LOG).await {
-                Ok(()) => state.completions.extend(appended_completions),
-                Err(error) => {
-                    let reloaded = ensure_run_log_loaded(&log_path, &mut state).await.is_ok();
-                    for (request, disposition) in requests.iter().zip(dispositions.iter_mut()) {
-                        if !appended_completions.contains_key(&request.record.completion_key()?) {
-                            continue;
-                        }
-                        let logged = if reloaded {
-                            delivered_io_completion_disposition(&state, &request.record)?
-                        } else {
-                            None
-                        };
-                        *disposition = logged.ok_or_else(|| error.clone());
-                    }
-                }
-            }
+            write_run_log_locked(&log_path, &mut state, appended, SYNC_RUN_LOG).await?;
+            state.completions.extend(appended_completions);
             for recorder in &mut journal_recorders {
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteEnd);
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
@@ -1409,7 +1445,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
     match commit {
         Ok(dispositions) => {
             for (request, disposition) in requests.into_iter().zip(dispositions) {
-                let _ = request.completion.send(disposition);
+                let _ = request.completion.send(Ok(disposition));
             }
         }
         Err(error) => {
