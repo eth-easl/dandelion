@@ -11,11 +11,7 @@ use hyper::{
 };
 use log::{debug, error, info, trace, warn};
 use machine_interface::machine_config::EngineType;
-use memory::{
-    context::{bytes::BytesContext, read_only::ReadOnlyContext},
-    data::Metadata,
-    DataItem, DataSet, LocalData, Position,
-};
+use memory::{context::bytes::BytesContext, data::Metadata, DataSet};
 use serde::Deserialize;
 use std::{
     convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, println, sync::Arc,
@@ -56,6 +52,13 @@ struct RegisterFunction {
     /// value of > 0) the JoinIterator will combine any sets to achieve this size best-effort.
     #[serde(default)]
     min_set_bytes: Vec<usize>,
+    /// Whether the binary is the selector of a dynamic function, which returns the identifier of
+    /// the function to run on the input sets instead of computing the output sets itself.
+    #[serde(default)]
+    dynamic: bool,
+    /// Input sets of a dynamic function the selector only gets the metadata of.
+    #[serde(default)]
+    metadata_sets: Vec<String>,
 }
 
 async fn handle_function_registration(
@@ -117,39 +120,44 @@ async fn handle_function_registration(
         output_sets: request_map.output_sets,
         min_set_bytes: request_map.min_set_bytes,
     };
-    dispatcher
-        .insert_function(
+    let insertion = if request_map.dynamic {
+        dispatcher.insert_dynamic_function(
+            request_map.name,
+            engine_type,
+            request_map.context_size as usize,
+            path_string,
+            metadata,
+            &request_map.metadata_sets,
+        )
+    } else if !request_map.metadata_sets.is_empty() {
+        return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
+            String::from("Metadata sets can only be given for dynamic functions"),
+        )));
+    } else {
+        dispatcher.insert_function(
             request_map.name,
             engine_type,
             request_map.context_size as usize,
             path_string,
             metadata,
         )
-        .expect("Should be able to insert function");
-    Ok(DandelionBody::from_vec(
-        "Function registered".as_bytes().to_vec(),
-    ))
+    };
+    match insertion {
+        Ok(()) => Ok(DandelionBody::from_vec(
+            "Function registered".as_bytes().to_vec(),
+        )),
+        Err(insertion_err) => err_dandelion!(DandelionError::RequestError(
+            FrontendError::InternalError(format!(
+                "Failed to insert function into dispatcher: {:?}",
+                insertion_err
+            ),)
+        )),
+    }
 }
 
 /// Builds a set out of static items given at function registration, each backed by its own context.
 fn static_data_set(items: Vec<(String, Vec<u8>)>) -> DataSet {
-    let items = items
-        .into_iter()
-        .map(|(name, data)| {
-            let size = data.len();
-            let ctx = ReadOnlyContext::from_boxed(data.into_boxed_slice())
-                .expect("Should be able to create read only context for static data");
-            DataItem::new_local(
-                name,
-                0,
-                LocalData {
-                    ctx: Arc::new(ctx),
-                    pos: Position { offset: 0, size },
-                },
-            )
-        })
-        .collect();
-    DataSet::from_items(Arc::new(items))
+    DataSet::from_bytes(items).expect("Should be able to create read only context for static data")
 }
 
 #[derive(Debug, Deserialize)]
