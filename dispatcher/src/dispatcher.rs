@@ -1,6 +1,6 @@
 use crate::{
     dynamic::{metadata_set, read_selection, SelectorInput},
-    function_registry::{DynamicFunctionInfo, FunctionInfo, FunctionRegistry, FunctionType},
+    function_registry::{MetaFunctionInfo, FunctionInfo, FunctionRegistry, FunctionType},
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
@@ -103,7 +103,7 @@ impl<'a> Executor for CompositionExecutor<'a> {
                     }));
                 }
             }
-            FunctionType::DynamicFunction(dynamic_info) => {
+            FunctionType::MetaFunction(dynamic_info) => {
                 for input in inv_input_iter {
                     let recorder = self.new_child_recorder(&function_id, composition_idx);
                     let function_id = function_id.clone();
@@ -481,7 +481,7 @@ impl Dispatcher {
         &self,
         composition_id: usize,
         mut function_id: FunctionId,
-        mut dynamic_info: DynamicFunctionInfo,
+        mut dynamic_info: MetaFunctionInfo,
         input_sets: Vec<DataSet>,
         caching: bool,
         mut recorder: Recorder,
@@ -519,7 +519,7 @@ impl Dispatcher {
 
             match self.function_registry.get_function(&function_id)? {
                 // if selected function is dynamic itself, execute it too
-                FunctionType::DynamicFunction(next_info) => dynamic_info = next_info,
+                FunctionType::MetaFunction(next_info) => dynamic_info = next_info,
                 // if not, do the final execution to obtain actual output sets
                 _ => {
                     let target_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
@@ -583,7 +583,7 @@ impl Dispatcher {
                 )
                 .await
             }
-            FunctionType::DynamicFunction(dynamic_info) => {
+            FunctionType::MetaFunction(dynamic_info) => {
                 self.queue_dynamic_function(
                     composition_id,
                     function_id,
