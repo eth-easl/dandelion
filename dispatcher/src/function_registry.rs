@@ -1,4 +1,4 @@
-use crate::dynamic::{SelectorInput, SELECTION_SET};
+use crate::meta_function::{SelectorInput, SELECTION_SET};
 use composition::{CompositionTemplate, Registry};
 use dandelion_commons::{
     dandelion_err, err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
@@ -48,23 +48,23 @@ impl FunctionInfo {
     }
 }
 
-/// What a dynamic function adds on top of its selector, see [`crate::dynamic`].
+/// What a metafunction adds on top of its selector
 #[derive(Debug)]
-pub struct DynamicSignature {
+pub struct MetaSignature {
     /// How each input set is passed to the selector, in input set order.
     pub selector_inputs: Vec<SelectorInput>,
-    /// The output sets of the dynamic function, which the selected function has to produce.
+    /// The output sets of the metafunction, which the selected function has to produce.
     pub output_sets: Vec<String>,
 }
 
-/// Struct holding a dynamic function. This struct can be cloned cheaply and given to the
+/// Struct holding a metafunction. This struct can be cloned cheaply and given to the
 /// dispatcher for function execution.
 #[derive(Debug, Clone)]
 pub struct MetaFunctionInfo {
-    /// The selector, its metadata holds the input sets of the dynamic function and the
+    /// The selector, its metadata holds the input sets of the metafunction and the
     /// [`SELECTION_SET`] as the only output set.
     pub selector: FunctionInfo,
-    pub signature: Arc<DynamicSignature>,
+    pub signature: Arc<MetaSignature>,
 }
 
 /// Struct holding the parsed composition and corresponding metadata. This struct
@@ -92,17 +92,17 @@ pub enum FunctionType {
 /// A `BTreeMap` linking function identifiers to function types.
 type FunctionMap = BTreeMap<String, FunctionType>;
 
-// inserts the function into the function map, as dynamic function if a signature is given
+// inserts the function into the function map, as metafunction if a signature is given
 fn fmap_insert_function(
     fmap: &mut FunctionMap,
     key: FunctionId,
     func_alt: FunctionAlternative,
     func_meta: Metadata,
-    dynamic: Option<DynamicSignature>,
+    meta: Option<MetaSignature>,
 ) -> DandelionResult<()> {
     match fmap.get(&(*key)) {
         Some(entry) => {
-            let func_info = match (entry, &dynamic) {
+            let func_info = match (entry, &meta) {
                 (FunctionType::Function(info), None) => info,
                 (FunctionType::MetaFunction(info), Some(_)) => &info.selector,
                 (FunctionType::SystemFunction(_), _) => {
@@ -135,7 +135,7 @@ fn fmap_insert_function(
                 alternatives: Arc::new(RwLock::new(vec![Arc::new(func_alt)])),
                 metadata: Arc::new(func_meta),
             };
-            let entry = match dynamic {
+            let entry = match meta {
                 None => FunctionType::Function(func_info),
                 Some(signature) => FunctionType::MetaFunction(MetaFunctionInfo {
                     selector: func_info,
@@ -247,10 +247,8 @@ impl FunctionRegistry {
         )
     }
 
-    /// Inserts a dynamic function into the function registry, see [`crate::dynamic`].
-    /// The metadata describes the dynamic function, the selector binary gets the sets named in
-    /// `metadata_sets` replaced by their metadata and returns the [`SELECTION_SET`] instead.
-    pub fn insert_dynamic_function(
+    /// Inserts a metafunction into the function registry
+    pub fn insert_meta_function(
         &self,
         function_id: FunctionId,
         engine_type: EngineType,
@@ -265,7 +263,7 @@ impl FunctionRegistry {
             .find(|name| !metadata.input_sets.iter().any(|(input, _)| input == *name))
         {
             return err_dandelion!(DandelionError::FunctionRegistry(
-                FunctionRegistryError::InvalidDynamicInsert(format!(
+                FunctionRegistryError::InvalidMetaInsert(format!(
                     "Metadata set {} is not an input set of {}",
                     unknown, function_id
                 )),
@@ -277,7 +275,7 @@ impl FunctionRegistry {
             .map(|(name, static_set)| match metadata_sets.contains(name) {
                 // a static set always replaces the input, so there is no input to describe
                 true if static_set.is_some() => err_dandelion!(DandelionError::FunctionRegistry(
-                    FunctionRegistryError::InvalidDynamicInsert(format!(
+                    FunctionRegistryError::InvalidMetaInsert(format!(
                         "Metadata set {} of {} has static data",
                         name, function_id
                     )),
@@ -295,28 +293,28 @@ impl FunctionRegistry {
             context_size,
             path,
             metadata,
-            Some(DynamicSignature {
+            Some(MetaSignature {
                 selector_inputs,
                 output_sets,
             }),
         )
     }
 
-    /// Checks that the function selected by a dynamic function can be run in its place / has
+    /// Checks that the function selected by a metafunction can be run in its place / has
     /// the same input and output sets.
     pub fn check_selection(
         &self,
         selection: &str,
-        dynamic_info: &MetaFunctionInfo,
+        meta_info: &MetaFunctionInfo,
     ) -> DandelionResult<()> {
-        let params = dynamic_info
+        let params = meta_info
             .selector
             .metadata
             .input_sets
             .iter()
             .map(|(name, _)| name.as_str())
             .collect_vec();
-        let returns = dynamic_info
+        let returns = meta_info
             .signature
             .output_sets
             .iter()
@@ -326,7 +324,7 @@ impl FunctionRegistry {
             .map_err(|err| {
                 dandelion_err!(DandelionError::FunctionRegistry(
                     FunctionRegistryError::InvalidSelection(format!(
-                        "Selected function {} cannot replace the dynamic function: {}",
+                        "Selected function {} cannot replace the metafunction: {}",
                         selection, err
                     ))
                 ))
@@ -341,7 +339,7 @@ impl FunctionRegistry {
         context_size: usize,
         path: String,
         metadata: Metadata,
-        dynamic: Option<DynamicSignature>,
+        meta: Option<MetaSignature>,
     ) -> DandelionResult<()> {
         // check that path exists
         if !Path::new(&path).exists() {
@@ -367,7 +365,7 @@ impl FunctionRegistry {
             .function_map
             .write()
             .expect("Function registry lock poisoned!");
-        fmap_insert_function(&mut lock_guard, function_id, func_alt, metadata, dynamic)
+        fmap_insert_function(&mut lock_guard, function_id, func_alt, metadata, meta)
     }
 
     /// Inserts the composition into the function registry.
@@ -410,9 +408,9 @@ impl composition::Registry for FunctionRegistry {
                     &func_info.metadata.input_sets,
                     &func_info.metadata.output_sets,
                 ),
-                FunctionType::MetaFunction(dynamic_info) => (
-                    &dynamic_info.selector.metadata.input_sets,
-                    &dynamic_info.signature.output_sets,
+                FunctionType::MetaFunction(meta_info) => (
+                    &meta_info.selector.metadata.input_sets,
+                    &meta_info.signature.output_sets,
                 ),
                 FunctionType::Composition(comp_info) => (
                     &comp_info.metadata.input_sets,
@@ -480,8 +478,8 @@ impl composition::Registry for FunctionRegistry {
         match lock_guard.get(&(**id)) {
             Some(func_type) => match func_type {
                 FunctionType::Function(func_info) => Ok(func_info.metadata.min_set_bytes.clone()),
-                FunctionType::MetaFunction(dynamic_info) => {
-                    Ok(dynamic_info.selector.metadata.min_set_bytes.clone())
+                FunctionType::MetaFunction(meta_info) => {
+                    Ok(meta_info.selector.metadata.min_set_bytes.clone())
                 }
                 FunctionType::Composition(comp_info) => {
                     Ok(comp_info.metadata.min_set_bytes.clone())
