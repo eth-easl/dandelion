@@ -1,6 +1,6 @@
 use std::{fmt::Debug, ops::Deref, sync::Arc};
 
-use crate::context::{Context, ContextDataSet};
+use crate::context::{read_only::ReadOnlyContext, Context, ContextDataSet};
 use dandelion_commons::DandelionResult;
 use log::error;
 use tokio::sync::{mpsc, OnceCell};
@@ -206,6 +206,28 @@ impl DataSet {
             num_unresolved,
             total_size,
         }
+    }
+
+    /// Builds a set out of named byte buffers, each backed by its own read only context.
+    pub fn from_bytes<I: IntoIterator<Item = (String, Vec<u8>)>>(
+        items: I,
+    ) -> DandelionResult<DataSet> {
+        let items = items
+            .into_iter()
+            .map(|(ident, data)| {
+                let size = data.len();
+                let ctx = ReadOnlyContext::from_boxed(data.into_boxed_slice())?;
+                Ok(DataItem::new_local(
+                    ident,
+                    0,
+                    LocalData {
+                        ctx: Arc::new(ctx),
+                        pos: Position { offset: 0, size },
+                    },
+                ))
+            })
+            .collect::<DandelionResult<Vec<_>>>()?;
+        Ok(DataSet::from_items(Arc::new(items)))
     }
 
     pub fn is_empty(&self) -> bool {

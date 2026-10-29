@@ -290,6 +290,10 @@ pub enum FunctionRegistryError {
     BinaryNotFound,
     /// Failed to receive local loading result that was triggered by another function
     LocalLoadingReceive,
+    /// The registration of a dynamic function is inconsistent with its input sets
+    InvalidDynamicInsert(String),
+    /// A dynamic function selected a function that cannot be run in its place
+    InvalidSelection(String),
 }
 
 impl FunctionRegistryError {
@@ -300,7 +304,9 @@ impl FunctionRegistryError {
             | FunctionRegistryError::TypeConflictInsert(msg)
             | FunctionRegistryError::InvalidSystemInsert(msg)
             | FunctionRegistryError::InvalidUserInsert(msg)
-            | FunctionRegistryError::UnknownFunction(msg) => msg.clone(),
+            | FunctionRegistryError::UnknownFunction(msg)
+            | FunctionRegistryError::InvalidDynamicInsert(msg)
+            | FunctionRegistryError::InvalidSelection(msg) => msg.clone(),
             _ => format!("{:?}", self),
         }
     }
