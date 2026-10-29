@@ -60,7 +60,7 @@ pub struct DynamicSignature {
 /// Struct holding a dynamic function. This struct can be cloned cheaply and given to the
 /// dispatcher for function execution.
 #[derive(Debug, Clone)]
-pub struct DynamicFunctionInfo {
+pub struct MetaFunctionInfo {
     /// The selector, its metadata holds the input sets of the dynamic function and the
     /// [`SELECTION_SET`] as the only output set.
     pub selector: FunctionInfo,
@@ -84,7 +84,7 @@ pub enum FunctionType {
     /// A user defined function.
     Function(FunctionInfo),
     /// A user defined function selecting the function to run on its inputs.
-    DynamicFunction(DynamicFunctionInfo),
+    MetaFunction(MetaFunctionInfo),
     /// A composition of functions.
     Composition(CompositionInfo),
 }
@@ -104,7 +104,7 @@ fn fmap_insert_function(
         Some(entry) => {
             let func_info = match (entry, &dynamic) {
                 (FunctionType::Function(info), None) => info,
-                (FunctionType::DynamicFunction(info), Some(_)) => &info.selector,
+                (FunctionType::MetaFunction(info), Some(_)) => &info.selector,
                 (FunctionType::SystemFunction(_), _) => {
                     return err_dandelion!(DandelionError::FunctionRegistry(
                         FunctionRegistryError::InvalidSystemInsert((*key).clone()),
@@ -137,7 +137,7 @@ fn fmap_insert_function(
             };
             let entry = match dynamic {
                 None => FunctionType::Function(func_info),
-                Some(signature) => FunctionType::DynamicFunction(DynamicFunctionInfo {
+                Some(signature) => FunctionType::MetaFunction(MetaFunctionInfo {
                     selector: func_info,
                     signature: Arc::new(signature),
                 }),
@@ -307,7 +307,7 @@ impl FunctionRegistry {
     pub fn check_selection(
         &self,
         selection: &str,
-        dynamic_info: &DynamicFunctionInfo,
+        dynamic_info: &MetaFunctionInfo,
     ) -> DandelionResult<()> {
         let params = dynamic_info
             .selector
@@ -410,7 +410,7 @@ impl composition::Registry for FunctionRegistry {
                     &func_info.metadata.input_sets,
                     &func_info.metadata.output_sets,
                 ),
-                FunctionType::DynamicFunction(dynamic_info) => (
+                FunctionType::MetaFunction(dynamic_info) => (
                     &dynamic_info.selector.metadata.input_sets,
                     &dynamic_info.signature.output_sets,
                 ),
@@ -480,7 +480,7 @@ impl composition::Registry for FunctionRegistry {
         match lock_guard.get(&(**id)) {
             Some(func_type) => match func_type {
                 FunctionType::Function(func_info) => Ok(func_info.metadata.min_set_bytes.clone()),
-                FunctionType::DynamicFunction(dynamic_info) => {
+                FunctionType::MetaFunction(dynamic_info) => {
                     Ok(dynamic_info.selector.metadata.min_set_bytes.clone())
                 }
                 FunctionType::Composition(comp_info) => {
