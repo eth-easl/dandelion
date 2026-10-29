@@ -1,6 +1,6 @@
 use crate::{
-    dynamic::{metadata_set, read_selection, SelectorInput},
-    function_registry::{MetaFunctionInfo, FunctionInfo, FunctionRegistry, FunctionType},
+    function_registry::{FunctionInfo, FunctionRegistry, FunctionType, MetaFunctionInfo},
+    meta_function::{metadata_set, read_selection, SelectorInput},
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
@@ -32,7 +32,7 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
 };
 
-/// Maximum number of selections in a row when dynamic functions select other dynamic functions.
+/// Maximum number of selections in a row when metafunctions select other metafunctions.
 const MAX_SELECTION_DEPTH: usize = 8;
 
 type InvocationResult = DandelionResult<(usize, ExecutionOutput)>;
@@ -103,17 +103,17 @@ impl<'a> Executor for CompositionExecutor<'a> {
                     }));
                 }
             }
-            FunctionType::MetaFunction(dynamic_info) => {
+            FunctionType::MetaFunction(meta_info) => {
                 for input in inv_input_iter {
                     let recorder = self.new_child_recorder(&function_id, composition_idx);
                     let function_id = function_id.clone();
-                    let dynamic_info = dynamic_info.clone();
+                    let meta_info = meta_info.clone();
                     self.awaited.push(Box::pin(async move {
                         dispatcher
-                            .queue_dynamic_function(
+                            .queue_meta_function(
                                 composition_id,
                                 function_id,
-                                dynamic_info,
+                                meta_info,
                                 input,
                                 caching,
                                 recorder,
@@ -254,7 +254,7 @@ impl Dispatcher {
         )
     }
 
-    pub fn insert_dynamic_function(
+    pub fn insert_meta_function(
         &self,
         function_name: String,
         engine_type: EngineType,
@@ -265,7 +265,7 @@ impl Dispatcher {
     ) -> DandelionResult<()> {
         let function_id = Arc::new(function_name);
         let domain_type = engine_type.get_domain_type();
-        self.function_registry.insert_dynamic_function(
+        self.function_registry.insert_meta_function(
             function_id,
             engine_type,
             self.domains[domain_type as usize].clone(),
@@ -474,14 +474,12 @@ impl Dispatcher {
         Ok(sets)
     }
 
-    /// Runs a dynamic function, see [`crate::dynamic`]: runs its selector and then the selected
-    /// function on the input sets. Selecting another dynamic function repeats this, up to
-    /// [`MAX_SELECTION_DEPTH`] selections to catch selection cycles.
-    async fn queue_dynamic_function(
+    /// Runs a metafunction. Caps maximum "recursion" depth
+    async fn queue_meta_function(
         &self,
         composition_id: usize,
         mut function_id: FunctionId,
-        mut dynamic_info: MetaFunctionInfo,
+        mut meta_info: MetaFunctionInfo,
         input_sets: Vec<DataSet>,
         caching: bool,
         mut recorder: Recorder,
@@ -491,7 +489,7 @@ impl Dispatcher {
         for _ in 0..MAX_SELECTION_DEPTH {
             let selector_inputs = input_sets
                 .iter()
-                .zip(dynamic_info.signature.selector_inputs.iter())
+                .zip(meta_info.signature.selector_inputs.iter())
                 .map(|(set, input)| match input {
                     SelectorInput::Data => Ok(set.clone()),
                     SelectorInput::Metadata => metadata_set(set),
@@ -503,7 +501,7 @@ impl Dispatcher {
                 .queue_compute_function(
                     composition_id,
                     function_id.clone(),
-                    dynamic_info.selector.clone(),
+                    meta_info.selector.clone(),
                     selector_inputs,
                     caching,
                     selector_recorder,
@@ -511,15 +509,15 @@ impl Dispatcher {
                 .await?;
 
             let selection = read_selection(&selector_output)?;
-            debug!("Dynamic function {} selected {}", function_id, selection);
+            debug!("Metafunction {} selected {}", function_id, selection);
             // check if all types of the selected function match with the function we're current in
             self.function_registry
-                .check_selection(&selection, &dynamic_info)?;
+                .check_selection(&selection, &meta_info)?;
             function_id = Arc::new(selection);
 
             match self.function_registry.get_function(&function_id)? {
-                // if selected function is dynamic itself, execute it too
-                FunctionType::MetaFunction(next_info) => dynamic_info = next_info,
+                // if selected function is a metafunction itself, execute it too
+                FunctionType::MetaFunction(next_info) => meta_info = next_info,
                 // if not, do the final execution to obtain actual output sets
                 _ => {
                     let target_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
@@ -583,11 +581,11 @@ impl Dispatcher {
                 )
                 .await
             }
-            FunctionType::MetaFunction(dynamic_info) => {
-                self.queue_dynamic_function(
+            FunctionType::MetaFunction(meta_info) => {
+                self.queue_meta_function(
                     composition_id,
                     function_id,
-                    dynamic_info,
+                    meta_info,
                     input_sets,
                     caching,
                     recorder,

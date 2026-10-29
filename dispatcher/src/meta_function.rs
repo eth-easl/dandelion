@@ -1,9 +1,6 @@
-//! The interface between the platform and the selector of a dynamic function.
+//! The interface between the platform and the selector of a metafunction.
 //!
-//! A dynamic function is registered with the input and output sets of the function it stands for.
-//! Instead of computing the outputs itself, its binary (the selector) gets the input sets, with the
-//! sets registered as metadata sets replaced by a description of them, and returns the identifier
-//! of the function that is run on the original input sets to produce the outputs.
+//! A metafunction is registered with the input and output sets of the function it stands for.
 
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, FunctionRegistryError};
 use memory::{context::ContextTrait, DataItem, DataSet};
@@ -18,12 +15,11 @@ pub const NUM_ITEMS_ITEM: &str = "num_items";
 /// endian u64.
 pub const TOTAL_SIZE_ITEM: &str = "total_size";
 
-/// How an input set of a dynamic function is passed to its selector.
+/// How an input set of a metafunction is passed to its selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectorInput {
     /// The selector gets the set itself.
     Data,
-    /// The selector gets a set describing the set, see [`metadata_set`].
     Metadata,
 }
 
