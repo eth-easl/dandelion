@@ -1,6 +1,7 @@
-use composition::CompositionTemplate;
+use crate::dynamic::{SelectorInput, SELECTION_SET};
+use composition::{CompositionTemplate, Registry};
 use dandelion_commons::{
-    err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
+    dandelion_err, err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
     FunctionRegistryError, SystemFunction,
 };
 use itertools::Itertools;
@@ -47,6 +48,25 @@ impl FunctionInfo {
     }
 }
 
+/// What a dynamic function adds on top of its selector, see [`crate::dynamic`].
+#[derive(Debug)]
+pub struct DynamicSignature {
+    /// How each input set is passed to the selector, in input set order.
+    pub selector_inputs: Vec<SelectorInput>,
+    /// The output sets of the dynamic function, which the selected function has to produce.
+    pub output_sets: Vec<String>,
+}
+
+/// Struct holding a dynamic function. This struct can be cloned cheaply and given to the
+/// dispatcher for function execution.
+#[derive(Debug, Clone)]
+pub struct DynamicFunctionInfo {
+    /// The selector, its metadata holds the input sets of the dynamic function and the
+    /// [`SELECTION_SET`] as the only output set.
+    pub selector: FunctionInfo,
+    pub signature: Arc<DynamicSignature>,
+}
+
 /// Struct holding the parsed composition and corresponding metadata. This struct
 /// can be cloned cheaply and given to the scheduler for function execution.
 #[derive(Debug, Clone)]
@@ -63,6 +83,8 @@ pub enum FunctionType {
     SystemFunction(SystemFunction),
     /// A user defined function.
     Function(FunctionInfo),
+    /// A user defined function selecting the function to run on its inputs.
+    DynamicFunction(DynamicFunctionInfo),
     /// A composition of functions.
     Composition(CompositionInfo),
 }
@@ -70,23 +92,25 @@ pub enum FunctionType {
 /// A `BTreeMap` linking function identifiers to function types.
 type FunctionMap = BTreeMap<String, FunctionType>;
 
-// inserts the function into the function map
+// inserts the function into the function map, as dynamic function if a signature is given
 fn fmap_insert_function(
     fmap: &mut FunctionMap,
     key: FunctionId,
     func_alt: FunctionAlternative,
     func_meta: Metadata,
+    dynamic: Option<DynamicSignature>,
 ) -> DandelionResult<()> {
-    match fmap.get_mut(&(*key)) {
+    match fmap.get(&(*key)) {
         Some(entry) => {
-            let func_info = match entry {
-                FunctionType::Function(info) => info,
-                FunctionType::SystemFunction(_) => {
+            let func_info = match (entry, &dynamic) {
+                (FunctionType::Function(info), None) => info,
+                (FunctionType::DynamicFunction(info), Some(_)) => &info.selector,
+                (FunctionType::SystemFunction(_), _) => {
                     return err_dandelion!(DandelionError::FunctionRegistry(
                         FunctionRegistryError::InvalidSystemInsert((*key).clone()),
                     ));
                 }
-                FunctionType::Composition(_) => {
+                _ => {
                     return err_dandelion!(DandelionError::FunctionRegistry(
                         FunctionRegistryError::TypeConflictInsert((*key).clone()),
                     ));
@@ -111,7 +135,14 @@ fn fmap_insert_function(
                 alternatives: Arc::new(RwLock::new(vec![Arc::new(func_alt)])),
                 metadata: Arc::new(func_meta),
             };
-            fmap.insert((*key).clone(), FunctionType::Function(func_info));
+            let entry = match dynamic {
+                None => FunctionType::Function(func_info),
+                Some(signature) => FunctionType::DynamicFunction(DynamicFunctionInfo {
+                    selector: func_info,
+                    signature: Arc::new(signature),
+                }),
+            };
+            fmap.insert((*key).clone(), entry);
         }
     };
     Ok(())
@@ -205,6 +236,113 @@ impl FunctionRegistry {
         path: String,
         metadata: Metadata,
     ) -> DandelionResult<()> {
+        self.insert_alternative(
+            function_id,
+            engine_type,
+            static_domain,
+            context_size,
+            path,
+            metadata,
+            None,
+        )
+    }
+
+    /// Inserts a dynamic function into the function registry, see [`crate::dynamic`].
+    /// The metadata describes the dynamic function, the selector binary gets the sets named in
+    /// `metadata_sets` replaced by their metadata and returns the [`SELECTION_SET`] instead.
+    pub fn insert_dynamic_function(
+        &self,
+        function_id: FunctionId,
+        engine_type: EngineType,
+        static_domain: Arc<Box<dyn MemoryDomain>>,
+        context_size: usize,
+        path: String,
+        mut metadata: Metadata,
+        metadata_sets: &[String],
+    ) -> DandelionResult<()> {
+        if let Some(unknown) = metadata_sets
+            .iter()
+            .find(|name| !metadata.input_sets.iter().any(|(input, _)| input == *name))
+        {
+            return err_dandelion!(DandelionError::FunctionRegistry(
+                FunctionRegistryError::InvalidDynamicInsert(format!(
+                    "Metadata set {} is not an input set of {}",
+                    unknown, function_id
+                )),
+            ));
+        }
+        let selector_inputs = metadata
+            .input_sets
+            .iter()
+            .map(|(name, static_set)| match metadata_sets.contains(name) {
+                // a static set always replaces the input, so there is no input to describe
+                true if static_set.is_some() => err_dandelion!(DandelionError::FunctionRegistry(
+                    FunctionRegistryError::InvalidDynamicInsert(format!(
+                        "Metadata set {} of {} has static data",
+                        name, function_id
+                    )),
+                )),
+                true => Ok(SelectorInput::Metadata),
+                false => Ok(SelectorInput::Data),
+            })
+            .collect::<DandelionResult<_>>()?;
+        let output_sets =
+            std::mem::replace(&mut metadata.output_sets, vec![SELECTION_SET.to_string()]);
+        self.insert_alternative(
+            function_id,
+            engine_type,
+            static_domain,
+            context_size,
+            path,
+            metadata,
+            Some(DynamicSignature {
+                selector_inputs,
+                output_sets,
+            }),
+        )
+    }
+
+    /// Checks that the function selected by a dynamic function can be run in its place / has
+    /// the same input and output sets.
+    pub fn check_selection(
+        &self,
+        selection: &str,
+        dynamic_info: &DynamicFunctionInfo,
+    ) -> DandelionResult<()> {
+        let params = dynamic_info
+            .selector
+            .metadata
+            .input_sets
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect_vec();
+        let returns = dynamic_info
+            .signature
+            .output_sets
+            .iter()
+            .map(String::as_str)
+            .collect_vec();
+        self.check_declaration(selection, &params, &returns)
+            .map_err(|err| {
+                dandelion_err!(DandelionError::FunctionRegistry(
+                    FunctionRegistryError::InvalidSelection(format!(
+                        "Selected function {} cannot replace the dynamic function: {}",
+                        selection, err
+                    ))
+                ))
+            })
+    }
+
+    fn insert_alternative(
+        &self,
+        function_id: FunctionId,
+        engine_type: EngineType,
+        static_domain: Arc<Box<dyn MemoryDomain>>,
+        context_size: usize,
+        path: String,
+        metadata: Metadata,
+        dynamic: Option<DynamicSignature>,
+    ) -> DandelionResult<()> {
         // check that path exists
         if !Path::new(&path).exists() {
             return err_dandelion!(DandelionError::FunctionRegistry(
@@ -229,7 +367,7 @@ impl FunctionRegistry {
             .function_map
             .write()
             .expect("Function registry lock poisoned!");
-        fmap_insert_function(&mut lock_guard, function_id, func_alt, metadata)
+        fmap_insert_function(&mut lock_guard, function_id, func_alt, metadata, dynamic)
     }
 
     /// Inserts the composition into the function registry.
@@ -271,6 +409,10 @@ impl composition::Registry for FunctionRegistry {
                 FunctionType::Function(func_info) => (
                     &func_info.metadata.input_sets,
                     &func_info.metadata.output_sets,
+                ),
+                FunctionType::DynamicFunction(dynamic_info) => (
+                    &dynamic_info.selector.metadata.input_sets,
+                    &dynamic_info.signature.output_sets,
                 ),
                 FunctionType::Composition(comp_info) => (
                     &comp_info.metadata.input_sets,
@@ -338,6 +480,9 @@ impl composition::Registry for FunctionRegistry {
         match lock_guard.get(&(**id)) {
             Some(func_type) => match func_type {
                 FunctionType::Function(func_info) => Ok(func_info.metadata.min_set_bytes.clone()),
+                FunctionType::DynamicFunction(dynamic_info) => {
+                    Ok(dynamic_info.selector.metadata.min_set_bytes.clone())
+                }
                 FunctionType::Composition(comp_info) => {
                     Ok(comp_info.metadata.min_set_bytes.clone())
                 }

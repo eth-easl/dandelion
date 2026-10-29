@@ -1,5 +1,6 @@
 use crate::{
-    function_registry::{FunctionRegistry, FunctionType},
+    dynamic::{metadata_set, read_selection, SelectorInput},
+    function_registry::{DynamicFunctionInfo, FunctionInfo, FunctionRegistry, FunctionType},
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
@@ -7,7 +8,7 @@ use composition::{AnyShardingMode, Composition, CompositionTemplate, Executor};
 use dandelion_commons::{
     err_dandelion,
     records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult, DispatcherError, FunctionId,
+    DandelionError, DandelionResult, DispatcherError, FunctionId, FunctionRegistryError,
 };
 use futures::{
     future,
@@ -30,6 +31,9 @@ use std::{
     pin::Pin,
     sync::{atomic::AtomicUsize, Arc},
 };
+
+/// Maximum number of selections in a row when dynamic functions select other dynamic functions.
+const MAX_SELECTION_DEPTH: usize = 8;
 
 type InvocationResult = DandelionResult<(usize, ExecutionOutput)>;
 type InvocationFuture<'a> = Pin<Box<dyn Future<Output = InvocationResult> + Send + 'a>>;
@@ -90,6 +94,26 @@ impl<'a> Executor for CompositionExecutor<'a> {
                             .queue_composition(
                                 composition_id,
                                 composition,
+                                input,
+                                caching,
+                                recorder,
+                            )
+                            .await
+                            .map(|items| (composition_idx, items))
+                    }));
+                }
+            }
+            FunctionType::DynamicFunction(dynamic_info) => {
+                for input in inv_input_iter {
+                    let recorder = self.new_child_recorder(&function_id, composition_idx);
+                    let function_id = function_id.clone();
+                    let dynamic_info = dynamic_info.clone();
+                    self.awaited.push(Box::pin(async move {
+                        dispatcher
+                            .queue_dynamic_function(
+                                composition_id,
+                                function_id,
+                                dynamic_info,
                                 input,
                                 caching,
                                 recorder,
@@ -227,6 +251,28 @@ impl Dispatcher {
             ctx_size,
             path,
             metadata,
+        )
+    }
+
+    pub fn insert_dynamic_function(
+        &self,
+        function_name: String,
+        engine_type: EngineType,
+        ctx_size: usize,
+        path: String,
+        metadata: Metadata,
+        metadata_sets: &[String],
+    ) -> DandelionResult<()> {
+        let function_id = Arc::new(function_name);
+        let domain_type = engine_type.get_domain_type();
+        self.function_registry.insert_dynamic_function(
+            function_id,
+            engine_type,
+            self.domains[domain_type as usize].clone(),
+            ctx_size,
+            path,
+            metadata,
+            metadata_sets,
         )
     }
 
@@ -375,6 +421,132 @@ impl Dispatcher {
             .collect())
     }
 
+    /// Runs a user defined function on an engine.
+    async fn queue_compute_function(
+        &self,
+        composition_id: usize,
+        function_id: FunctionId,
+        func_info: FunctionInfo,
+        input_sets: Vec<DataSet>,
+        caching: bool,
+        mut recorder: Recorder,
+    ) -> DandelionResult<ExecutionOutput> {
+        let function_alternatives = func_info
+            .alternatives
+            .read()
+            .expect("Function registry lock is poisoned!")
+            .clone();
+
+        let metadata = func_info.metadata;
+        #[cfg(feature = "log_function_stdio")]
+        let stdio_index = metadata.output_sets.iter().position(|name| name == "stdio");
+        // run on engine
+        trace!(
+            "Running function {} with input sets {:?} and output sets {:?} and alternatives: {:?}",
+            function_id,
+            metadata
+                .input_sets
+                .iter()
+                .map(|(name, _)| name)
+                .collect_vec(),
+            metadata.output_sets,
+            function_alternatives
+        );
+        let args = WorkToDo::FunctionArguments {
+            function_id: function_id.clone(),
+            function_alternatives,
+            input_sets,
+            metadata,
+            caching,
+            recorder: recorder.clone(),
+        };
+
+        let sets = self
+            .work_queue
+            .enqueue(args, composition_id)?
+            .await?
+            .get_data_items();
+        recorder.record(RecordPoint::FutureReturn);
+
+        #[cfg(feature = "log_function_stdio")]
+        log_io_sets(&sets, stdio_index, &function_id)?;
+
+        Ok(sets)
+    }
+
+    /// Runs a dynamic function, see [`crate::dynamic`]: runs its selector and then the selected
+    /// function on the input sets. Selecting another dynamic function repeats this, up to
+    /// [`MAX_SELECTION_DEPTH`] selections to catch selection cycles.
+    async fn queue_dynamic_function(
+        &self,
+        composition_id: usize,
+        mut function_id: FunctionId,
+        mut dynamic_info: DynamicFunctionInfo,
+        input_sets: Vec<DataSet>,
+        caching: bool,
+        mut recorder: Recorder,
+    ) -> DandelionResult<ExecutionOutput> {
+        // one recorder per selector run and one for the selected function
+        let mut children = Vec::new();
+        for _ in 0..MAX_SELECTION_DEPTH {
+            let selector_inputs = input_sets
+                .iter()
+                .zip(dynamic_info.signature.selector_inputs.iter())
+                .map(|(set, input)| match input {
+                    SelectorInput::Data => Ok(set.clone()),
+                    SelectorInput::Metadata => metadata_set(set),
+                })
+                .collect::<DandelionResult<Vec<_>>>()?;
+            let selector_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
+            children.push(Some(vec![selector_recorder.clone()]));
+            let selector_output = self
+                .queue_compute_function(
+                    composition_id,
+                    function_id.clone(),
+                    dynamic_info.selector.clone(),
+                    selector_inputs,
+                    caching,
+                    selector_recorder,
+                )
+                .await?;
+
+            let selection = read_selection(&selector_output)?;
+            debug!("Dynamic function {} selected {}", function_id, selection);
+            // check if all types of the selected function match with the function we're current in
+            self.function_registry
+                .check_selection(&selection, &dynamic_info)?;
+            function_id = Arc::new(selection);
+
+            match self.function_registry.get_function(&function_id)? {
+                // if selected function is dynamic itself, execute it too
+                FunctionType::DynamicFunction(next_info) => dynamic_info = next_info,
+                // if not, do the final execution to obtain actual output sets
+                _ => {
+                    let target_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
+                    children.push(Some(vec![target_recorder.clone()]));
+                    // boxed, as queuing the selection may lead back here
+                    let result = Box::pin(self.queue_function(
+                        composition_id,
+                        function_id,
+                        input_sets,
+                        caching,
+                        target_recorder,
+                    ))
+                    .await;
+                    recorder.add_children(children);
+                    recorder.record(RecordPoint::FutureReturn);
+                    return result;
+                }
+            }
+        }
+        err_dandelion!(DandelionError::FunctionRegistry(
+            FunctionRegistryError::InvalidSelection(format!(
+                "Exceeded the maximum of {} selections, last selection was {}",
+                MAX_SELECTION_DEPTH, function_id
+            )),
+        ))
+    }
+
     /// returns a vector of pairs of a index and a composition set
     /// the index describes which output set the composition belongs to.
     pub async fn queue_function(
@@ -401,47 +573,26 @@ impl Dispatcher {
                 result
             }
             FunctionType::Function(func_info) => {
-                let function_alternatives = func_info
-                    .alternatives
-                    .read()
-                    .expect("Function registry lock is poisoned!")
-                    .clone();
-
-                let metadata = func_info.metadata;
-                #[cfg(feature = "log_function_stdio")]
-                let stdio_index = metadata.output_sets.iter().position(|name| name == "stdio");
-                // run on engine
-                trace!(
-                        "Running function {} with input sets {:?} and output sets {:?} and alternatives: {:?}",
-                        function_id,
-                        metadata
-                            .input_sets
-                            .iter()
-                            .map(|(name, _)| name)
-                            .collect_vec(),
-                        metadata.output_sets,
-                        function_alternatives
-                    );
-                let args = WorkToDo::FunctionArguments {
-                    function_id: function_id.clone(),
-                    function_alternatives,
+                self.queue_compute_function(
+                    composition_id,
+                    function_id,
+                    func_info,
                     input_sets,
-                    metadata,
                     caching,
-                    recorder: recorder.clone(),
-                };
-
-                let sets = self
-                    .work_queue
-                    .enqueue(args, composition_id)?
-                    .await?
-                    .get_data_items();
-                recorder.record(RecordPoint::FutureReturn);
-
-                #[cfg(feature = "log_function_stdio")]
-                log_io_sets(&sets, stdio_index, &function_id)?;
-
-                Ok(sets)
+                    recorder,
+                )
+                .await
+            }
+            FunctionType::DynamicFunction(dynamic_info) => {
+                self.queue_dynamic_function(
+                    composition_id,
+                    function_id,
+                    dynamic_info,
+                    input_sets,
+                    caching,
+                    recorder,
+                )
+                .await
             }
             FunctionType::Composition(comp_info) => {
                 self.queue_composition(
