@@ -575,6 +575,8 @@ impl Dispatcher {
 
                     let mut composition_set_vecs = Vec::with_capacity(output_mapping.len());
                     composition_set_vecs.resize(output_mapping.len(), Vec::new());
+                    // do_work_many returns submission order. Concatenate in that order,
+                    // retaining the item order emitted by each shard.
                     for done_work in done_vec.into_iter() {
                         let sets = done_work.get_composition();
                         #[cfg(feature = "log_function_stdio")]

@@ -562,14 +562,11 @@ impl CompositionSet {
             .collect()
     }
 
-    pub fn from_item_list(
-        set_name: String,
-        mut item_list: Vec<(DataItem, ItemData)>,
-    ) -> Option<Self> {
+    /// Constructs a set in the supplied item order. Keyed consumers sort their own inputs.
+    pub fn from_item_list(set_name: String, item_list: Vec<(DataItem, ItemData)>) -> Option<Self> {
         if item_list.is_empty() {
             None
         } else {
-            item_list.sort_unstable_by_key(|item| item.0.key);
             let mut non_local_items = 0;
             let mut total_size = 0;
             for (item, data) in &item_list {
@@ -606,18 +603,12 @@ impl CompositionSet {
         }
     }
 
-    /// Takes all sets from a Vec and combines them into a single set.
+    /// Concatenates sets in vector order, preserving each set's item order.
     /// The vec is empty after the call.
     pub fn combine(sets: &mut Vec<CompositionSet>) -> Option<CompositionSet> {
-        // either is none if the vec was empty or has the last element
-        let set_option = sets.pop();
-        // if here is nothing else can return None or the element we popped
-        if sets.is_empty() {
-            return set_option;
-        }
-        // if the vec is not empty the first pop was an element
-        let mut set = set_option.unwrap();
-        while let Some(new_set) = sets.pop() {
+        let mut sets = sets.drain(..);
+        let mut set = sets.next()?;
+        for new_set in sets {
             let CompositionSet {
                 item_list,
                 non_local_items,
@@ -628,7 +619,6 @@ impl CompositionSet {
             set.non_local_items += non_local_items;
             set.total_size += total_size;
         }
-        set.item_list.sort_unstable_by_key(|a| a.0.key);
         Some(set)
     }
 }

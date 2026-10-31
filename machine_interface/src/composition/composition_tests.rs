@@ -6,7 +6,6 @@ use crate::{
     memory_domain::{read_only::ReadOnlyContext, Context},
     DataItem, Position,
 };
-use itertools::Itertools;
 use std::{
     sync::{atomic::AtomicUsize, Arc},
     vec,
@@ -14,6 +13,12 @@ use std::{
 use tokio::sync::watch;
 
 fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
+    let mut set = create_ordered_dummy_set(keys);
+    set.item_list.sort_by_key(|item| item.0.key);
+    set
+}
+
+fn create_ordered_dummy_set(keys: Vec<u32>) -> CompositionSet {
     let dummy_context: Arc<Context> = Arc::new(ReadOnlyContext::new_static::<u8>(&mut []));
     let mut total_size = 0;
     let items = keys
@@ -30,7 +35,6 @@ fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
                 ItemData::LocalData(dummy_context.clone()),
             )
         })
-        .sorted_by_key(|tuple| tuple.0.key)
         .collect();
     CompositionSet {
         item_list: items,
@@ -89,10 +93,7 @@ fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGro
             let mut expected_set = expected_set_opt.unwrap();
             let mut actual_set = actual_set_opt.unwrap();
             assert_eq!(expected_set.len(), actual_set.item_list.len());
-            assert!(actual_set
-                .item_list
-                .iter()
-                .is_sorted_by_key(|item| item.0.key));
+            // Batched sets preserve their concatenation order and need not be key-sorted.
             // sort both lists by key and index (identifier), so we can easily check they are the same
             expected_set.sort();
             actual_set
@@ -112,6 +113,149 @@ fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGro
                 assert_eq!(expected_key, actual_item.key);
             }
         }
+    }
+}
+
+#[test]
+fn construction_and_combination_preserve_item_order() {
+    let first = create_ordered_dummy_set(vec![3, 1, 2]);
+    let first = CompositionSet::from_item_list("output".into(), first.item_list).unwrap();
+    assert_eq!(
+        first
+            .item_list
+            .iter()
+            .map(|item| item.0.key)
+            .collect::<Vec<_>>(),
+        vec![3, 1, 2]
+    );
+
+    let mut sets = vec![first, create_ordered_dummy_set(vec![0, 4])];
+    let combined = CompositionSet::combine(&mut sets).unwrap();
+    assert!(sets.is_empty());
+    assert_eq!(
+        combined
+            .item_list
+            .iter()
+            .map(|item| item.0.key)
+            .collect::<Vec<_>>(),
+        vec![3, 1, 2, 0, 4]
+    );
+    assert_eq!(combined.size(), 5);
+    assert!(combined.is_local());
+    assert_eq!(combined.get_name(), "output");
+    assert!(CompositionSet::combine(&mut sets).is_none());
+    assert!(CompositionSet::from_item_list("empty".into(), vec![]).is_none());
+}
+
+#[test]
+fn non_keyed_sharding_preserves_unsorted_input_order() {
+    for mode in [ShardingMode::All, ShardingMode::Each, ShardingMode::AnyEach] {
+        let sharded = get_sharding(
+            vec![Some((mode, create_ordered_dummy_set(vec![3, 1, 2, 0])))],
+            vec![0],
+            vec![],
+            &AnyShardingMode::MaxSharding,
+            vec![],
+        );
+        let keys: Vec<_> = sharded
+            .iter()
+            .flat_map(|shard| {
+                shard[0]
+                    .as_ref()
+                    .unwrap()
+                    .item_list
+                    .iter()
+                    .map(|item| item.0.key)
+            })
+            .collect();
+        assert_eq!(keys, vec![3, 1, 2, 0], "{mode:?}");
+        assert_eq!(sharded.len(), if mode == ShardingMode::All { 1 } else { 4 });
+    }
+
+    // Adaptive batching also concatenates in input order rather than sorting by key.
+    let sharded = get_sharding(
+        vec![Some((
+            ShardingMode::AnyEach,
+            create_ordered_dummy_set(vec![3, 1, 2, 0]),
+        ))],
+        vec![0],
+        vec![],
+        &AnyShardingMode::FixedSharding(2),
+        vec![],
+    );
+    let keys: Vec<Vec<_>> = sharded
+        .iter()
+        .map(|shard| {
+            shard[0]
+                .as_ref()
+                .unwrap()
+                .item_list
+                .iter()
+                .map(|item| item.0.key)
+                .collect()
+        })
+        .collect();
+    assert_eq!(keys, vec![vec![3, 1], vec![2, 0]]);
+}
+
+#[test]
+fn keyed_consumers_group_unsorted_inputs_without_changing_other_consumers() {
+    let source = create_ordered_dummy_set(vec![2, 0, 2, 1]);
+    for mode in [ShardingMode::Key, ShardingMode::AnyKey] {
+        let sharded = get_sharding(
+            vec![Some((mode, source.clone()))],
+            vec![0],
+            vec![],
+            &AnyShardingMode::MaxSharding,
+            vec![],
+        );
+        check_sharding(
+            sharded,
+            vec![
+                vec![Some(vec![(0, 1)])],
+                vec![Some(vec![(1, 3)])],
+                vec![Some(vec![(2, 0), (2, 2)])],
+            ],
+        );
+    }
+    let all = get_sharding(
+        vec![Some((ShardingMode::All, source))],
+        vec![0],
+        vec![],
+        &AnyShardingMode::MaxSharding,
+        vec![],
+    );
+    let keys: Vec<_> = all[0][0]
+        .as_ref()
+        .unwrap()
+        .item_list
+        .iter()
+        .map(|item| item.0.key)
+        .collect();
+    assert_eq!(keys, vec![2, 0, 2, 1]);
+}
+
+#[test]
+fn keyed_joins_group_unsorted_inputs() {
+    for mode in [ShardingMode::Key, ShardingMode::AnyKey] {
+        let sharded = get_sharding(
+            vec![
+                Some((mode, create_ordered_dummy_set(vec![2, 0, 2, 1]))),
+                Some((mode, create_ordered_dummy_set(vec![1, 2, 0, 2]))),
+            ],
+            vec![0, 1],
+            vec![JoinStrategy::Inner],
+            &AnyShardingMode::MaxSharding,
+            vec![],
+        );
+        check_sharding(
+            sharded,
+            vec![
+                vec![Some(vec![(0, 1)]), Some(vec![(0, 2)])],
+                vec![Some(vec![(1, 3)]), Some(vec![(1, 0)])],
+                vec![Some(vec![(2, 0), (2, 2)]), Some(vec![(2, 1), (2, 3)])],
+            ],
+        );
     }
 }
 

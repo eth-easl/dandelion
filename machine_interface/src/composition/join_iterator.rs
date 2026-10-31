@@ -218,11 +218,14 @@ impl SetKeyIterator {
     /// index to the first valid element based on the join strategy.
     pub(super) fn new(
         mut left: Option<Box<SetKeyIterator>>,
-        set: CompositionSet,
+        mut set: CompositionSet,
         strategy: JoinStrategy,
         write_idx: usize,
         join_group_key_set: &mut Vec<u32>,
     ) -> Option<Box<SetKeyIterator>> {
+        // Grouping and keyed joins require adjacent keys in ascending order.
+        // Sort this consumer's owned set, leaving other consumers' item order intact.
+        set.item_list.sort_unstable_by_key(|item| item.0.key);
         let mut key_groups = Vec::new();
         let mut start_idx = 0;
         for chunk in set.item_list.chunk_by(|a, b| a.0.key == b.0.key) {
