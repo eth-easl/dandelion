@@ -154,6 +154,11 @@ pub struct CoordinatedIoData {
 }
 
 pub trait IoReferencePolicy: Clone {
+    /// Recovery needs shard boundaries that do not depend on worker counts or batching.
+    fn requires_deterministic_sharding(&self) -> bool {
+        false
+    }
+
     fn nested(&self, _index: usize) -> Self {
         self.clone()
     }
@@ -200,6 +205,10 @@ pub fn async_io_policy(run_id: RunId) -> AsyncIoPolicy {
 
 #[cfg(feature = "at-least-once")]
 impl IoReferencePolicy for RecoverableIo {
+    fn requires_deterministic_sharding(&self) -> bool {
+        true
+    }
+
     fn nested(&self, index: usize) -> Self {
         Self {
             run_id: self.run_id,

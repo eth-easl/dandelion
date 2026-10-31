@@ -46,6 +46,16 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
+    fn sharding_mode(&self, io_policy: &impl IoReferencePolicy) -> &AnyShardingMode {
+        if io_policy.requires_deterministic_sharding() {
+            // Apply to both the original execution and replay, including nested compositions.
+            // MaxSharding also bypasses min_set_bytes batching in get_sharding.
+            &AnyShardingMode::MaxSharding
+        } else {
+            &self.any_sharding_mode
+        }
+    }
+
     pub fn init(
         mut resource_pool: ResourcePool,
         memory_resources: BTreeMap<DomainType, MemoryResource>,
@@ -541,7 +551,7 @@ impl Dispatcher {
                         input_sets,
                         join_order,
                         join_strategies,
-                        &self.any_sharding_mode,
+                        self.sharding_mode(&io_policy),
                         min_set_bytes,
                     );
                     let size_hint = sharded.len();
@@ -777,4 +787,147 @@ fn log_io_sets(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod sharding_tests {
+    use super::*;
+    use dandelion_commons::RunId;
+    use machine_interface::function_driver::system_driver::{async_io_policy, UncoordinatedIo};
+
+    fn dispatcher(mode: AnyShardingMode) -> Dispatcher {
+        Dispatcher {
+            function_registry: FunctionRegistry::new(),
+            work_queue: WorkQueue::init(),
+            domains: vec![],
+            any_sharding_mode: mode,
+            composition_id: AtomicUsize::new(0),
+        }
+    }
+
+    #[test]
+    fn uncoordinated_calls_keep_configured_sharding() {
+        let dispatcher = dispatcher(AnyShardingMode::FixedSharding(1));
+        assert!(std::ptr::eq(
+            dispatcher.sharding_mode(&UncoordinatedIo),
+            &dispatcher.any_sharding_mode,
+        ));
+    }
+
+    #[test]
+    fn async_policy_selects_recovery_sharding_only_for_recovery_modes() {
+        let dispatcher = dispatcher(AnyShardingMode::FixedSharding(1));
+        let policy = async_io_policy(RunId::nil()).nested(2).nested(3);
+        #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+        assert!(matches!(
+            dispatcher.sharding_mode(&policy),
+            AnyShardingMode::MaxSharding
+        ));
+        #[cfg(not(any(feature = "checkpointed-at-least-once", feature = "exactly-once")))]
+        assert!(std::ptr::eq(
+            dispatcher.sharding_mode(&policy),
+            &dispatcher.any_sharding_mode
+        ));
+    }
+
+    #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+    #[test]
+    fn recovery_shards_ignore_worker_counts_and_minimum_batch_sizes() {
+        use machine_interface::{
+            composition::AnyShardingParams, memory_domain::read_only::ReadOnlyContext, DataItem,
+            Position,
+        };
+        use std::sync::atomic::Ordering;
+
+        fn input(keys: &[u32]) -> CompositionSet {
+            let context = Arc::new(ReadOnlyContext::new_static::<u8>(&mut []));
+            CompositionSet::from_item_list(
+                "input".into(),
+                keys.iter()
+                    .enumerate()
+                    .map(|(index, &key)| {
+                        (
+                            DataItem {
+                                ident: index.to_string(),
+                                key,
+                                data: Position { offset: 0, size: 1 },
+                            },
+                            machine_interface::composition::ItemData::LocalData(context.clone()),
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap()
+        }
+
+        fn signature(mode: &AnyShardingMode, minimum: usize) -> Vec<Vec<Vec<(String, u32)>>> {
+            get_sharding(
+                vec![
+                    Some((ShardingMode::AnyEach, input(&[9, 8, 7]))),
+                    Some((ShardingMode::AnyKey, input(&[2, 1, 2]))),
+                    Some((ShardingMode::AnyKey, input(&[2, 1]))),
+                    Some((ShardingMode::All, input(&[5, 4]))),
+                ],
+                vec![1, 2, 0, 3],
+                vec![
+                    JoinStrategy::Inner,
+                    JoinStrategy::Cross,
+                    JoinStrategy::Cross,
+                ],
+                mode,
+                vec![minimum; 4],
+            )
+            .into_iter()
+            .map(|shard| {
+                shard
+                    .into_iter()
+                    .map(|set| {
+                        set.unwrap()
+                            .into_iter()
+                            .map(|(item, _)| (item.ident, item.key))
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect()
+        }
+
+        let policy = async_io_policy(RunId::nil()).nested(2).nested(3);
+        let expected = signature(&AnyShardingMode::MaxSharding, 0);
+        assert_eq!(expected.len(), 6); // Two joined key groups crossed with three items.
+        for shard in &expected {
+            assert_eq!(shard[0].len(), 1);
+            let key = shard[1][0].1;
+            assert_eq!(shard[1].len(), if key == 2 { 2 } else { 1 });
+            assert!(shard[1].iter().all(|item| item.1 == key));
+            assert_eq!(shard[2].len(), 1);
+            assert_eq!(shard[2][0].1, key);
+            assert_eq!(
+                shard[3].iter().map(|item| item.1).collect::<Vec<_>>(),
+                vec![5, 4]
+            );
+        }
+
+        let system = WorkQueue::init().system_info.clone();
+        for (local, remote) in [(1, 0), (4, 8), (16, 32)] {
+            system.num_local_cores_sender.send_replace(local);
+            system.num_remote_cores.store(remote, Ordering::Release);
+            for configured in [
+                AnyShardingMode::MaxSharding,
+                AnyShardingMode::FixedSharding(1),
+                AnyShardingMode::AutoSharding(AnyShardingParams {
+                    sys_info: system.clone(),
+                    offload_const: 1,
+                }),
+            ] {
+                let dispatcher = dispatcher(configured);
+                for minimum in [0, 1_000_000] {
+                    assert_eq!(
+                        signature(dispatcher.sharding_mode(&policy), minimum),
+                        expected
+                    );
+                }
+            }
+        }
+    }
 }
