@@ -29,6 +29,14 @@ const IO_LOG_DIR_NAME: &str = "io_logs";
 const IO_COMPLETED_EVENT: &str = "io_function_completed";
 #[cfg(feature = "at-least-once")]
 const IO_INVALIDATED_EVENT: &str = "io_function_invalidated";
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+const IO_CALL_SIZE_EVENT: &str = "io_call_size";
+#[cfg(all(
+    test,
+    any(feature = "checkpointed-at-least-once", feature = "exactly-once")
+))]
+#[path = "recovery_log_call_size_tests.rs"]
+mod call_size_tests;
 const SYNC_RUN_LOG: bool = cfg!(feature = "exactly-once");
 static RECOVERY_LOG_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static RUN_LOG_LOCKS: OnceLock<Mutex<HashMap<RunId, Arc<AsyncMutex<RunLogState>>>>> =
@@ -242,6 +250,8 @@ struct RunLogState {
     terminal: bool,
     #[cfg(feature = "at-least-once")]
     completions: HashMap<IoRequestId, String>,
+    #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+    call_sizes: HashMap<IoPath, (SystemFunction, usize)>,
 }
 
 impl RunLogState {
@@ -265,6 +275,20 @@ impl RunLogState {
                 Some("invocation_completed" | "invocation_failed") => {
                     self.terminal = true;
                     self.completions = HashMap::new();
+                    #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+                    self.call_sizes.clear();
+                }
+                #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+                Some(IO_CALL_SIZE_EVENT) if !self.terminal => {
+                    let record = parse_io_call_size_line(line)?;
+                    if let Some(existing) = self
+                        .call_sizes
+                        .insert(record.io_path, (record.function, record.n))
+                    {
+                        if existing != (record.function, record.n) {
+                            return Err(internal_error("Conflicting IO call sizes"));
+                        }
+                    }
                 }
                 Some(IO_COMPLETED_EVENT) if !self.terminal => {
                     if let Some(record) = parse_io_completion_line(line)? {
@@ -485,11 +509,107 @@ pub fn activate_async_run_logging(run_id: RunId) {
 }
 
 #[cfg(feature = "at-least-once")]
-pub fn deactivate_async_run_logging(run_id: RunId) {
+pub async fn deactivate_async_run_logging(run_id: RunId) {
+    let run_lock = run_log_lock(run_id);
+    let _state = run_lock.lock().await;
     active_async_runs()
         .lock()
         .expect("Async invocation logging set poisoned")
         .remove(&run_id);
+}
+
+#[cfg(feature = "at-least-once")]
+fn async_run_logging_active(run_id: RunId) -> bool {
+    active_async_runs()
+        .lock()
+        .expect("Async invocation logging set poisoned")
+        .contains(&run_id)
+}
+
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+struct IoCallSizeRecord {
+    run_id: RunId,
+    io_path: IoPath,
+    function: SystemFunction,
+    n: usize,
+}
+
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+fn parse_io_call_size_line(line: &str) -> DandelionResult<IoCallSizeRecord> {
+    let fields = parse_log_fields(line);
+    let field = |name| {
+        fields
+            .get(name)
+            .copied()
+            .ok_or_else(|| internal_error(format!("Missing {name} in IO call size record")))
+    };
+    let function = match field("function")? {
+        "HTTP" => SystemFunction::HTTP,
+        "MEMCACHED" => SystemFunction::MEMCACHED,
+        _ => return Err(internal_error("Invalid function in IO call size record")),
+    };
+    Ok(IoCallSizeRecord {
+        run_id: field("run_id")?
+            .parse()
+            .map_err(|_| internal_error("Invalid run_id in IO call size record"))?,
+        io_path: field("io_path")?
+            .parse()
+            .map_err(|_| internal_error("Invalid io_path in IO call size record"))?,
+        function,
+        n: field("n")?
+            .parse()
+            .map_err(|_| internal_error("Invalid n in IO call size record"))?,
+    })
+}
+
+/// Call sizes only enable an optimisation. Scheduling the append must not delay I/O execution;
+/// if the process dies before it is written, replay falls back to running upstream compute.
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+pub fn record_io_call_size(run_id: RunId, io_path: IoPath, function: SystemFunction, n: usize) {
+    if !async_run_logging_active(run_id) {
+        return;
+    }
+    crate::async_runtime::GLOBAL_RUNTIME.spawn(async move {
+        if let Err(error) = append_io_call_size_record(IoCallSizeRecord {
+            run_id,
+            io_path,
+            function,
+            n,
+        })
+        .await
+        {
+            warn!(
+                "Failed to record IO call size for invocation {}: {}",
+                run_id, error
+            );
+        }
+    });
+}
+
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+async fn append_io_call_size_record(record: IoCallSizeRecord) -> DandelionResult<()> {
+    let run_lock = run_log_lock(record.run_id);
+    let mut state = run_lock.lock().await;
+    if !async_run_logging_active(record.run_id) {
+        return Ok(());
+    }
+    let log_path = run_log_path(record.run_id)?;
+    ensure_run_log_loaded(&log_path, &mut state).await?;
+    if state.terminal {
+        return Ok(());
+    }
+    if let Some(existing) = state.call_sizes.get(&record.io_path) {
+        return if *existing == (record.function, record.n) {
+            Ok(())
+        } else {
+            Err(internal_error("Conflicting IO call sizes"))
+        };
+    }
+    let line = format!(
+        "event={} run_id={} io_path={} function={} n={}\n",
+        IO_CALL_SIZE_EVENT, record.run_id, record.io_path, record.function, record.n
+    );
+    append_run_log_line_locked(&log_path, &mut state, &line, SYNC_RUN_LOG).await
 }
 
 /// Appends a recovery record without blocking a Tokio worker. The per-run async
@@ -1399,17 +1519,13 @@ fn io_record_line(event: &str, record: &IoCompletionRecord, payload_b64: &str) -
 
 #[cfg(feature = "at-least-once")]
 pub async fn append_io_completion_record(record: &IoCompletionRecord) -> DandelionResult<()> {
-    if !active_async_runs()
-        .lock()
-        .expect("Async invocation logging set poisoned")
-        .contains(&record.id.run_id)
-    {
+    let run_lock = run_log_lock(record.id.run_id);
+    let mut state = run_lock.lock().await;
+    if !async_run_logging_active(record.id.run_id) {
         return Ok(());
     }
     let line = format_io_completion_line(record)?;
     let log_path = run_log_path(record.id.run_id)?;
-    let run_lock = run_log_lock(record.id.run_id);
-    let mut state = run_lock.lock().await;
     append_run_log_line_locked(&log_path, &mut state, &line, SYNC_RUN_LOG).await
 }
 

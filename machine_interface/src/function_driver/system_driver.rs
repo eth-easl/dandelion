@@ -153,6 +153,9 @@ pub struct CoordinatedIoData {
 }
 
 pub trait IoReferencePolicy: Clone {
+    /// Records the number of requests before converting a whole I/O call to lazy references.
+    fn record_call_size(&self, _function: SystemFunction, _n: usize) {}
+
     /// Recovery needs shard boundaries that do not depend on worker counts or batching.
     fn requires_deterministic_sharding(&self) -> bool {
         false
@@ -214,6 +217,11 @@ pub fn async_io_policy(run_id: RunId) -> AsyncIoPolicy {
 
 #[cfg(feature = "at-least-once")]
 impl IoReferencePolicy for RecoverableIo {
+    #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+    fn record_call_size(&self, function: SystemFunction, n: usize) {
+        recovery_log::record_io_call_size(self.run_id, self.io_path.clone(), function, n);
+    }
+
     fn requires_deterministic_sharding(&self) -> bool {
         true
     }
@@ -278,6 +286,8 @@ pub fn convert_to_references<P: IoReferencePolicy>(
             "IO functions require exactly one input set".into(),
         ));
     }
+
+    io_policy.record_call_size(function, inputs[0].as_ref().map_or(0, CompositionSet::len));
 
     // go through all input sets and check if there is already a static one, or on in the input data
     let output_count = get_system_function_output_sets(function).len();
