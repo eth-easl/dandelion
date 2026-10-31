@@ -11,7 +11,7 @@ use crate::{
         bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
     },
     promise::Debt,
-    Position,
+    DataItem, Position,
 };
 #[cfg(feature = "at-least-once")]
 use crate::{
@@ -19,7 +19,6 @@ use crate::{
         IoCompletedOutput, IoCompletionOutcome, IoCoordinationCompletion, IoCoordinationKey,
     },
     function_driver::system_driver::{CoordinatedIoData, IoCoordination},
-    DataItem,
 };
 use bytes::Bytes;
 use dandelion_commons::{
@@ -789,6 +788,61 @@ async fn resolve_io_item_exactly_once(
     ))
 }
 
+// Compile out positional storage entirely when IO recovery is disabled.
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+mod resolution_order {
+    use super::{DataItem, ItemData};
+
+    pub(super) type ItemIndex = usize;
+    pub(super) struct Items(Vec<Option<(DataItem, ItemData)>>);
+
+    impl Items {
+        pub(super) fn new(len: usize) -> Self {
+            Self((0..len).map(|_| None).collect())
+        }
+
+        pub(super) fn index(index: usize) -> ItemIndex {
+            index
+        }
+
+        pub(super) fn insert(&mut self, index: ItemIndex, item: (DataItem, ItemData)) {
+            self.0[index] = Some(item);
+        }
+
+        pub(super) fn finish(self) -> Vec<(DataItem, ItemData)> {
+            self.0
+                .into_iter()
+                .map(|item| item.expect("every input item must have a resolved result"))
+                .collect()
+        }
+    }
+}
+
+#[cfg(not(any(feature = "checkpointed-at-least-once", feature = "exactly-once")))]
+mod resolution_order {
+    use super::{DataItem, ItemData};
+
+    // Unit occupies no storage in task results or the remote-index vector.
+    pub(super) type ItemIndex = ();
+    pub(super) struct Items(Vec<(DataItem, ItemData)>);
+
+    impl Items {
+        pub(super) fn new(_len: usize) -> Self {
+            Self(Vec::new())
+        }
+
+        pub(super) fn index(_index: usize) -> ItemIndex {}
+
+        pub(super) fn insert(&mut self, _index: ItemIndex, item: (DataItem, ItemData)) {
+            self.0.push(item);
+        }
+
+        pub(super) fn finish(self) -> Vec<(DataItem, ItemData)> {
+            self.0
+        }
+    }
+}
+
 async fn resolve_all_sets(
     client: HttpClient,
     input_sets: Vec<Option<CompositionSet>>,
@@ -802,8 +856,9 @@ async fn resolve_all_sets(
     let input_set_number = input_sets.len();
     let mut output_sets = Vec::with_capacity(input_set_number);
     output_sets.resize(input_set_number, None);
-    let mut sets_vec = Vec::with_capacity(input_set_number);
-    sets_vec.resize(input_set_number, Vec::new());
+    let mut sets_vec = (0..input_set_number)
+        .map(|_| resolution_order::Items::new(0))
+        .collect::<Vec<_>>();
     let mut set_names = Vec::with_capacity(input_set_number);
     set_names.resize(input_set_number, None);
     let mut io_futures = FuturesUnordered::new();
@@ -819,11 +874,13 @@ async fn resolve_all_sets(
                 output_sets[set_index] = Some(set);
                 continue;
             }
-            for (mut item, data) in set.into_iter() {
+            // Recovery builds reserve input slots; other builds append as results arrive.
+            sets_vec[set_index] = resolution_order::Items::new(set.len());
+            for (item_index, (mut item, data)) in set.into_iter().enumerate() {
+                let item_index = resolution_order::Items::index(item_index);
                 match data {
                     ItemData::LocalData(_) => {
-                        // a not entirely local set, directly push the items that are already local
-                        sets_vec[set_index].push((item, data));
+                        sets_vec[set_index].insert(item_index, (item, data));
                     }
                     ItemData::IoData(io_data) => {
                         let permit = semaphore.clone().acquire_owned().await.unwrap();
@@ -833,7 +890,7 @@ async fn resolve_all_sets(
                                 resolve_io_item(io_data, client_clone).await?;
                             item.data = position;
                             drop(permit);
-                            Ok((set_index, item, ItemData::LocalData(context)))
+                            Ok((set_index, item_index, item, ItemData::LocalData(context)))
                         }));
                     }
                     #[cfg(feature = "at-least-once")]
@@ -845,18 +902,23 @@ async fn resolve_all_sets(
                                 resolve_checkpointed_io_item(io_data, client_clone).await?;
                             item.data = position;
                             drop(permit);
-                            Ok((set_index, item, ItemData::LocalData(context)))
+                            Ok((set_index, item_index, item, ItemData::LocalData(context)))
                         }));
                     }
                     ItemData::RemoteData(remote_data) => {
                         let node_id = remote_data.node_id;
                         match fetching_nodes.entry(node_id) {
                             Entry::Vacant(vacant) => {
-                                vacant.insert((vec![(set_index, item)], vec![remote_data]));
+                                vacant.insert((
+                                    vec![(set_index, item)],
+                                    vec![remote_data],
+                                    vec![item_index],
+                                ));
                             }
                             Entry::Occupied(mut occupied) => {
                                 occupied.get_mut().0.push((set_index, item));
                                 occupied.get_mut().1.push(remote_data);
+                                occupied.get_mut().2.push(item_index);
                             }
                         };
                     }
@@ -866,7 +928,7 @@ async fn resolve_all_sets(
     }
 
     // perform grouped fetching for all data from each node
-    for (mut item_metadata, remote_items) in fetching_nodes.into_values() {
+    for (mut item_metadata, remote_items, item_indices) in fetching_nodes.into_values() {
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         remote_futures.push(spawn(async move {
             let client = crate::composition::get_remote_data_client()?;
@@ -875,8 +937,14 @@ async fn resolve_all_sets(
                 .await?;
             let items = item_metadata
                 .into_iter()
-                .map(|(set_index, item)| {
-                    (set_index, item, ItemData::LocalData(new_context.clone()))
+                .zip(item_indices)
+                .map(|((set_index, item), item_index)| {
+                    (
+                        set_index,
+                        item_index,
+                        item,
+                        ItemData::LocalData(new_context.clone()),
+                    )
                 })
                 .collect::<Vec<_>>();
             drop(permit);
@@ -891,7 +959,9 @@ async fn resolve_all_sets(
         while let Some(item_result) = io_futures.next().await {
             let item_tuple = item_result.unwrap();
             match item_tuple {
-                Ok((set_index, item, data)) => sets_vec[set_index].push((item, data)),
+                Ok((set_index, item_index, item, data)) => {
+                    sets_vec[set_index].insert(item_index, (item, data));
+                }
                 Err(err) => {
                     result_sender(Err(err));
                     return;
@@ -907,8 +977,8 @@ async fn resolve_all_sets(
                     return;
                 }
                 Ok(items) => {
-                    for (set_index, item, data) in items {
-                        sets_vec[set_index].push((item, data));
+                    for (set_index, item_index, item, data) in items {
+                        sets_vec[set_index].insert(item_index, (item, data));
                     }
                 }
             }
@@ -916,6 +986,7 @@ async fn resolve_all_sets(
 
         for (set_index, (output_set, item_vec)) in output_sets.iter_mut().zip(sets_vec).enumerate()
         {
+            let item_vec = item_vec.finish();
             if output_set.is_some() {
                 debug_assert!(item_vec.is_empty());
             } else {
@@ -1084,3 +1155,7 @@ impl Driver for ReqwestDriver {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "reqwest_resolution_tests.rs"]
+mod resolution_tests;
