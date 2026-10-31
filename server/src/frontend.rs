@@ -589,7 +589,7 @@ fn spawn_async_invocation_attempt(
         }
 
         // Stop accepting new checkpoint winners before taking the cleanup snapshot.
-        recovery_log::deactivate_async_run_logging(run_id);
+        recovery_log::deactivate_async_run_logging(run_id).await;
         // Durable checkpoint exports can be released once terminal invocation state is durable.
         if let Err(err) = release_invocation_io_exports(run_id).await {
             warn!(
