@@ -21,6 +21,42 @@ fn test_recorder() -> Recorder {
 }
 
 #[test]
+fn io_outputs_use_declared_names_instead_of_the_input_set_name() {
+    use crate::{
+        composition::ItemData, function_driver::system_driver::get_system_function_output_sets,
+    };
+
+    for function in [SystemFunction::HTTP, SystemFunction::MEMCACHED] {
+        let input = CompositionSet::from_item_list(
+            "custom-input-name".into(),
+            vec![(
+                DataItem {
+                    ident: "request".into(),
+                    key: 7,
+                    data: Position { offset: 0, size: 1 },
+                },
+                ItemData::LocalData(Arc::new(
+                    ReadOnlyContext::from_boxed(vec![0].into_boxed_slice()).unwrap(),
+                )),
+            )],
+        )
+        .unwrap();
+        let outputs = convert_to_references(
+            function,
+            vec![Some(input)],
+            UncoordinatedIo,
+            test_recorder(),
+        )
+        .unwrap();
+        let names = outputs
+            .iter()
+            .map(|set| set.as_ref().unwrap().get_name().clone())
+            .collect::<Vec<_>>();
+        assert_eq!(names, get_system_function_output_sets(function));
+    }
+}
+
+#[test]
 fn io_requires_exactly_one_input_set() {
     for inputs in [vec![], vec![None, None]] {
         let error = convert_to_references(

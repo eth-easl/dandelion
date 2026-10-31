@@ -52,9 +52,33 @@ fn complete_call_rebuilds_inline_and_remote_outputs_in_request_order() {
     )
     .unwrap();
     let outputs = &calls[&path()];
+    let live = crate::function_driver::system_driver::convert_to_references(
+        SystemFunction::HTTP,
+        vec![CompositionSet::from_item_list(
+            "custom-input-name".into(),
+            vec![(
+                DataItem {
+                    ident: "request".into(),
+                    key: 7,
+                    data: Position { offset: 0, size: 1 },
+                },
+                ItemData::LocalData(Arc::new(
+                    ReadOnlyContext::from_boxed(vec![0].into_boxed_slice()).unwrap(),
+                )),
+            )],
+        )],
+        crate::function_driver::system_driver::UncoordinatedIo,
+        dandelion_commons::records::Recorder::new(
+            run_id,
+            Arc::new("test".into()),
+            std::time::Instant::now(),
+        ),
+    )
+    .unwrap();
     assert_eq!(outputs.len(), 2);
     for (set_index, set) in outputs.iter().enumerate() {
         let set = set.as_ref().unwrap();
+        assert_eq!(set.get_name(), live[set_index].as_ref().unwrap().get_name());
         assert_eq!(
             set.get_name(),
             &get_system_function_output_sets(SystemFunction::HTTP)[set_index]
@@ -83,6 +107,67 @@ fn complete_call_rebuilds_inline_and_remote_outputs_in_request_order() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn whole_call_restore_uses_the_owner_accepted_winner_only() {
+    super::super::call_size_tests::init_log_root();
+    let run_id = RunId::now_v7();
+    append_submission_line(
+        run_id,
+        &format!("event=invocation_submitted run_id={}\n", run_id),
+    )
+    .await
+    .unwrap();
+    append_run_log_line(
+        run_id,
+        &format!(
+            "event=io_call_size run_id={} io_path={} function=HTTP n=1\n",
+            run_id,
+            path()
+        ),
+    )
+    .await
+    .unwrap();
+    let mut winner = record(run_id, 0);
+    winner.claim_id = Some(1);
+    let mut loser = winner.clone();
+    loser.claim_id = Some(2);
+    loser.outputs[1].items[0].location = IoCompletionData::Remote {
+        node_id: 9,
+        data_id: 999,
+        size: 1,
+    };
+    assert_eq!(
+        accept_delivered_io_completion_record(&winner)
+            .await
+            .unwrap(),
+        IoCompletionDisposition::Retain
+    );
+    assert_eq!(
+        accept_delivered_io_completion_record(&loser).await.unwrap(),
+        IoCompletionDisposition::Delete
+    );
+    assert_eq!(
+        accept_delivered_io_completion_record(&winner)
+            .await
+            .unwrap(),
+        IoCompletionDisposition::Retain
+    );
+    let accepted = load_recoverable_io_completion_records(run_id)
+        .await
+        .unwrap();
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0].claim_id, Some(1));
+    install_recovered_io_calls(run_id, &accepted).await.unwrap();
+    let outputs = recovered_io_call(run_id, &path()).unwrap();
+    let (_, data) = outputs[1].as_ref().unwrap().into_iter().next().unwrap();
+    let ItemData::RemoteData(data) = data else {
+        panic!("expected accepted remote output")
+    };
+    assert_eq!(data.data_id, 100);
+    clear_recovered_io(run_id);
+    fs::remove_file(run_log_path(run_id).unwrap()).unwrap();
 }
 
 #[test]

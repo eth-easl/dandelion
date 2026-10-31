@@ -300,12 +300,12 @@ pub fn convert_to_references<P: IoReferencePolicy>(
     io_policy.record_call_size(function, inputs[0].as_ref().map_or(0, CompositionSet::len));
 
     // go through all input sets and check if there is already a static one, or on in the input data
-    let output_count = get_system_function_output_sets(function).len();
+    let output_names = get_system_function_output_sets(function);
+    let output_count = output_names.len();
     let mut output_vec = try_with_capacity!(Vec, output_count)?;
     output_vec.resize(output_count, None);
 
     if let Some(input_set) = inputs[0].take() {
-        let input_set_name = input_set.get_name().clone();
         let mut output_items = (0..output_count)
             .map(|_| try_with_capacity!(Vec, input_set.len()))
             .collect::<DandelionResult<Vec<_>>>()?;
@@ -349,8 +349,8 @@ pub fn convert_to_references<P: IoReferencePolicy>(
             }
         }
 
-        for (set_index, items) in output_items.into_iter().enumerate() {
-            output_vec[set_index] = CompositionSet::from_item_list(input_set_name.clone(), items);
+        for (set_index, (name, items)) in output_names.into_iter().zip(output_items).enumerate() {
+            output_vec[set_index] = CompositionSet::from_item_list(name, items);
         }
     }
     Ok(output_vec)

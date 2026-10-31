@@ -613,7 +613,9 @@ async fn append_io_call_size_record(record: IoCallSizeRecord) -> DandelionResult
         "event={} run_id={} io_path={} function={} n={}\n",
         IO_CALL_SIZE_EVENT, record.run_id, record.io_path, record.function, record.n
     );
-    append_run_log_line_locked(&log_path, &mut state, &line, SYNC_RUN_LOG).await
+    // Losing this optimisation record is harmless. Completion records retain their own
+    // durability policy; do not make their commits wait behind an extra size-record sync.
+    append_run_log_line_locked(&log_path, &mut state, &line, false).await
 }
 
 /// Appends a recovery record without blocking a Tokio worker. The per-run async
