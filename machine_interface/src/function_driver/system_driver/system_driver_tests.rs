@@ -20,6 +20,30 @@ fn test_recorder() -> Recorder {
     Recorder::new(RunId::nil(), Arc::new("HTTP".to_string()), Instant::now())
 }
 
+#[test]
+fn io_requires_exactly_one_input_set() {
+    for inputs in [vec![], vec![None, None]] {
+        let error = convert_to_references(
+            SystemFunction::HTTP,
+            inputs,
+            UncoordinatedIo,
+            test_recorder(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.error,
+            dandelion_commons::DandelionError::InvalidSystemFuncArg(_)
+        ));
+    }
+    assert!(convert_to_references(
+        SystemFunction::HTTP,
+        vec![None],
+        UncoordinatedIo,
+        test_recorder()
+    )
+    .is_ok());
+}
+
 struct HttpServer {
     proc_child: Child,
 }

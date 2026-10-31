@@ -12,13 +12,13 @@ use machine_interface::function_driver::system_driver::recovery_log::accept_loca
 #[cfg(feature = "at-least-once")]
 use machine_interface::{
     composition::{
-        IoCompletedOutput, IoCompletionOutcome, IoCoordinationCompletion, IoCoordinationKey,
+        IoCompletedOutput, IoCompletionOutcome, IoCoordinationCompletion, IoRequest, IoRequestId,
     },
     function_driver::system_driver::{
         get_system_function_output_sets,
         recovery_log::{
             accept_delivered_io_completion_record, format_io_completion_line,
-            parse_io_completion_line, IoCompletionKey,
+            parse_io_completion_line,
         },
         IoCompletionData, IoCompletionDisposition, IoCompletionItem, IoCompletionOutputSet,
         IoCompletionRecord,
@@ -28,8 +28,7 @@ use machine_interface::{
 use machine_interface::{
     composition::{IoResolveInput, IoResolveOutcome, IoResolveRequest},
     function_driver::system_driver::{
-        recovery_log::recovered_io_item_locations,
-        RecoveredIoOutput,
+        recovery_log::recovered_io_item_locations, RecoveredIoOutput,
     },
 };
 use machine_interface::{
@@ -128,7 +127,7 @@ impl IoRemoteRef {
 #[cfg(feature = "exactly-once")]
 #[derive(Debug)]
 struct IoResolveWireRequest {
-    key: IoCoordinationKey,
+    key: IoRequest,
     set_index: usize,
     requester_node_id: u64,
     requester_incarnation: u64,
@@ -142,7 +141,9 @@ enum IoResolveWireResponse {
         input: Option<IoResolveWireInput>,
         claim_id: u64,
     },
-    Completed { data: IoRemoteRef },
+    Completed {
+        data: IoRemoteRef,
+    },
     Failed(String),
     Retry,
 }
@@ -157,7 +158,7 @@ enum IoResolveWireInput {
 #[cfg(feature = "exactly-once")]
 #[derive(Debug)]
 struct IoResolvedWireRequest {
-    key: IoCoordinationKey,
+    key: IoRequest,
     claim_id: Option<u64>,
     outputs: Result<Vec<IoRemoteRef>, String>,
 }
@@ -211,13 +212,13 @@ enum IoCommitStart {
 #[cfg(feature = "exactly-once")]
 struct IoCommitGuard {
     registry: ExportRegistry,
-    key: Option<IoCoordinationKey>,
+    key: Option<IoRequest>,
     claim_id: u64,
 }
 
 #[cfg(feature = "exactly-once")]
 impl IoCommitGuard {
-    fn new(registry: ExportRegistry, key: IoCoordinationKey, claim_id: u64) -> Self {
+    fn new(registry: ExportRegistry, key: IoRequest, claim_id: u64) -> Self {
         Self {
             registry,
             key: Some(key),
@@ -226,7 +227,10 @@ impl IoCommitGuard {
     }
 
     fn finish(mut self, outcome: Result<Vec<IoRemoteRef>, String>) -> DandelionResult<()> {
-        let key = self.key.take().expect("I/O commit guard holds its key until finished");
+        let key = self
+            .key
+            .take()
+            .expect("I/O commit guard holds its key until finished");
         self.registry.finish_io_commit(key, self.claim_id, outcome)
     }
 }
@@ -265,7 +269,7 @@ struct IoNodeSession {
 /// Retries and removes the running claims held by `node_id` whose incarnation matches.
 #[cfg(feature = "exactly-once")]
 fn release_running_io_claims(
-    io_resolutions: &mut HashMap<IoCoordinationKey, IoResolutionState>,
+    io_resolutions: &mut HashMap<IoRequestId, IoResolutionState>,
     node_id: u64,
     mut matches_incarnation: impl FnMut(u64) -> bool,
 ) {
@@ -300,12 +304,11 @@ enum RegistryIoResolution {
 }
 
 #[cfg(feature = "exactly-once")]
-fn proto_coordination_key(
-    key: &IoCoordinationKey,
-) -> Result<crate::proto::IoCoordinationKey, String> {
+fn proto_coordination_key(key: &IoRequest) -> Result<crate::proto::IoCoordinationKey, String> {
     Ok(crate::proto::IoCoordinationKey {
-        run_id: key.run_id.to_string(),
-        io_path: crate::util::io_path_dtop(&key.io_path),
+        run_id: key.id.run_id.to_string(),
+        io_path: crate::util::io_path_dtop(&key.id.io_path),
+        request_item_index: key.id.request_item_index as u64,
         function: crate::util::system_function_dtop(&key.function)
             .map_err(|error| error.to_string())? as i32,
         identifier: key.identifier.clone(),
@@ -314,9 +317,7 @@ fn proto_coordination_key(
 }
 
 #[cfg(feature = "exactly-once")]
-fn coordination_key_from_proto(
-    key: crate::proto::IoCoordinationKey,
-) -> Result<IoCoordinationKey, String> {
+fn coordination_key_from_proto(key: crate::proto::IoCoordinationKey) -> Result<IoRequest, String> {
     let function = match crate::proto::SystemFunction::try_from(key.function) {
         Ok(crate::proto::SystemFunction::Http) => {
             machine_interface::function_driver::functions::SystemFunction::HTTP
@@ -326,10 +327,14 @@ fn coordination_key_from_proto(
         }
         Err(_) => return Err(format!("Unknown I/O system function {}", key.function)),
     };
-    Ok(IoCoordinationKey {
-        run_id: dandelion_commons::RunId::parse_str(&key.run_id)
-            .map_err(|error| format!("Invalid I/O run id: {}", error))?,
-        io_path: crate::util::io_path_ptod(key.io_path),
+    Ok(IoRequest {
+        id: machine_interface::composition::IoRequestId {
+            run_id: dandelion_commons::RunId::parse_str(&key.run_id)
+                .map_err(|error| format!("Invalid I/O run id: {}", error))?,
+            io_path: crate::util::io_path_ptod(key.io_path),
+            request_item_index: usize::try_from(key.request_item_index)
+                .map_err(|_| "IO item index overflow")?,
+        },
         function,
         identifier: key.identifier,
         item_key: key.item_key,
@@ -418,12 +423,10 @@ fn decode_io_resolve_response(bytes: &[u8]) -> Result<IoResolveWireResponse, Str
     let claim_id = response.claim_id;
     match response.response {
         // Winner, no input.
-        Some(io_resolve_response::Response::ExecuteNone(_)) => {
-            Ok(IoResolveWireResponse::Execute {
-                input: None,
-                claim_id,
-            })
-        }
+        Some(io_resolve_response::Response::ExecuteNone(_)) => Ok(IoResolveWireResponse::Execute {
+            input: None,
+            claim_id,
+        }),
         // Winner, input bytes inline.
         Some(io_resolve_response::Response::ExecuteInline(bytes)) => {
             Ok(IoResolveWireResponse::Execute {
@@ -498,7 +501,7 @@ fn decode_io_resolved_request(bytes: &[u8]) -> Result<IoResolvedWireRequest, Str
 #[cfg(feature = "exactly-once")]
 async fn registry_resolution_response(
     registry: &ExportRegistry,
-    key: IoCoordinationKey,
+    key: IoRequest,
     resolution: RegistryIoResolution,
     set_index: usize,
 ) -> DandelionResult<IoResolveWireResponse> {
@@ -552,15 +555,18 @@ async fn registry_resolution_response(
 
 #[cfg(feature = "at-least-once")]
 fn completion_record(
-    key: &IoCoordinationKey,
+    key: &IoRequest,
     outputs: &[IoRemoteRef],
     claim_id: Option<u64>,
 ) -> IoCompletionRecord {
     let set_names = get_system_function_output_sets(key.function);
     IoCompletionRecord {
+        id: machine_interface::composition::IoRequestId {
+            run_id: key.id.run_id,
+            io_path: key.id.io_path.clone(),
+            request_item_index: key.id.request_item_index,
+        },
         claim_id,
-        run_id: key.run_id,
-        io_path: key.io_path.clone(),
         function: key.function,
         outputs: outputs
             .iter()
@@ -1043,9 +1049,9 @@ struct ExportRegistryInner {
     #[cfg(feature = "at-least-once")]
     pending_io_completions: Vec<IoCompletionRecord>,
     #[cfg(all(feature = "at-least-once", feature = "timestamp"))]
-    pending_io_completion_recorders: HashMap<IoCompletionKey, dandelion_commons::records::Recorder>,
+    pending_io_completion_recorders: HashMap<IoRequestId, dandelion_commons::records::Recorder>,
     #[cfg(feature = "exactly-once")]
-    io_resolutions: HashMap<IoCoordinationKey, IoResolutionState>,
+    io_resolutions: HashMap<IoRequestId, IoResolutionState>,
     #[cfg(feature = "exactly-once")]
     cancelled_io_runs: HashSet<dandelion_commons::RunId>,
     #[cfg(feature = "exactly-once")]
@@ -1163,7 +1169,7 @@ impl ExportRegistry {
     #[cfg(all(test, feature = "exactly-once"))]
     fn begin_io_resolution(
         &self,
-        key: IoCoordinationKey,
+        key: IoRequest,
         set_index: usize,
         original_data: Option<IoRemoteRef>,
     ) -> DandelionResult<RegistryIoResolution> {
@@ -1180,7 +1186,7 @@ impl ExportRegistry {
     #[cfg(feature = "exactly-once")]
     fn begin_io_resolution_from_node(
         &self,
-        key: IoCoordinationKey,
+        key: IoRequest,
         set_index: usize,
         requester_node_id: u64,
         requester_incarnation: u64,
@@ -1188,41 +1194,34 @@ impl ExportRegistry {
     ) -> DandelionResult<RegistryIoResolution> {
         let output_count = get_system_function_output_sets(key.function).len();
         // After restart, a durable completion must be reused instead of re-running the I/O.
-        let recovered = recovered_io_item_locations(
-            key.run_id,
-            key.function,
-            &key.io_path,
-            output_count,
-            &key.identifier,
-            key.item_key,
-        )
-        .map(|outputs| {
-            outputs
-                .into_iter()
-                .map(|output| match output {
-                    RecoveredIoOutput::Remote { data, size } => {
-                        Ok(IoRemoteRef::from_remote(&data, size))
-                    }
-                    RecoveredIoOutput::Inline(context) => {
-                        let item = DataItem {
-                            ident: key.identifier.clone(),
-                            key: u32::try_from(key.item_key)
-                                .expect("I/O item keys originate as u32"),
-                            data: Position {
-                                offset: 0,
-                                size: context.size,
-                            },
-                        };
-                        let data = self.insert_function(&item, context, None);
-                        Ok(IoRemoteRef::from_remote(&data, item.data.size))
-                    }
-                })
-                .collect::<DandelionResult<Vec<_>>>()
-        })
-        .transpose()?;
+        let recovered = recovered_io_item_locations(&key.id, output_count)
+            .map(|outputs| {
+                outputs
+                    .into_iter()
+                    .map(|output| match output {
+                        RecoveredIoOutput::Remote { data, size } => {
+                            Ok(IoRemoteRef::from_remote(&data, size))
+                        }
+                        RecoveredIoOutput::Inline(context) => {
+                            let item = DataItem {
+                                ident: key.identifier.clone(),
+                                key: u32::try_from(key.item_key)
+                                    .expect("I/O item keys originate as u32"),
+                                data: Position {
+                                    offset: 0,
+                                    size: context.size,
+                                },
+                            };
+                            let data = self.insert_function(&item, context, None);
+                            Ok(IoRemoteRef::from_remote(&data, item.data.size))
+                        }
+                    })
+                    .collect::<DandelionResult<Vec<_>>>()
+            })
+            .transpose()?;
         let mut guard = self.inner.lock().unwrap();
         let inner = &mut *guard;
-        if inner.cancelled_io_runs.contains(&key.run_id) {
+        if inner.cancelled_io_runs.contains(&key.id.run_id) {
             return Ok(RegistryIoResolution::Failed(
                 "I/O invocation was cancelled".to_string(),
             ));
@@ -1234,7 +1233,7 @@ impl ExportRegistry {
                 ));
             }
         }
-        match inner.io_resolutions.entry(key) {
+        match inner.io_resolutions.entry(key.id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 if let Some(outputs) = recovered {
                     let output = outputs.get(set_index).cloned().ok_or_else(|| {
@@ -1285,7 +1284,7 @@ impl ExportRegistry {
     #[cfg(feature = "exactly-once")]
     async fn begin_io_commit(
         &self,
-        key: &IoCoordinationKey,
+        key: &IoRequest,
         claim_id: Option<u64>,
         outcome: &Result<Vec<IoRemoteRef>, String>,
     ) -> DandelionResult<IoCommitDecision> {
@@ -1302,18 +1301,18 @@ impl ExportRegistry {
     #[cfg(feature = "exactly-once")]
     fn try_begin_io_commit(
         &self,
-        key: &IoCoordinationKey,
+        key: &IoRequest,
         claim_id: Option<u64>,
         outcome: &Result<Vec<IoRemoteRef>, String>,
     ) -> DandelionResult<IoCommitStart> {
         let mut guard = self.inner.lock().unwrap();
         let inner = &mut *guard;
-        if inner.cancelled_io_runs.contains(&key.run_id) {
+        if inner.cancelled_io_runs.contains(&key.id.run_id) {
             return Err(export_registry_error(
                 "Cannot publish a cancelled I/O invocation",
             ));
         }
-        let decision = match inner.io_resolutions.get(key) {
+        let decision = match inner.io_resolutions.get(&key.id) {
             None => {
                 let claim_id = claim_id.unwrap_or_else(|| {
                     let claim_id = inner.next_io_claim_id;
@@ -1322,7 +1321,7 @@ impl ExportRegistry {
                 });
                 let (result, _) = watch::channel(None);
                 inner.io_resolutions.insert(
-                    key.clone(),
+                    key.id.clone(),
                     IoResolutionState::Committing { claim_id, result },
                 );
                 IoCommitDecision::Commit(claim_id)
@@ -1333,10 +1332,10 @@ impl ExportRegistry {
             }) if claim_id == Some(*running_claim) => {
                 let claim_id = *running_claim;
                 if let Some(IoResolutionState::Running { result, .. }) =
-                    inner.io_resolutions.remove(key)
+                    inner.io_resolutions.remove(&key.id)
                 {
                     inner.io_resolutions.insert(
-                        key.clone(),
+                        key.id.clone(),
                         IoResolutionState::Committing { claim_id, result },
                     );
                 }
@@ -1367,17 +1366,17 @@ impl ExportRegistry {
     #[cfg(feature = "exactly-once")]
     fn finish_io_commit(
         &self,
-        key: IoCoordinationKey,
+        key: IoRequest,
         claim_id: u64,
         outcome: Result<Vec<IoRemoteRef>, String>,
     ) -> DandelionResult<()> {
         let mut inner = self.inner.lock().unwrap();
-        if inner.cancelled_io_runs.contains(&key.run_id) {
+        if inner.cancelled_io_runs.contains(&key.id.run_id) {
             return Err(export_registry_error(
                 "Cannot publish a cancelled I/O invocation",
             ));
         }
-        match inner.io_resolutions.get(&key) {
+        match inner.io_resolutions.get(&key.id) {
             Some(IoResolutionState::Committing {
                 claim_id: committing_claim,
                 ..
@@ -1395,7 +1394,7 @@ impl ExportRegistry {
             ),
         };
         if let Some(IoResolutionState::Committing { result, .. }) =
-            inner.io_resolutions.insert(key, terminal)
+            inner.io_resolutions.insert(key.id, terminal)
         {
             result.send_replace(Some(shared_outcome));
         }
@@ -1404,15 +1403,15 @@ impl ExportRegistry {
 
     /// Gives up a commit that could not be made durable, so waiters elect a new winner.
     #[cfg(feature = "exactly-once")]
-    fn abort_io_commit(&self, key: &IoCoordinationKey, claim_id: u64) {
+    fn abort_io_commit(&self, key: &IoRequest, claim_id: u64) {
         let mut inner = self.inner.lock().unwrap();
         if matches!(
-            inner.io_resolutions.get(key),
+            inner.io_resolutions.get(&key.id),
             Some(IoResolutionState::Committing { claim_id: committing_claim, .. })
                 if *committing_claim == claim_id
         ) {
             if let Some(IoResolutionState::Committing { result, .. }) =
-                inner.io_resolutions.remove(key)
+                inner.io_resolutions.remove(&key.id)
             {
                 result.send_replace(Some(SharedIoResult::Retry));
             }
@@ -1422,14 +1421,16 @@ impl ExportRegistry {
     #[cfg(feature = "exactly-once")]
     fn publish_io_resolution_inner(
         &self,
-        key: IoCoordinationKey,
+        key: IoRequest,
         claim_id: Option<u64>,
         outcome: Result<Vec<IoRemoteRef>, String>,
     ) -> DandelionResult<IoCommitDecision> {
         let IoCommitStart::Decided(decision) =
             self.try_begin_io_commit(&key, claim_id, &outcome)?
         else {
-            return Err(export_registry_error("I/O claim is already being committed"));
+            return Err(export_registry_error(
+                "I/O claim is already being committed",
+            ));
         };
         if let IoCommitDecision::Commit(claim_id) = decision {
             self.finish_io_commit(key, claim_id, outcome)?;
@@ -1442,13 +1443,15 @@ impl ExportRegistry {
     #[cfg(feature = "exactly-once")]
     async fn commit_delivered_io_resolution(
         &self,
-        key: IoCoordinationKey,
+        key: IoRequest,
         claim_id: Option<u64>,
         outcome: Result<Vec<IoRemoteRef>, String>,
     ) -> DandelionResult<IoCommitDecision> {
         let registry = self.clone();
         run_io_commit_task(async move {
-            registry.run_delivered_io_commit(key, claim_id, outcome).await
+            registry
+                .run_delivered_io_commit(key, claim_id, outcome)
+                .await
         })
         .await
     }
@@ -1456,7 +1459,7 @@ impl ExportRegistry {
     #[cfg(feature = "exactly-once")]
     async fn run_delivered_io_commit(
         &self,
-        key: IoCoordinationKey,
+        key: IoRequest,
         claim_id: Option<u64>,
         outcome: Result<Vec<IoRemoteRef>, String>,
     ) -> DandelionResult<IoCommitDecision> {
@@ -1485,14 +1488,16 @@ impl ExportRegistry {
     #[cfg(feature = "exactly-once")]
     async fn commit_local_io_resolution(
         &self,
-        key: IoCoordinationKey,
+        key: IoRequest,
         claim_id: Option<u64>,
         outcome: Result<Vec<IoRemoteRef>, String>,
         recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<Option<dandelion_commons::DError>> {
         let registry = self.clone();
         run_io_commit_task(async move {
-            registry.run_local_io_commit(key, claim_id, outcome, recorder).await
+            registry
+                .run_local_io_commit(key, claim_id, outcome, recorder)
+                .await
         })
         .await
     }
@@ -1500,7 +1505,7 @@ impl ExportRegistry {
     #[cfg(feature = "exactly-once")]
     async fn run_local_io_commit(
         &self,
-        key: IoCoordinationKey,
+        key: IoRequest,
         claim_id: Option<u64>,
         outcome: Result<Vec<IoRemoteRef>, String>,
         mut recorder: Option<dandelion_commons::records::Recorder>,
@@ -1615,13 +1620,17 @@ impl ExportRegistry {
         &self,
         record: &IoCompletionRecord,
     ) -> DandelionResult<IoCompletionDisposition> {
-        let key = record.completion_key()?;
-        let coordination_key = IoCoordinationKey {
-            run_id: key.run_id,
-            io_path: key.io_path,
-            function: key.function,
-            identifier: key.identifier,
-            item_key: key.item_key,
+        let item = record
+            .outputs
+            .iter()
+            .flat_map(|output| &output.items)
+            .next()
+            .ok_or_else(|| export_registry_error("IO completion has no output item"))?;
+        let coordination_key = IoRequest {
+            id: record.request_id()?,
+            function: record.function,
+            identifier: item.identifier.clone(),
+            item_key: item.key,
         };
         let mut outputs = record.outputs.clone();
         outputs.sort_by_key(|output| output.set_index);
@@ -1896,7 +1905,9 @@ impl ExportRegistry {
     ) -> DandelionResult<CommittedDurableExport> {
         let mut committed_outputs = Vec::with_capacity(outputs.len());
         for output in outputs {
-            let context = Arc::new(ReadOnlyContext::from_boxed(output.bytes.into_boxed_slice())?);
+            let context = Arc::new(ReadOnlyContext::from_boxed(
+                output.bytes.into_boxed_slice(),
+            )?);
             committed_outputs.push((output.data_id, output.size, context));
         }
         let mut inner = self.inner.lock().unwrap();
@@ -2044,7 +2055,7 @@ impl ExportRegistry {
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalLockWaitStart);
         }
-        let record_key = record.completion_key()?;
+        let record_key = record.request_id()?;
         let (journal_path, pending_io_completions) = {
             let inner = self.inner.lock().unwrap();
             if let Some(recorder) = recorder.as_mut() {
@@ -2061,7 +2072,7 @@ impl ExportRegistry {
             }
             // Already queued for delivery; caller should drop duplicate exports.
             for pending in &inner.pending_io_completions {
-                if pending.completion_key()? == record_key {
+                if pending.request_id()? == record_key {
                     if let Some(recorder) = recorder.as_mut() {
                         recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanEnd);
                     }
@@ -2121,7 +2132,7 @@ impl ExportRegistry {
     #[cfg(all(feature = "at-least-once", feature = "timestamp"))]
     pub fn pending_io_completion_recorder(
         &self,
-        completion_key: &IoCompletionKey,
+        completion_key: &IoRequestId,
     ) -> Option<dandelion_commons::records::Recorder> {
         self.inner
             .lock()
@@ -2141,14 +2152,14 @@ impl ExportRegistry {
     #[cfg(feature = "at-least-once")]
     pub async fn acknowledge_io_completion(
         &self,
-        completion_key: &IoCompletionKey,
+        completion_key: &IoRequestId,
     ) -> DandelionResult<bool> {
         let _io_guard = self.durable_io_lock.lock().await;
         let (journal_path, pending_io_completions) = {
             let inner = self.inner.lock().unwrap();
             let mut record_index = None;
             for (index, record) in inner.pending_io_completions.iter().enumerate() {
-                if record.completion_key()? == *completion_key {
+                if record.request_id()? == *completion_key {
                     record_index = Some(index);
                     break;
                 }
@@ -2181,7 +2192,7 @@ impl ExportRegistry {
     #[cfg(feature = "at-least-once")]
     pub async fn apply_io_completion_ack(
         &self,
-        completion_key: &IoCompletionKey,
+        completion_key: &IoRequestId,
         disposition: IoCompletionDisposition,
     ) -> DandelionResult<bool> {
         if disposition == IoCompletionDisposition::Delete {
@@ -2190,11 +2201,7 @@ impl ExportRegistry {
                 inner
                     .pending_io_completions
                     .iter()
-                    .find(|record| {
-                        record
-                            .completion_key()
-                            .is_ok_and(|key| key == *completion_key)
-                    })
+                    .find(|record| record.request_id().is_ok_and(|key| key == *completion_key))
                     .cloned()
             };
             if let Some(record) = record {
@@ -2367,10 +2374,9 @@ impl ExportRegistry {
     pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
         #[cfg(feature = "at-least-once")]
         if is_durable_data_id(data_id) && self.durable_data_size(data_id).is_none() {
-            return err_dandelion!(DandelionError::Multinode(MultinodeError::DataLost(format!(
-                "Unknown durable data id {}",
-                data_id
-            ))));
+            return err_dandelion!(DandelionError::Multinode(MultinodeError::DataLost(
+                format!("Unknown durable data id {}", data_id)
+            )));
         }
         let exported_data = self.get_exported_data(data_id)?;
         Ok((exported_data.context, exported_data.position))
@@ -2776,7 +2782,11 @@ impl RemoteDataClient for HttpRemoteDataClient {
             #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
             let committed = self
                 .local_registry
-                .insert_checkpoint_outputs_async(completion.key.run_id, outputs, recorder.clone())
+                .insert_checkpoint_outputs_async(
+                    completion.key.id.run_id,
+                    outputs,
+                    recorder.clone(),
+                )
                 .await;
             #[cfg(not(all(
                 feature = "checkpointed-at-least-once",
@@ -2784,7 +2794,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             )))]
             let committed = self
                 .local_registry
-                .insert_durable_outputs_async(completion.key.run_id, outputs, recorder.clone())
+                .insert_durable_outputs_async(completion.key.id.run_id, outputs, recorder.clone())
                 .await;
             if let Some(recorder) = recorder.as_mut() {
                 recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportEnd);
@@ -2865,7 +2875,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             if completion.owner_node_id == self.local_registry.node_id {
                 let disposition = accept_delivered_io_completion_record(&record).await?;
                 self.local_registry
-                    .acknowledge_io_completion(&record.completion_key()?)
+                    .acknowledge_io_completion(&record.request_id()?)
                     .await?;
                 if disposition == IoCompletionDisposition::Delete {
                     for output in exported {
@@ -2958,10 +2968,11 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     input: input.map(|input| match input {
                         IoResolveWireInput::Inline(bytes) => {
                             let size = bytes.len();
-                            let context =
-                                Arc::new(ReadOnlyContext::from_boxed(bytes.into_boxed_slice()).expect(
+                            let context = Arc::new(
+                                ReadOnlyContext::from_boxed(bytes.into_boxed_slice()).expect(
                                     "inline I/O resolve bytes should form a read-only context",
-                                ));
+                                ),
+                            );
                             IoResolveInput::Inline {
                                 context,
                                 position: Position { offset: 0, size },
@@ -3003,7 +3014,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     let exported = self
                         .local_registry
                         .insert_durable_outputs_async(
-                            completion.key.run_id,
+                            completion.key.id.run_id,
                             outputs,
                             recorder.clone(),
                         )
@@ -3145,7 +3156,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 if let Some(record) = delivery_record {
                     self.local_registry
                         .apply_io_completion_ack(
-                            &record.completion_key()?,
+                            &record.request_id()?,
                             IoCompletionDisposition::Delete,
                         )
                         .await?;
@@ -3158,7 +3169,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         .record(dandelion_commons::records::RecordPoint::IoAcknowledgementStart);
                 }
                 self.local_registry
-                    .acknowledge_io_completion(&record.completion_key()?)
+                    .acknowledge_io_completion(&record.request_id()?)
                     .await?;
                 if let Some(recorder) = recorder.as_mut() {
                     recorder.record(dandelion_commons::records::RecordPoint::IoAcknowledgementEnd);
@@ -3340,7 +3351,7 @@ async fn handle_exported_data(
                     Ok(()) => Ok(Response::new(ExportedBody {
                         inner: VecDeque::new(),
                     })),
-                }
+                };
             }
         },
         &Method::GET => {
@@ -3354,7 +3365,7 @@ async fn handle_exported_data(
                         return match export_registry.get_exported_data(data_id) {
                             Err(err) => not_found(format!("Get failed with: {}", err)),
                             Ok(data) => Ok(Response::new(ExportedBody::new_single(data))),
-                        }
+                        };
                     }
                 }
             }
@@ -3569,7 +3580,7 @@ mod checkpoint_tests {
         .unwrap()
     }
 
-    async fn pending_completion(registry: &ExportRegistry) -> (IoCompletionKey, u64) {
+    async fn pending_completion(registry: &ExportRegistry) -> (IoRequestId, u64) {
         let bytes = b"checkpoint".to_vec();
         let item = DataItem {
             ident: "item".to_string(),
@@ -3587,8 +3598,11 @@ mod checkpoint_tests {
             .await
             .unwrap();
         let record = IoCompletionRecord {
-            run_id: RunId::now_v7(),
-            io_path: vec![3].into(),
+            id: machine_interface::composition::IoRequestId {
+                run_id: RunId::now_v7(),
+                io_path: vec![3].into(),
+                request_item_index: 0,
+            },
             function: machine_interface::function_driver::functions::SystemFunction::HTTP,
             claim_id: None,
             outputs: vec![IoCompletionOutputSet {
@@ -3605,7 +3619,7 @@ mod checkpoint_tests {
                 }],
             }],
         };
-        let key = record.completion_key().unwrap();
+        let key = record.request_id().unwrap();
         registry
             .append_io_completion_record(&record, None)
             .await
@@ -3895,7 +3909,10 @@ mod incarnation_tests {
                 .await,
         );
 
-        remote_client.delete_remote_data(stale.clone()).await.unwrap();
+        remote_client
+            .delete_remote_data(stale.clone())
+            .await
+            .unwrap();
         assert!(restarted.fetch_context(current.data_id).is_ok());
 
         let local_client = HttpRemoteDataClient::new(BTreeMap::new(), restarted.clone());
@@ -3945,23 +3962,51 @@ mod tests {
         bytes
     }
 
-    fn coordination_key() -> IoCoordinationKey {
-        IoCoordinationKey {
-            run_id: RunId::now_v7(),
-            io_path: vec![17].into(),
+    #[test]
+    fn duplicate_names_and_keys_elect_separate_positional_requests() {
+        let registry = ExportRegistry::new(1);
+        let base = coordination_key();
+        for (call, request_item_index) in [(17, 0), (17, 1), (18, 0)] {
+            let mut key = base.clone();
+            key.id.io_path = vec![call].into();
+            key.id.request_item_index = request_item_index;
+            let encoded = proto_coordination_key(&key).unwrap();
+            let decoded = coordination_key_from_proto(encoded).unwrap();
+            assert_eq!(decoded.id.io_path, key.id.io_path);
+            assert_eq!(decoded.id.request_item_index, request_item_index);
+            assert!(matches!(
+                registry
+                    .begin_io_resolution(decoded.clone(), 0, None)
+                    .unwrap(),
+                RegistryIoResolution::Execute(_, _)
+            ));
+            assert!(matches!(
+                registry.begin_io_resolution(decoded, 1, None).unwrap(),
+                RegistryIoResolution::Wait(_)
+            ));
+        }
+    }
+
+    fn coordination_key() -> IoRequest {
+        IoRequest {
+            id: machine_interface::composition::IoRequestId {
+                run_id: RunId::now_v7(),
+                io_path: vec![17].into(),
+                request_item_index: 0,
+            },
             function: machine_interface::function_driver::functions::SystemFunction::HTTP,
             identifier: "request".to_string(),
             item_key: 3,
         }
     }
 
-    async fn submitted_coordination_key() -> IoCoordinationKey {
+    async fn submitted_coordination_key() -> IoRequest {
         let key = coordination_key();
         machine_interface::function_driver::system_driver::recovery_log::append_submission_line(
-            key.run_id,
+            key.id.run_id,
             &format!(
                 "event=invocation_submitted run_id={} request_len=0 request_b64= is_cold=false\n",
-                key.run_id
+                key.id.run_id
             ),
         )
         .await
@@ -3994,8 +4039,9 @@ mod tests {
                 size: original_bytes.len(),
             },
         };
-        let original_context =
-            Arc::new(ReadOnlyContext::from_boxed(original_bytes.clone().into_boxed_slice()).unwrap());
+        let original_context = Arc::new(
+            ReadOnlyContext::from_boxed(original_bytes.clone().into_boxed_slice()).unwrap(),
+        );
         let original_data = owner_registry.insert_function(&original_item, original_context, None);
 
         let (owner_url, owner_server) = spawn_test_data_server(owner_registry.clone()).await;
@@ -4035,7 +4081,7 @@ mod tests {
                 let waiter_registered = {
                     let inner = owner_registry.inner.lock().unwrap();
                     matches!(
-                        inner.io_resolutions.get(&key),
+                        inner.io_resolutions.get(&key.id),
                         Some(IoResolutionState::Running { result, .. })
                             if result.receiver_count() > 0
                     )
@@ -4224,7 +4270,8 @@ mod tests {
                 size: expected.len(),
             },
         };
-        let context = Arc::new(ReadOnlyContext::from_boxed(expected.clone().into_boxed_slice()).unwrap());
+        let context =
+            Arc::new(ReadOnlyContext::from_boxed(expected.clone().into_boxed_slice()).unwrap());
         let remote = registry.insert_function(&item, context, None);
         let key = coordination_key();
         let resolution = registry
@@ -4364,9 +4411,12 @@ mod tests {
         let registry = ExportRegistry::new(1);
         let key = coordination_key();
         let recovered_record = IoCompletionRecord {
+            id: machine_interface::composition::IoRequestId {
+                run_id: key.id.run_id,
+                io_path: key.id.io_path.clone(),
+                request_item_index: key.id.request_item_index,
+            },
             claim_id: None,
-            run_id: key.run_id,
-            io_path: key.io_path.clone(),
             function: key.function,
             outputs: vec![
                 IoCompletionOutputSet {
@@ -4398,14 +4448,14 @@ mod tests {
             ],
         };
         machine_interface::function_driver::system_driver::recovery_log::install_recovered_io_records(
-            key.run_id,
+            key.id.run_id,
             vec![recovered_record],
         )
         .unwrap();
 
         let resolution = registry.begin_io_resolution(key.clone(), 1, None).unwrap();
         machine_interface::function_driver::system_driver::recovery_log::clear_recovered_io(
-            key.run_id,
+            key.id.run_id,
         );
 
         assert!(matches!(
@@ -4505,10 +4555,10 @@ mod tests {
         let client = HttpRemoteDataClient::new(BTreeMap::new(), registry.clone());
         let key = coordination_key();
         machine_interface::function_driver::system_driver::recovery_log::append_run_log_line(
-            key.run_id,
+            key.id.run_id,
             &format!(
                 "event=invocation_submitted run_id={} request_len=0 request_b64= is_cold=false\n",
-                key.run_id
+                key.id.run_id
             ),
         )
         .await
@@ -4528,11 +4578,13 @@ mod tests {
                     size: expected.len(),
                 },
             },
-            context: Arc::new(ReadOnlyContext::from_boxed(expected.clone().into_boxed_slice()).unwrap()),
+            context: Arc::new(
+                ReadOnlyContext::from_boxed(expected.clone().into_boxed_slice()).unwrap(),
+            ),
         };
         #[cfg(feature = "timestamp")]
         let recorder = Recorder::new(
-            key.run_id,
+            key.id.run_id,
             Arc::new("IO:HTTP:0:0000000000000000".to_string()),
             std::time::Instant::now(),
         );
@@ -4580,7 +4632,7 @@ mod tests {
         .unwrap());
         let run_log =
             machine_interface::function_driver::system_driver::recovery_log::read_run_log(
-                key.run_id,
+                key.id.run_id,
             )
             .await
             .unwrap();
@@ -4634,7 +4686,9 @@ mod tests {
                             size: bytes.len(),
                         },
                     },
-                    context: Arc::new(ReadOnlyContext::from_boxed(bytes.into_boxed_slice()).unwrap()),
+                    context: Arc::new(
+                        ReadOnlyContext::from_boxed(bytes.into_boxed_slice()).unwrap(),
+                    ),
                 }]),
                 recorder: None,
                 claim_id: Some(claim_id),
@@ -4648,14 +4702,14 @@ mod tests {
         let path = durable_data_path(&test_root.join(node_id.to_string()), remote.data_id);
         assert!(fs::try_exists(&path).await.unwrap());
 
-        client.clear_io_coordination(key.run_id).await.unwrap();
+        client.clear_io_coordination(key.id.run_id).await.unwrap();
         assert!(!fs::try_exists(&path).await.unwrap());
         assert!(!registry
             .inner
             .lock()
             .unwrap()
             .io_resolutions
-            .contains_key(&key));
+            .contains_key(&key.id));
         fs::remove_dir_all(test_root).await.unwrap();
     }
 
@@ -4672,7 +4726,7 @@ mod tests {
         let key = coordination_key();
         registry.begin_io_resolution(key.clone(), 0, None).unwrap();
         let (batch_id, directory, data_ids) = registry
-            .reserve_durable_export_batch(key.run_id, 2)
+            .reserve_durable_export_batch(key.id.run_id, 2)
             .await
             .unwrap();
         let outputs = data_ids
@@ -4688,7 +4742,7 @@ mod tests {
             .await
             .unwrap();
 
-        let cancelled_outputs = registry.cancel_io_coordination(key.run_id);
+        let cancelled_outputs = registry.cancel_io_coordination(key.id.run_id);
 
         assert_eq!(cancelled_outputs.len(), 2);
         assert!(registry
@@ -4724,7 +4778,8 @@ mod tests {
         let registry = ExportRegistry::with_durable_storage(node_id, &test_root)
             .await
             .unwrap();
-        let context = Arc::new(ReadOnlyContext::from_boxed(expected.clone().into_boxed_slice()).unwrap());
+        let context =
+            Arc::new(ReadOnlyContext::from_boxed(expected.clone().into_boxed_slice()).unwrap());
         let remote = registry
             .insert_durable_function(&item, context)
             .await

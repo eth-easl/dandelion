@@ -15,9 +15,7 @@ use crate::{
 };
 #[cfg(feature = "at-least-once")]
 use crate::{
-    composition::{
-        IoCompletedOutput, IoCompletionOutcome, IoCoordinationCompletion, IoCoordinationKey,
-    },
+    composition::{IoCompletedOutput, IoCompletionOutcome, IoCoordinationCompletion, IoRequest},
     function_driver::system_driver::{CoordinatedIoData, IoCoordination},
 };
 use bytes::Bytes;
@@ -528,8 +526,7 @@ async fn resolve_checkpointed_io_item(
         set_index,
     } = request;
     let IoCoordination {
-        run_id,
-        io_path,
+        id,
         item_identifier,
         item_key,
         owner_node_id,
@@ -555,9 +552,8 @@ async fn resolve_checkpointed_io_item(
         let owner_node_id = owner_node_id.unwrap_or_else(|| remote_client.local_node_id());
         let completion = IoCoordinationCompletion {
             owner_node_id,
-            key: IoCoordinationKey {
-                run_id,
-                io_path,
+            key: IoRequest {
+                id,
                 function,
                 identifier: item_identifier.clone(),
                 item_key,
@@ -627,17 +623,15 @@ async fn resolve_io_item_exactly_once(
         set_index,
     } = request;
     let IoCoordination {
-        run_id,
-        io_path,
+        id,
         item_identifier,
         item_key,
         owner_node_id,
     } = coordination;
 
     let remote_client = crate::composition::get_remote_data_client().ok();
-    let coordination_key = IoCoordinationKey {
-        run_id,
-        io_path,
+    let coordination_key = IoRequest {
+        id,
         function,
         identifier: item_identifier.clone(),
         item_key,

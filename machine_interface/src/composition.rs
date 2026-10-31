@@ -326,7 +326,7 @@ pub trait RemoteDataClient: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = DandelionResult<(Arc<Context>, Position)>> + Send + '_>>;
 
     /// Returns a single context containing all the items that were fetched and updates
-    /// their position metadata accordingly
+    /// their position metadata accordingly, preserving metadata length and order.
     fn resolve_multiple_data<'meta>(
         &'meta self,
         // Metadata needs to be updated, since the offsets are not correctly set yet
@@ -376,11 +376,20 @@ pub trait RemoteDataClient: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
 }
 
+/// Stable identity of one logical IO input, shared by coordination and recovery.
 #[cfg(feature = "at-least-once")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct IoCoordinationKey {
+pub struct IoRequestId {
     pub run_id: dandelion_commons::RunId,
     pub io_path: crate::function_driver::system_driver::IoPath,
+    pub request_item_index: usize,
+}
+
+/// An IO request's identity and descriptive execution metadata.
+#[cfg(feature = "at-least-once")]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IoRequest {
+    pub id: IoRequestId,
     pub function: SystemFunction,
     pub identifier: String,
     pub item_key: u64,
@@ -390,7 +399,7 @@ pub struct IoCoordinationKey {
 #[derive(Clone, Debug)]
 pub struct IoResolveRequest {
     pub owner_node_id: u64,
-    pub key: IoCoordinationKey,
+    pub key: IoRequest,
     pub set_index: usize,
     /// The owner inlines owner-local request bytes in the winning resolve response. A reference to
     /// a third node is preserved so the winner can fetch it directly without owner proxying.
@@ -404,7 +413,9 @@ pub enum IoResolveOutcome {
         input: Option<IoResolveInput>,
         claim_id: u64,
     },
-    Completed { data: RemoteData },
+    Completed {
+        data: RemoteData,
+    },
     Failed(String),
 }
 
@@ -439,7 +450,7 @@ pub struct IoCompletedOutput {
 #[derive(Clone, Debug)]
 pub struct IoCoordinationCompletion {
     pub owner_node_id: u64,
-    pub key: IoCoordinationKey,
+    pub key: IoRequest,
     pub outcome: IoCompletionOutcome,
     pub recorder: Option<dandelion_commons::records::Recorder>,
     pub claim_id: Option<u64>,

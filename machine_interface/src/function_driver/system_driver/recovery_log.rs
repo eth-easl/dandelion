@@ -40,15 +40,14 @@ static LOCAL_COMPLETION_COMMITTER: OnceLock<mpsc::UnboundedSender<LocalCompletio
 static ACTIVE_ASYNC_RUNS: OnceLock<Mutex<HashSet<RunId>>> = OnceLock::new();
 #[cfg(feature = "at-least-once")]
 static RECOVERED_IO_OUTPUTS: OnceLock<
-    Mutex<HashMap<RecoveredIoKey, HashMap<RecoveredIoItemKey, HashMap<usize, RecoveredIoOutput>>>>,
+    Mutex<HashMap<IoRequestId, HashMap<usize, RecoveredIoOutput>>>,
 > = OnceLock::new();
 
 #[cfg(feature = "at-least-once")]
 /// In-memory representation of one durable `io_function_completed` recovery event.
 #[derive(Debug, Clone)]
 pub struct IoCompletionRecord {
-    pub run_id: RunId,
-    pub io_path: IoPath,
+    pub id: IoRequestId,
     pub function: SystemFunction,
     pub outputs: Vec<IoCompletionOutputSet>,
     pub claim_id: Option<u64>,
@@ -69,19 +68,12 @@ struct LocalCompletionCommitRequest {
 
 #[cfg(feature = "at-least-once")]
 /// Stable identity of one logical IO input item across execution, delivery, and recovery.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct IoCompletionKey {
-    pub run_id: RunId,
-    pub io_path: IoPath,
-    pub function: SystemFunction,
-    pub identifier: String,
-    pub item_key: u64,
-}
+pub use crate::composition::IoRequestId;
 
 #[cfg(feature = "at-least-once")]
 impl IoCompletionRecord {
     /// Derives the logical input item represented by this completion.
-    pub fn completion_key(&self) -> DandelionResult<IoCompletionKey> {
+    pub fn request_id(&self) -> DandelionResult<IoRequestId> {
         let mut items = self.outputs.iter().flat_map(|output| output.items.iter());
         let first = items.next().ok_or_else(|| {
             internal_error("IO completion record does not contain an output item")
@@ -91,13 +83,7 @@ impl IoCompletionRecord {
                 "IO completion record contains outputs for multiple logical items",
             ));
         }
-        Ok(IoCompletionKey {
-            run_id: self.run_id,
-            io_path: self.io_path.clone(),
-            function: self.function,
-            identifier: first.identifier.clone(),
-            item_key: first.key,
-        })
+        Ok(self.id.clone())
     }
 }
 
@@ -135,23 +121,6 @@ pub enum IoCompletionData {
 pub enum RecoveredIoOutput {
     Inline(Arc<crate::memory_domain::Context>),
     Remote { data: RemoteData, size: usize },
-}
-
-#[cfg(feature = "at-least-once")]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct RecoveredIoKey {
-    run_id: RunId,
-    io_path: IoPath,
-}
-
-#[cfg(feature = "at-least-once")]
-/// Metadata used to find one completed item inside an invocation/composition-set entry.
-/// It deliberately is not part of the recovery entry's identity.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct RecoveredIoItemKey {
-    function: SystemFunction,
-    identifier: String,
-    key: u64,
 }
 
 fn internal_error(message: impl Into<String>) -> dandelion_commons::DError {
@@ -272,7 +241,7 @@ struct RunLogState {
     #[cfg(feature = "at-least-once")]
     terminal: bool,
     #[cfg(feature = "at-least-once")]
-    completions: HashMap<IoCompletionKey, String>,
+    completions: HashMap<IoRequestId, String>,
 }
 
 impl RunLogState {
@@ -300,14 +269,14 @@ impl RunLogState {
                 Some(IO_COMPLETED_EVENT) if !self.terminal => {
                     if let Some(record) = parse_io_completion_line(line)? {
                         self.completions.insert(
-                            record.completion_key()?,
+                            record.request_id()?,
                             encode_io_completion_payload(&record.outputs)?,
                         );
                     }
                 }
                 Some(IO_INVALIDATED_EVENT) if !self.terminal => {
                     if let Some(record) = parse_io_record_line(line, IO_INVALIDATED_EVENT)? {
-                        let record_key = record.completion_key()?;
+                        let record_key = record.request_id()?;
                         if self.completions.get(&record_key)
                             == Some(&encode_io_completion_payload(&record.outputs)?)
                         {
@@ -408,9 +377,9 @@ fn append_run_log_blocking(log_path: &Path, content: &str, sync: bool) -> Dandel
         })?
         .len();
     if file.write_all(content.as_bytes()).is_err() {
-        let rolled_back = file
-            .set_len(length)
-            .and_then(|()| if sync { file.sync_data() } else { Ok(()) });
+        let rolled_back =
+            file.set_len(length)
+                .and_then(|()| if sync { file.sync_data() } else { Ok(()) });
         if sync && rolled_back.is_err() {
             abort_on_unsynced_run_log(log_path);
         }
@@ -596,7 +565,9 @@ fn parse_io_record_line(line: &str, event: &str) -> DandelionResult<Option<IoCom
     let io_path = fields
         .get("io_path")
         .copied()
-        .ok_or(internal_error("Missing io_path field in IO completion record"))?
+        .ok_or(internal_error(
+            "Missing io_path field in IO completion record",
+        ))?
         .parse::<IoPath>()
         .map_err(|_| internal_error("Invalid io_path in IO completion record"))?;
     let function = SystemFunction::from(fields.get("function").copied().ok_or(internal_error(
@@ -612,9 +583,17 @@ fn parse_io_record_line(line: &str, event: &str) -> DandelionResult<Option<IoCom
                 .map_err(|_| internal_error("Invalid claim_id in IO completion record"))
         })
         .transpose()?;
+    let request_item_index = fields
+        .get("request_item_index")
+        .ok_or(internal_error("Missing request_item_index"))?
+        .parse()
+        .map_err(|_| internal_error("Invalid request_item_index"))?;
     Ok(Some(IoCompletionRecord {
-        run_id,
-        io_path,
+        id: crate::composition::IoRequestId {
+            request_item_index,
+            run_id,
+            io_path,
+        },
         function,
         outputs,
         claim_id,
@@ -645,16 +624,16 @@ pub async fn load_recoverable_io_completion_records(
 
 #[cfg(feature = "at-least-once")]
 fn recoverable_io_completion_records_in(content: &str) -> DandelionResult<Vec<IoCompletionRecord>> {
-    let mut records: Vec<(IoCompletionKey, String, IoCompletionRecord)> = Vec::new();
+    let mut records: Vec<(IoRequestId, String, IoCompletionRecord)> = Vec::new();
     for line in complete_log_lines(content) {
         if let Some(record) = parse_io_completion_line(line)? {
             records.push((
-                record.completion_key()?,
+                record.request_id()?,
                 encode_io_completion_payload(&record.outputs)?,
                 record,
             ));
         } else if let Some(invalidated) = parse_io_record_line(line, IO_INVALIDATED_EVENT)? {
-            let invalidated_key = invalidated.completion_key()?;
+            let invalidated_key = invalidated.request_id()?;
             let invalidated_payload = encode_io_completion_payload(&invalidated.outputs)?;
             records.retain(|(record_key, record_payload, _)| {
                 *record_key != invalidated_key || *record_payload != invalidated_payload
@@ -670,7 +649,7 @@ fn recoverable_io_completion_records_in(content: &str) -> DandelionResult<Vec<Io
 pub async fn invalidate_io_completion_record(record: &IoCompletionRecord) -> DandelionResult<()> {
     let payload_b64 = encode_io_completion_payload(&record.outputs)?;
     let line = io_record_line(IO_INVALIDATED_EVENT, record, &payload_b64);
-    append_run_log_line(record.run_id, &line).await
+    append_run_log_line(record.id.run_id, &line).await
 }
 
 #[cfg(feature = "at-least-once")]
@@ -749,10 +728,117 @@ fn forget_run_log_state(run_id: RunId) {
 mod cleanup_tests {
     use super::*;
 
+    #[test]
+    fn positional_keys_distinguish_duplicates_and_ignore_descriptive_metadata() {
+        let run_id = RunId::now_v7();
+        let first = completion(run_id, 101);
+        let mut second = completion(run_id, 202);
+        second.id.request_item_index = 1;
+        let mut another_call = completion(run_id, 303);
+        another_call.id.io_path = vec![4].into();
+        let another_run = completion(RunId::now_v7(), 404);
+        let mut keys = HashSet::new();
+        for record in [&first, &second, &another_call, &another_run] {
+            assert!(keys.insert(record.request_id().unwrap()));
+            let line = format_io_completion_line(record).unwrap();
+            let decoded = parse_io_completion_line(&line).unwrap().unwrap();
+            assert_eq!(decoded.request_id().unwrap(), record.request_id().unwrap());
+            assert!(!line.contains("input_set_id="));
+        }
+        let metadata_only = crate::composition::IoRequest {
+            id: first.request_id().unwrap(),
+            identifier: "different name".into(),
+            item_key: 999,
+            function: SystemFunction::MEMCACHED,
+        };
+        assert!(!keys.insert(metadata_only.id));
+        install_recovered_io_records(run_id, vec![first, second, another_call]).unwrap();
+        for (call, index, data_id) in [(3, 0, 101), (3, 1, 202), (4, 0, 303)] {
+            let id = IoRequestId {
+                run_id,
+                io_path: vec![call].into(),
+                request_item_index: index,
+            };
+            assert!(matches!(recovered_io_item_location(&id, 0),
+                Some(RecoveredIoOutput::Remote { data, .. }) if data.data_id == data_id));
+        }
+        assert!(recovered_io_item_location(&another_run.id, 0).is_none());
+        clear_recovered_io(run_id);
+    }
+
+    #[test]
+    fn item_position_is_required_in_completion_logs() {
+        let line = format_io_completion_line(&completion(RunId::now_v7(), 1)).unwrap();
+        assert!(parse_io_completion_line(&line.replace("request_item_index=0 ", "")).is_err());
+    }
+
+    #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+    #[test]
+    fn replay_restores_duplicate_requests_by_position_before_reference_conversion() {
+        use crate::function_driver::system_driver::{
+            async_io_policy, convert_to_references, IoReferencePolicy,
+        };
+        use crate::{
+            composition::{CompositionSet, ItemData},
+            DataItem, Position,
+        };
+        let run_id = RunId::now_v7();
+        let mut first = completion(run_id, 101);
+        first.outputs[0].items[0].location = IoCompletionData::Inline(b"first".to_vec());
+        let mut second = completion(run_id, 202);
+        second.id.request_item_index = 1;
+        install_recovered_io_records(run_id, vec![first, second]).unwrap();
+        let input = CompositionSet::from_item_list(
+            "requests".into(),
+            (0..2)
+                .map(|_| {
+                    (
+                        DataItem {
+                            ident: "item".into(),
+                            key: 7,
+                            data: Position { offset: 0, size: 1 },
+                        },
+                        ItemData::LocalData(Arc::new(
+                            ReadOnlyContext::from_boxed(vec![0].into_boxed_slice()).unwrap(),
+                        )),
+                    )
+                })
+                .collect(),
+        );
+        let recorder = dandelion_commons::records::Recorder::new(
+            run_id,
+            Arc::new("test".into()),
+            std::time::Instant::now(),
+        );
+        let mut outputs = convert_to_references(
+            SystemFunction::HTTP,
+            vec![input],
+            async_io_policy(run_id).nested(3),
+            recorder,
+        )
+        .unwrap();
+        let headers = outputs[0].take().unwrap();
+        assert_eq!(headers.size(), 9);
+        let mut items = headers.into_iter();
+        let (_, ItemData::LocalData(first)) = items.next().unwrap() else {
+            panic!("expected first inline checkpoint")
+        };
+        use crate::memory_domain::ContextTrait;
+        assert_eq!(first.get_chunk_ref(0, 5).unwrap(), b"first");
+        let (_, ItemData::RemoteData(second)) = items.next().unwrap() else {
+            panic!("expected second remote checkpoint")
+        };
+        assert_eq!(second.data_id, 202);
+        clear_recovered_io(run_id);
+    }
+
     fn completion(run_id: RunId, data_id: u64) -> IoCompletionRecord {
         IoCompletionRecord {
-            run_id,
-            io_path: IoPath::from(vec![3]),
+            id: crate::composition::IoRequestId {
+                run_id,
+                io_path: IoPath::from(vec![3]),
+                request_item_index: 0,
+            },
             function: SystemFunction::HTTP,
             outputs: vec![IoCompletionOutputSet {
                 set_index: 0,
@@ -784,8 +870,11 @@ mod cleanup_tests {
             },
         };
         let records = vec![IoCompletionRecord {
-            run_id,
-            io_path: IoPath::from(vec![3]),
+            id: crate::composition::IoRequestId {
+                run_id,
+                io_path: IoPath::from(vec![3]),
+                request_item_index: 0,
+            },
             function: SystemFunction::HTTP,
             outputs: vec![
                 IoCompletionOutputSet {
@@ -837,8 +926,9 @@ mod cleanup_tests {
             parse_io_completion_line(&legacy_line)
                 .unwrap()
                 .unwrap()
+                .id
                 .run_id,
-            record.run_id
+            record.id.run_id
         );
     }
 
@@ -956,7 +1046,9 @@ mod cleanup_tests {
                 &encode_io_completion_payload(&lost.outputs).unwrap()
             )
         );
-        assert!(recoverable_io_completion_records_in(&log).unwrap().is_empty());
+        assert!(recoverable_io_completion_records_in(&log)
+            .unwrap()
+            .is_empty());
         assert_eq!(
             delivered_io_completion_disposition(&RunLogState::from_log(&log).unwrap(), &rerun)
                 .unwrap(),
@@ -1019,9 +1111,8 @@ mod cleanup_tests {
 }
 
 #[cfg(feature = "at-least-once")]
-fn recovered_io_outputs() -> &'static Mutex<
-    HashMap<RecoveredIoKey, HashMap<RecoveredIoItemKey, HashMap<usize, RecoveredIoOutput>>>,
-> {
+fn recovered_io_outputs() -> &'static Mutex<HashMap<IoRequestId, HashMap<usize, RecoveredIoOutput>>>
+{
     RECOVERED_IO_OUTPUTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1030,40 +1121,29 @@ pub fn install_recovered_io_records(
     run_id: RunId,
     records: Vec<IoCompletionRecord>,
 ) -> DandelionResult<()> {
-    let mut recovered_outputs = recovered_io_outputs()
+    let mut recovered = recovered_io_outputs()
         .lock()
         .expect("Recovered IO output map poisoned");
     for record in records {
-        let recovery_entry = recovered_outputs
-            .entry(RecoveredIoKey {
-                run_id,
-                io_path: record.io_path,
-            })
-            .or_default();
-
-        for output in &record.outputs {
-            for item in &output.items {
-                let recovered_output = match &item.location {
+        let mut id = record.request_id()?;
+        id.run_id = run_id;
+        let outputs = recovered.entry(id).or_default();
+        for output in record.outputs {
+            for item in output.items {
+                let location = match item.location {
                     IoCompletionData::Inline(data) => RecoveredIoOutput::Inline(Arc::new(
-                        ReadOnlyContext::from_boxed(data.clone().into_boxed_slice())?,
+                        ReadOnlyContext::from_boxed(data.into_boxed_slice())?,
                     )),
                     IoCompletionData::Remote {
                         node_id,
                         data_id,
                         size,
                     } => RecoveredIoOutput::Remote {
-                        data: RemoteData::durable(*node_id, *data_id),
-                        size: *size,
+                        data: RemoteData::durable(node_id, data_id),
+                        size,
                     },
                 };
-                recovery_entry
-                    .entry(RecoveredIoItemKey {
-                        function: record.function,
-                        identifier: item.identifier.clone(),
-                        key: item.key,
-                    })
-                    .or_default()
-                    .insert(output.set_index, recovered_output);
+                outputs.insert(output.set_index, location);
             }
         }
     }
@@ -1071,57 +1151,27 @@ pub fn install_recovered_io_records(
 }
 
 #[cfg(feature = "at-least-once")]
-/// Returns all recovered output contexts for one system-function input item.
+/// Returns every output of the identified IO input.
 pub fn recovered_io_item_locations(
-    run_id: RunId,
-    function: SystemFunction,
-    io_path: &IoPath,
+    id: &IoRequestId,
     output_count: usize,
-    identifier: &str,
-    key: u64,
 ) -> Option<Vec<RecoveredIoOutput>> {
-    let recovered_outputs = recovered_io_outputs()
+    let recovered = recovered_io_outputs()
         .lock()
         .expect("Recovered IO output map poisoned");
-
-    let recovery_entry = recovered_outputs.get(&RecoveredIoKey {
-        run_id,
-        io_path: io_path.clone(),
-    })?;
-    let item_outputs = recovery_entry.get(&RecoveredIoItemKey {
-        function,
-        identifier: identifier.to_string(),
-        key,
-    })?;
-
+    let outputs = recovered.get(id)?;
     (0..output_count)
-        .map(|set_index| item_outputs.get(&set_index).cloned())
+        .map(|index| outputs.get(&index).cloned())
         .collect()
 }
 
-/// Returns one recovered output for the uncoordinated at-least-once path.
 #[cfg(feature = "at-least-once")]
-pub fn recovered_io_item_location(
-    run_id: RunId,
-    function: SystemFunction,
-    io_path: &IoPath,
-    set_index: usize,
-    identifier: &str,
-    key: u64,
-) -> Option<RecoveredIoOutput> {
-    let recovered_outputs = recovered_io_outputs()
+/// Returns one output of the identified IO input during checkpointed replay.
+pub fn recovered_io_item_location(id: &IoRequestId, set_index: usize) -> Option<RecoveredIoOutput> {
+    recovered_io_outputs()
         .lock()
-        .expect("Recovered IO output map poisoned");
-    recovered_outputs
-        .get(&RecoveredIoKey {
-            run_id,
-            io_path: io_path.clone(),
-        })?
-        .get(&RecoveredIoItemKey {
-            function,
-            identifier: identifier.to_string(),
-            key,
-        })?
+        .expect("Recovered IO output map poisoned")
+        .get(id)?
         .get(&set_index)
         .cloned()
 }
@@ -1336,8 +1386,14 @@ fn io_record_line(event: &str, record: &IoCompletionRecord, payload_b64: &str) -
         .map(|claim_id| format!(" claim_id={}", claim_id))
         .unwrap_or_default();
     format!(
-        "event={} run_id={} io_path={} function={}{} payload_b64={}\n",
-        event, record.run_id, record.io_path, record.function, claim_field, payload_b64
+        "event={} run_id={} io_path={} request_item_index={} function={}{} payload_b64={}\n",
+        event,
+        record.id.run_id,
+        record.id.io_path,
+        record.id.request_item_index,
+        record.function,
+        claim_field,
+        payload_b64
     )
 }
 
@@ -1346,13 +1402,13 @@ pub async fn append_io_completion_record(record: &IoCompletionRecord) -> Dandeli
     if !active_async_runs()
         .lock()
         .expect("Async invocation logging set poisoned")
-        .contains(&record.run_id)
+        .contains(&record.id.run_id)
     {
         return Ok(());
     }
     let line = format_io_completion_line(record)?;
-    let log_path = run_log_path(record.run_id)?;
-    let run_lock = run_log_lock(record.run_id);
+    let log_path = run_log_path(record.id.run_id)?;
+    let run_lock = run_log_lock(record.id.run_id);
     let mut state = run_lock.lock().await;
     append_run_log_line_locked(&log_path, &mut state, &line, SYNC_RUN_LOG).await
 }
@@ -1363,14 +1419,14 @@ pub async fn append_io_completion_record(record: &IoCompletionRecord) -> Dandeli
 pub async fn accept_delivered_io_completion_record(
     record: &IoCompletionRecord,
 ) -> DandelionResult<IoCompletionDisposition> {
-    let log_path = run_log_path(record.run_id)?;
-    let run_lock = run_log_lock(record.run_id);
+    let log_path = run_log_path(record.id.run_id)?;
+    let run_lock = run_log_lock(record.id.run_id);
     let mut state = run_lock.lock().await;
     ensure_run_log_loaded(&log_path, &mut state).await?;
     if let Some(disposition) = delivered_io_completion_disposition(&state, record)? {
         return Ok(disposition);
     }
-    let record_key = record.completion_key()?;
+    let record_key = record.request_id()?;
     let payload_b64 = encode_io_completion_payload(&record.outputs)?;
     let line = io_completion_line(record, &payload_b64);
     write_run_log_locked(&log_path, &mut state, line, SYNC_RUN_LOG).await?;
@@ -1438,7 +1494,7 @@ async fn commit_local_completion_batch(batch: Vec<LocalCompletionCommitRequest>)
     // group requests by run id
     for request in batch {
         by_run
-            .entry(request.record.run_id)
+            .entry(request.record.id.run_id)
             .or_default()
             .push(request);
     }
@@ -1485,7 +1541,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
         );
 
         let mut appended = String::new();
-        let mut appended_completions: HashMap<IoCompletionKey, String> = HashMap::new();
+        let mut appended_completions: HashMap<IoRequestId, String> = HashMap::new();
         let mut journal_recorders = Vec::new();
         let mut dispositions = Vec::with_capacity(requests.len());
         record_completion_requests(
@@ -1499,7 +1555,7 @@ async fn commit_run_completion_batch(run_id: RunId, requests: Vec<LocalCompletio
                 dispositions.push(disposition);
                 continue;
             }
-            let record_key = request.record.completion_key()?;
+            let record_key = request.record.request_id()?;
             let mut recorder = request.recorder.clone();
             if let Some(recorder) = recorder.as_mut() {
                 recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeStart);
@@ -1566,7 +1622,7 @@ fn delivered_io_completion_disposition(
     state: &RunLogState,
     record: &IoCompletionRecord,
 ) -> DandelionResult<Option<IoCompletionDisposition>> {
-    let record_key = record.completion_key()?;
+    let record_key = record.request_id()?;
     if !state.submitted || state.terminal {
         return Ok(Some(IoCompletionDisposition::Delete));
     }

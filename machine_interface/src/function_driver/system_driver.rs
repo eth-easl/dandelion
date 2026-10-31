@@ -7,8 +7,8 @@ use crate::{
     memory_domain::Context,
     DataItem, Position,
 };
+use dandelion_commons::{err_dandelion, try_with_capacity, DandelionError, DandelionResult};
 use dandelion_commons::{records::Recorder, RunId};
-use dandelion_commons::{try_with_capacity, DandelionResult};
 #[cfg(feature = "at-least-once")]
 pub use recovery_log::{
     decode_io_completion_payload, encode_io_completion_payload, IoCompletionData,
@@ -137,8 +137,7 @@ impl std::str::FromStr for IoPath {
 #[cfg(feature = "at-least-once")]
 #[derive(Debug, Clone)]
 pub struct IoCoordination {
-    pub run_id: RunId,
-    pub io_path: IoPath,
+    pub id: crate::composition::IoRequestId,
     pub item_identifier: String,
     pub item_key: u64,
     /// Filled when the lazy reference crosses a node boundary; `None` means the current node owns
@@ -165,14 +164,24 @@ pub trait IoReferencePolicy: Clone {
 
     /// Returns the lazy/reference data and, when recovery substituted a completed output, its
     /// restored item size.
-    fn wrap(&self, request: IoData, item: &DataItem) -> (ItemData, Option<usize>);
+    fn wrap(
+        &self,
+        request: IoData,
+        item: &DataItem,
+        request_item_index: usize,
+    ) -> (ItemData, Option<usize>);
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct UncoordinatedIo;
 
 impl IoReferencePolicy for UncoordinatedIo {
-    fn wrap(&self, request: IoData, _item: &DataItem) -> (ItemData, Option<usize>) {
+    fn wrap(
+        &self,
+        request: IoData,
+        _item: &DataItem,
+        _request_item_index: usize,
+    ) -> (ItemData, Option<usize>) {
         (ItemData::IoData(request), None)
     }
 }
@@ -216,16 +225,19 @@ impl IoReferencePolicy for RecoverableIo {
         }
     }
 
-    fn wrap(&self, request: IoData, item: &DataItem) -> (ItemData, Option<usize>) {
+    fn wrap(
+        &self,
+        request: IoData,
+        item: &DataItem,
+        request_item_index: usize,
+    ) -> (ItemData, Option<usize>) {
+        let id = crate::composition::IoRequestId {
+            run_id: self.run_id,
+            io_path: self.io_path.clone(),
+            request_item_index,
+        };
         #[cfg(not(feature = "exactly-once"))]
-        if let Some(output) = recovery_log::recovered_io_item_location(
-            self.run_id,
-            request.function,
-            &self.io_path,
-            request.set_index,
-            &item.ident,
-            item.key.into(),
-        ) {
+        if let Some(output) = recovery_log::recovered_io_item_location(&id, request.set_index) {
             return match output {
                 RecoveredIoOutput::Inline(context) => {
                     let size = context.size;
@@ -239,8 +251,7 @@ impl IoReferencePolicy for RecoverableIo {
         (
             ItemData::CoordinatedIoData(CoordinatedIoData {
                 coordination: IoCoordination {
-                    run_id: self.run_id,
-                    io_path: self.io_path.clone(),
+                    id,
                     item_identifier: item.ident.clone(),
                     item_key: item.key.into(),
                     owner_node_id: None,
@@ -262,12 +273,11 @@ pub fn convert_to_references<P: IoReferencePolicy>(
     io_policy: P,
     _recorder: Recorder,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
-    // check that the function id contains string correcpsonding to system function
-    debug_assert_eq!(
-        1,
-        inputs.len(),
-        "all current IO functions expect a single input set"
-    );
+    if inputs.len() != 1 {
+        return err_dandelion!(DandelionError::InvalidSystemFuncArg(
+            "IO functions require exactly one input set".into(),
+        ));
+    }
 
     // go through all input sets and check if there is already a static one, or on in the input data
     let output_count = get_system_function_output_sets(function).len();
@@ -280,7 +290,7 @@ pub fn convert_to_references<P: IoReferencePolicy>(
             .map(|_| try_with_capacity!(Vec, input_set.len()))
             .collect::<DandelionResult<Vec<_>>>()?;
 
-        for (item, data) in input_set {
+        for (request_item_index, (item, data)) in input_set.into_iter().enumerate() {
             let resolved = Arc::new(OnceCell::new());
             let mut original_data = Some(data);
             for (set_index, items) in output_items.iter_mut().enumerate() {
@@ -303,6 +313,7 @@ pub fn convert_to_references<P: IoReferencePolicy>(
                         set_index,
                     },
                     &item,
+                    request_item_index,
                 );
                 items.push((
                     DataItem {
@@ -319,9 +330,7 @@ pub fn convert_to_references<P: IoReferencePolicy>(
         }
 
         for (set_index, items) in output_items.into_iter().enumerate() {
-            let item_number = items.len();
-            output_vec[set_index] =
-                CompositionSet::from_sorted_items(input_set_name.clone(), items, 0, item_number);
+            output_vec[set_index] = CompositionSet::from_item_list(input_set_name.clone(), items);
         }
     }
     Ok(output_vec)

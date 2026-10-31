@@ -27,12 +27,8 @@ use dispatcher::{
 };
 use log::{debug, error, info, trace, warn};
 #[cfg(feature = "at-least-once")]
-use machine_interface::function_driver::{
-    functions::SystemFunction,
-    system_driver::recovery_log::{
-        format_io_completion_line, parse_io_completion_line, IoCompletionDisposition,
-        IoCompletionKey,
-    },
+use machine_interface::function_driver::system_driver::recovery_log::{
+    format_io_completion_line, parse_io_completion_line, IoCompletionDisposition, IoRequestId,
 };
 use machine_interface::{
     composition::{CompositionSet, RemoteData},
@@ -595,14 +591,16 @@ async fn remote_queue_server_logic(
                                 }
                             };
                             #[cfg(feature = "exactly-once")]
-                            let disposition =
-                                match export_registry.accept_io_completion_delivery(&record).await {
-                                    Ok(disposition) => disposition,
-                                    Err(err) => {
-                                        error!("Failed to persist worker IO completion: {}", err);
-                                        continue;
-                                    }
-                                };
+                            let disposition = match export_registry
+                                .accept_io_completion_delivery(&record)
+                                .await
+                            {
+                                Ok(disposition) => disposition,
+                                Err(err) => {
+                                    error!("Failed to persist worker IO completion: {}", err);
+                                    continue;
+                                }
+                            };
                             #[cfg(not(feature = "exactly-once"))]
                             let disposition = match machine_interface::function_driver::system_driver::recovery_log::accept_delivered_io_completion_record(&record).await {
                                 Ok(disposition) => disposition,
@@ -611,7 +609,7 @@ async fn remote_queue_server_logic(
                                     continue;
                                 }
                             };
-                            let completion_key = match record.completion_key() {
+                            let completion_key = match record.request_id() {
                                 Ok(completion_key) => completion_key,
                                 Err(err) => {
                                     warn!("Worker sent an invalid IO completion identity: {}", err);
@@ -622,12 +620,9 @@ async fn remote_queue_server_logic(
                                 .send(queue_message::QueueMessage::IoCompletionAck(
                                     IoCompletionAcknowledgement {
                                         run_id: completion_key.run_id.to_string(),
-                                        io_path: crate::util::io_path_dtop(
-                                            &completion_key.io_path,
-                                        ),
-                                        function: completion_key.function.to_string(),
-                                        identifier: completion_key.identifier,
-                                        item_key: completion_key.item_key,
+                                        io_path: crate::util::io_path_dtop(&completion_key.io_path),
+                                        request_item_index: completion_key.request_item_index
+                                            as u64,
                                         delete_outputs: disposition
                                             == IoCompletionDisposition::Delete,
                                     },
@@ -984,7 +979,7 @@ async fn io_completion_delivery_loop(
     let mut sent_on_this_connection = HashSet::new();
     loop {
         for record in export_registry.pending_io_completion_records() {
-            let key = match record.completion_key() {
+            let key = match record.request_id() {
                 Ok(key) => key,
                 Err(err) => {
                     error!("Invalid pending IO completion identity: {}", err);
@@ -1479,22 +1474,10 @@ async fn remote_queue_client_logic(
                                 }
                             };
                             let io_path = crate::util::io_path_ptod(acknowledgement.io_path);
-                            let function = match acknowledgement.function.as_str() {
-                                "HTTP" => SystemFunction::HTTP,
-                                "MEMCACHED" => SystemFunction::MEMCACHED,
-                                _ => {
-                                    error!(
-                                    "Owner sent an IO completion acknowledgement with an invalid function"
-                                );
-                                    break;
-                                }
-                            };
-                            let completion_key = IoCompletionKey {
+                            let completion_key = IoRequestId {
                                 run_id,
                                 io_path,
-                                function,
-                                identifier: acknowledgement.identifier,
-                                item_key: acknowledgement.item_key,
+                                request_item_index: acknowledgement.request_item_index as usize,
                             };
                             let disposition = if acknowledgement.delete_outputs {
                                 IoCompletionDisposition::Delete

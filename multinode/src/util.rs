@@ -241,6 +241,7 @@ fn try_item_data_dtop(
                     io_path: Vec::new(),
                     item_identifier: String::new(),
                     item_key: 0,
+                    request_item_index: 0,
                     original_size: original_position.size as u64,
                     owner_node_id: 0,
                 }))),
@@ -270,10 +271,11 @@ fn try_item_data_dtop(
                         set_index: set_index as u64,
                         function: system_function_dtop(&function)? as i32,
                         data: Some(Box::new(data)),
-                        run_id: coordination.run_id.to_string(),
-                        io_path: io_path_dtop(&coordination.io_path),
+                        run_id: coordination.id.run_id.to_string(),
+                        io_path: io_path_dtop(&coordination.id.io_path),
                         item_identifier: coordination.item_identifier,
                         item_key: coordination.item_key,
+                        request_item_index: coordination.id.request_item_index as u64,
                         original_size: original_position.size as u64,
                         owner_node_id: coordination.owner_node_id.unwrap_or(exporting_node_id),
                     },
@@ -335,6 +337,7 @@ fn item_data_and_ref(
                         io_path: Vec::new(),
                         item_identifier: String::new(),
                         item_key: 0,
+                        request_item_index: 0,
                         original_size: original_position.size as u64,
                         owner_node_id: 0,
                     }))),
@@ -368,10 +371,11 @@ fn item_data_and_ref(
                             set_index: *set_index as u64,
                             function: system_function_dtop(function).unwrap() as i32,
                             data: Some(Box::new(data)),
-                            run_id: coordination.run_id.to_string(),
-                            io_path: io_path_dtop(&coordination.io_path),
+                            run_id: coordination.id.run_id.to_string(),
+                            io_path: io_path_dtop(&coordination.id.io_path),
                             item_identifier: coordination.item_identifier.clone(),
                             item_key: coordination.item_key,
+                            request_item_index: coordination.id.request_item_index as u64,
                             original_size: original_position.size as u64,
                             owner_node_id: coordination.owner_node_id.unwrap_or(exporting_node_id),
                         },
@@ -435,6 +439,7 @@ fn item_data_ptod(
                 io_path: _,
                 item_identifier: _,
                 item_key: _,
+                request_item_index: _,
                 original_size,
                 owner_node_id: _,
             } = *io_data;
@@ -464,6 +469,7 @@ fn item_data_ptod(
                 io_path,
                 item_identifier,
                 item_key,
+                request_item_index,
                 original_size,
                 owner_node_id,
             } = *io_data;
@@ -472,9 +478,12 @@ fn item_data_ptod(
                     machine_interface::function_driver::system_driver::CoordinatedIoData {
                         coordination:
                             machine_interface::function_driver::system_driver::IoCoordination {
-                                run_id: dandelion_commons::RunId::parse_str(&run_id)
-                                    .expect("Serialized run id should be a valid UUID"),
-                                io_path: io_path_ptod(io_path),
+                                id: machine_interface::composition::IoRequestId {
+                                    run_id: dandelion_commons::RunId::parse_str(&run_id)
+                                        .expect("Serialized run id should be a valid UUID"),
+                                    io_path: io_path_ptod(io_path),
+                                    request_item_index: request_item_index as usize,
+                                },
                                 item_identifier,
                                 item_key,
                                 owner_node_id: Some(owner_node_id),
@@ -669,4 +678,60 @@ pub fn unpack_metadata_size_and_flags(packed: u64) -> (u32, u32) {
     let flags = ((packed >> METADATA_SIZE_BITS) & flags_mask) as u32;
 
     (size, flags)
+}
+
+#[cfg(all(test, feature = "at-least-once"))]
+mod positional_tests {
+    use super::*;
+    use machine_interface::function_driver::system_driver::{CoordinatedIoData, IoCoordination};
+
+    #[test]
+    fn lazy_io_transport_keeps_call_path_and_position() {
+        for request_item_index in [0, 42] {
+            let item = DataItem {
+                ident: "duplicate".into(),
+                key: 7,
+                data: Position { offset: 0, size: 3 },
+            };
+            let coordination = IoCoordination {
+                id: machine_interface::composition::IoRequestId {
+                    run_id: dandelion_commons::RunId::now_v7(),
+                    io_path: vec![2, 3].into(),
+                    request_item_index,
+                },
+                item_identifier: item.ident.clone(),
+                item_key: item.key.into(),
+                owner_node_id: None,
+            };
+            let encoded = try_item_data_dtop(
+                &item,
+                ItemData::CoordinatedIoData(CoordinatedIoData {
+                    coordination: coordination.clone(),
+                    request: IoData {
+                        original_position: item.data,
+                        original_data: Box::new(ItemData::RemoteData(RemoteData::new(5, 1, 20))),
+                        resolved: Arc::new(OnceCell::new()),
+                        function:
+                            machine_interface::function_driver::functions::SystemFunction::HTTP,
+                        set_index: 1,
+                    },
+                }),
+                9,
+                &mut |_, _| unreachable!("input is already remote"),
+            )
+            .unwrap();
+            let (decoded, _) = item_data_ptod(encoded, None);
+            let ItemData::CoordinatedIoData(decoded) = decoded else {
+                panic!("lost coordinated reference")
+            };
+            assert_eq!(decoded.coordination.id.run_id, coordination.id.run_id);
+            assert_eq!(decoded.coordination.id.io_path, coordination.id.io_path);
+            assert_eq!(
+                decoded.coordination.id.request_item_index,
+                request_item_index
+            );
+            assert_eq!(decoded.coordination.owner_node_id, Some(9));
+            assert_eq!(decoded.request.set_index, 1);
+        }
+    }
 }

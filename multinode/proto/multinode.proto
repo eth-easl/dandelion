@@ -33,6 +33,7 @@ message IoData {
     uint64 item_key = 7;
     uint64 original_size = 8;
     uint64 owner_node_id = 9;
+    uint64 request_item_index = 10;
 }
 
 message RemoteData {
@@ -127,11 +128,9 @@ message IoCompletionDelivery {
 message IoCompletionAcknowledgement {
     string run_id = 1;
     repeated uint64 io_path = 2;
-    string function = 3;
-    string identifier = 4;
-    uint64 item_key = 5;
     // False retains the submitted durable outputs; true deletes them as a duplicate or late result.
-    bool delete_outputs = 6;
+    bool delete_outputs = 3;
+    uint64 request_item_index = 4;
 }
 
 message IoCoordinationKey {
@@ -140,6 +139,7 @@ message IoCoordinationKey {
     SystemFunction function = 3;
     string identifier = 4;
     uint64 item_key = 5;
+    uint64 request_item_index = 6;
 }
 
 // Worker -> owner: elect a winner or wait for / reuse an existing result.

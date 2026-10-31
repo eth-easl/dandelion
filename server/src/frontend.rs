@@ -142,14 +142,13 @@ async fn handle_function_registration(
         output_sets: request_map.output_sets,
         min_set_bytes: request_map.min_set_bytes,
     };
-    dispatcher
-        .insert_function(
-            request_map.name,
-            engine_type,
-            request_map.context_size as usize,
-            path_string,
-            metadata,
-        )?;
+    dispatcher.insert_function(
+        request_map.name,
+        engine_type,
+        request_map.context_size as usize,
+        path_string,
+        metadata,
+    )?;
     Ok(DandelionBody::from_vec(
         "Function registered".as_bytes().to_vec(),
     ))
@@ -691,7 +690,7 @@ async fn drop_lost_checkpoints(
         if lost {
             warn!(
                 "Checkpoint of {} for invocation {} is gone, running it again",
-                record.io_path, run_id
+                record.id.io_path, run_id
             );
             recovery_log::invalidate_io_completion_record(&record).await?;
         } else {

@@ -293,6 +293,7 @@ impl Dispatcher {
             // used to differentiate between multiple functions with same ID in one invocation for debugging and tracing.
             function_index: usize,
             input_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
+
             join_info: (Vec<usize>, Vec<JoinStrategy>),
             output_mapping: Vec<Option<usize>>,
             missing_sets: BTreeMap<(usize, usize), (ShardingMode, bool)>,
@@ -364,6 +365,7 @@ impl Dispatcher {
                     function_id: deps.function,
                     function_index: composition_index,
                     input_sets: ready_inputs,
+
                     join_info: deps.join_info,
                     output_mapping: deps.output_set_ids,
                     missing_sets: missing_map,
@@ -494,6 +496,7 @@ impl Dispatcher {
         // index of the function within the composition
         function_index: usize,
         input_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
+
         join_order: Vec<usize>,
         join_strategies: Vec<JoinStrategy>,
         output_mapping: Vec<Option<usize>>,
@@ -928,6 +931,90 @@ mod sharding_tests {
                     );
                 }
             }
+        }
+    }
+
+    #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+    #[tokio::test]
+    async fn io_identity_keeps_positions_for_ready_and_deferred_calls() {
+        use machine_interface::{
+            composition::{FunctionDependencies, ItemData},
+            function_driver::functions::SystemFunction,
+            function_driver::system_driver::convert_to_references,
+            memory_domain::read_only::ReadOnlyContext,
+            DataItem, Position,
+        };
+        let dispatcher = dispatcher(AnyShardingMode::FixedSharding(1));
+        let run_id = RunId::now_v7();
+        let policy = async_io_policy(run_id).nested(99);
+        let recorder = Recorder::new(run_id, Arc::new("test".into()), std::time::Instant::now());
+        let source = CompositionSet::from_item_list(
+            "requests".into(),
+            (0..2)
+                .map(|_| {
+                    (
+                        DataItem {
+                            ident: "duplicate".into(),
+                            key: 7,
+                            data: Position { offset: 0, size: 1 },
+                        },
+                        ItemData::LocalData(Arc::new(
+                            ReadOnlyContext::from_boxed(vec![0].into_boxed_slice()).unwrap(),
+                        )),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap();
+        let dependencies = [(4, 5), (4, 7), (6, 9)]
+            .into_iter()
+            .map(|(input, output)| FunctionDependencies {
+                function: Arc::new("HTTP".into()),
+                input_set_ids: vec![Some(InputSetDescriptor {
+                    composition_id: input,
+                    sharding: ShardingMode::All,
+                    optional: false,
+                })],
+                join_info: (vec![0], vec![]),
+                output_set_ids: vec![Some(output), Some(output + 1)],
+            })
+            .collect();
+        let outputs = dispatcher
+            .queue_composition(
+                0,
+                Composition {
+                    dependencies,
+                    output_map: BTreeMap::from([(5, 0), (7, 1), (9, 2)]),
+                },
+                vec![None, None, None, None, Some(source.clone())],
+                false,
+                policy.clone(),
+                recorder.clone(),
+            )
+            .await
+            .unwrap();
+        for (call, set) in outputs.into_iter().enumerate() {
+            for (index, (_, data)) in set.unwrap().into_iter().enumerate() {
+                let ItemData::CoordinatedIoData(io) = data else {
+                    panic!("expected lazy IO")
+                };
+                assert_eq!(io.coordination.id.run_id, run_id);
+                assert_eq!(
+                    io.coordination.id.io_path.to_string(),
+                    format!("/99/{}", call)
+                );
+                assert_eq!(io.coordination.id.request_item_index, index);
+            }
+        }
+        let direct =
+            convert_to_references(SystemFunction::HTTP, vec![Some(source)], policy, recorder)
+                .unwrap();
+        for (index, (_, data)) in direct[0].as_ref().unwrap().into_iter().enumerate() {
+            let ItemData::CoordinatedIoData(io) = data else {
+                panic!("expected direct IO")
+            };
+            assert_eq!(io.coordination.id.io_path.to_string(), "/99");
+            assert_eq!(io.coordination.id.request_item_index, index);
         }
     }
 }
