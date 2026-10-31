@@ -37,6 +37,10 @@ const IO_CALL_SIZE_EVENT: &str = "io_call_size";
 ))]
 #[path = "recovery_log_call_size_tests.rs"]
 mod call_size_tests;
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+mod recovered_calls;
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+pub use recovered_calls::{install_recovered_io_calls, recovered_io_call};
 const SYNC_RUN_LOG: bool = cfg!(feature = "exactly-once");
 static RECOVERY_LOG_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static RUN_LOG_LOCKS: OnceLock<Mutex<HashMap<RunId, Arc<AsyncMutex<RunLogState>>>>> =
@@ -1302,6 +1306,8 @@ pub fn clear_recovered_io(run_id: RunId) {
         .lock()
         .expect("Recovered IO output map poisoned")
         .retain(|entry_key, _| entry_key.run_id != run_id);
+    #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+    recovered_calls::clear(run_id);
 }
 
 #[cfg(feature = "at-least-once")]

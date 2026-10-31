@@ -634,6 +634,8 @@ async fn start_recovered_invocation(
     } else {
         recovered_io
     };
+    #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+    recovery_log::install_recovered_io_calls(run_id, &recovered_io).await?;
     recovery_log::install_recovered_io_records(run_id, recovered_io)?;
     spawn_async_invocation_attempt(dispatcher, recoverable.is_cold, parsed, attempt);
     Ok(())
