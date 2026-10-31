@@ -1044,11 +1044,10 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                     move |sets_result| {
                         recorder.record(RecordPoint::FetchingEnd);
                         match sets_result {
-                            // FIXME: this leaks the queue's `prefetching_in_progress` count, since
-                            // that is only decremented in `requeu_engine_args`. Repeated fetch
-                            // failures permanently inflate the count and can starve the io queue
-                            // of taking any more prefetch work.
-                            Err(err) => debt.fulfill(Err(err)),
+                            Err(err) => {
+                                queue_clone.abort_engine_args();
+                                debt.fulfill(Err(err))
+                            }
                             Ok(sets) => queue_clone.requeu_engine_args(
                                 WorkToDo::FunctionArguments {
                                     function_id,

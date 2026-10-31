@@ -82,6 +82,7 @@ pub trait EngineWorkQueue {
     /// Function to return a Work to do to the queue after fetching all reference sets
     /// Unstable: This is a temproary addition to the interface use with caution
     fn requeu_engine_args(&self, work: WorkToDo, debt: crate::promise::Debt, composition_id: usize);
+    fn abort_engine_args(&self);
     fn remove_self_from_queue(&self);
 }
 

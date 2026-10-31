@@ -49,5 +49,7 @@ impl EngineWorkQueue for TestQueue {
         panic!("should not requeue on the test queue");
     }
 
+    fn abort_engine_args(&self) {}
+
     fn remove_self_from_queue(&self) {}
 }

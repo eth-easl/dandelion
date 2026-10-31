@@ -857,6 +857,14 @@ impl EngineWorkQueue for EngineQueue {
             .push_compute(work, debt, flags, composition_id, true)
     }
 
+    fn abort_engine_args(&self) {
+        let mut queue_guard = self.work_queue.inner.lock().unwrap();
+        queue_guard.prefetching_in_progress -= 1;
+        if let Some(waker) = queue_guard.io_waker_list.pop_front() {
+            waker.wake();
+        }
+    }
+
     fn remove_self_from_queue(&self) {
         self.work_queue
             .remove_local_cores(1)
