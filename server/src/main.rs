@@ -415,6 +415,24 @@ fn main() {
             .expect("Should be able to initialize durable export storage");
         #[cfg(not(feature = "at-least-once"))]
         let export_registry = ExportRegistry::new(node_id);
+
+        let data_server_urls = multinode_settings.data_server_urls();
+        let data_server_address = data_server_urls
+            .get(&node_id)
+            .unwrap_or_else(|| panic!("No data server entry for node {}", node_id));
+        let data_server_port = multinode::config::data_server_port(data_server_address)
+            .unwrap_or_else(|err| {
+                panic!("Invalid data server entry for node {}: {}", node_id, err)
+            });
+        system_runtime.spawn(multinode::data::service_loop(
+            data_server_port,
+            export_registry.clone(),
+        ));
+        set_remote_data_client(Arc::new(multinode::data::HttpRemoteDataClient::new(
+            data_server_urls,
+            export_registry.clone(),
+        )));
+
         let client_shutdown_option = if multinode_settings.queue_server.node_id == node_id {
             let (remote_data_deletion_sender, remote_data_deletion_receiver) =
                 mpsc::unbounded_channel();
@@ -450,23 +468,6 @@ fn main() {
             ));
             Some((shutdown_sender, completion_receiver))
         };
-
-        let data_server_urls = multinode_settings.data_server_urls();
-        let data_server_address = data_server_urls
-            .get(&node_id)
-            .unwrap_or_else(|| panic!("No data server entry for node {}", node_id));
-        let data_server_port = multinode::config::data_server_port(data_server_address)
-            .unwrap_or_else(|err| {
-                panic!("Invalid data server entry for node {}: {}", node_id, err)
-            });
-        system_runtime.spawn(multinode::data::service_loop(
-            data_server_port,
-            export_registry.clone(),
-        ));
-        set_remote_data_client(Arc::new(multinode::data::HttpRemoteDataClient::new(
-            data_server_urls,
-            export_registry,
-        )));
 
         client_shutdown_option
     } else {
