@@ -33,6 +33,9 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
 };
 
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+mod recovery_pruning;
+
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 // TODO: the composition ids currently just go up from 0, there is no overflow handling.
@@ -314,11 +317,34 @@ impl Dispatcher {
 
         let mut awaited_sets = FuturesUnordered::new();
 
+        #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+        let mut replay = recovery_pruning::ReplayPlan::discover(&composition, &io_policy);
+
         let (ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) = composition
             .dependencies
             .into_iter()
             .enumerate()
             .filter_map(|(composition_index, deps)| {
+                #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+                if let Some(plan) = replay.as_mut() {
+                    if !plan.needed[composition_index] {
+                        return None;
+                    }
+                    if let Some(outputs) = plan.restored.remove(&composition_index) {
+                        let new_sets = deps
+                            .output_set_ids
+                            .into_iter()
+                            .zip(outputs)
+                            .filter_map(|(index, set)| index.map(|index| (index, set)))
+                            .collect();
+                        awaited_sets.push(Either::Left(ready(Ok((
+                            new_sets,
+                            composition_index,
+                            Vec::new(),
+                        )))));
+                        return None;
+                    }
+                }
                 let mut missing_map = BTreeMap::new();
                 let input_set_number: usize = deps.input_set_ids.len();
                 let mut ready_inputs = Vec::with_capacity(input_set_number);
@@ -342,7 +368,7 @@ impl Dispatcher {
                                     .collect();
                                 awaited_sets.push(Either::Left(ready(Ok((
                                     new_sets,
-                                    function_index,
+                                    composition_index,
                                     Vec::new(),
                                 )))));
                                 return None;

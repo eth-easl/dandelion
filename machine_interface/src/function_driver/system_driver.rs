@@ -153,6 +153,11 @@ pub struct CoordinatedIoData {
 }
 
 pub trait IoReferencePolicy: Clone {
+    /// Complete output sets installed at recovery start; absent during ordinary execution.
+    fn restored_call(&self) -> Option<Vec<Option<CompositionSet>>> {
+        None
+    }
+
     /// Records the number of requests before converting a whole I/O call to lazy references.
     fn record_call_size(&self, _function: SystemFunction, _n: usize) {}
 
@@ -217,6 +222,11 @@ pub fn async_io_policy(run_id: RunId) -> AsyncIoPolicy {
 
 #[cfg(feature = "at-least-once")]
 impl IoReferencePolicy for RecoverableIo {
+    #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+    fn restored_call(&self) -> Option<Vec<Option<CompositionSet>>> {
+        recovery_log::recovered_io_call(self.run_id, &self.io_path)
+    }
+
     #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
     fn record_call_size(&self, function: SystemFunction, n: usize) {
         recovery_log::record_io_call_size(self.run_id, self.io_path.clone(), function, n);

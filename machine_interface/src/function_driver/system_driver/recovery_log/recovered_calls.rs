@@ -59,7 +59,6 @@ fn rebuild_calls(
     for record in records.iter().filter(|record| record.id.run_id == run_id) {
         let items = items_by_call.entry(&record.id.io_path).or_default();
         if let Some(previous) = items.insert(record.id.request_item_index, record) {
-           
             if previous.function != record.function
                 || encode_io_completion_payload(&previous.outputs)?
                     != encode_io_completion_payload(&record.outputs)?
