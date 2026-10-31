@@ -513,7 +513,8 @@ impl WorkQueue {
         promise.await
     }
 
-    /// Inserts a vector of work at once.
+    /// Inserts a vector of work at once and returns results in submission order.
+    /// Work runs concurrently; any error is still returned as soon as it is observed.
     /// Assumes all the work is uniform, i.e the flags for all invocations are the same.
     pub async fn do_work_many(
         &self,
@@ -523,18 +524,18 @@ impl WorkQueue {
         let size_hint = work_iter.len();
         let mut debts = Vec::with_capacity(size_hint);
         let mut promises = FuturesUnordered::new();
-        let mut results = Vec::with_capacity(size_hint);
-        for _ in 0..size_hint {
+        let mut results: Vec<Option<WorkDone>> = (0..size_hint).map(|_| None).collect();
+        for index in 0..size_hint {
             let (promise, debt) = self.promise_buffer.get_promise()?;
             debts.push(debt);
-            promises.push(promise);
+            promises.push(async move { (index, promise.await) });
         }
         // Transform into either a IO element or a compute queue element
         let mut compute_elements = LinkedList::new();
         let mut io_elements = LinkedList::new();
         // first transforming all then pushing to not hold lock while evaluating policy
         let mut global_flags = 0;
-        for mut work in work_iter {
+        for (mut work, debt) in work_iter.zip(debts) {
             // determine if local and figure out flags
             let (flags, local) = get_flags_and_local(&work);
             global_flags = flags;
@@ -562,20 +563,16 @@ impl WorkQueue {
                     composition_id,
                     flags,
                     work,
-                    debt: debts.pop().unwrap(),
+                    debt,
                 });
             } else {
                 // Record queue start here, as we want do to it before taking the lock.
                 if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
                     recorder.record(RecordPoint::IOQueueStart);
                 }
-                if let Some((work, debt, policy_data)) = policy::prepare_io_element(
-                    work,
-                    debts.pop().unwrap(),
-                    true,
-                    composition_id,
-                    &self.remote_nodes,
-                ) {
+                if let Some((work, debt, policy_data)) =
+                    policy::prepare_io_element(work, debt, true, composition_id, &self.remote_nodes)
+                {
                     io_elements.push_back(IoQueueElement {
                         composition_id,
                         flags,
@@ -665,11 +662,14 @@ impl WorkQueue {
                 self.queuing_notifier.notify_waiters();
             }
         }
-        while let Some(done) = promises.next().await {
-            results.push(done?);
+        while let Some((index, done)) = promises.next().await {
+            results[index] = Some(done?);
         }
 
-        Ok(results)
+        Ok(results
+            .into_iter()
+            .map(|result| result.expect("every submitted work item completed"))
+            .collect())
     }
 
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
@@ -861,5 +861,81 @@ impl EngineWorkQueue for EngineQueue {
         self.work_queue
             .remove_local_cores(1)
             .expect("Failed to remove itself from the work queue.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{pin::pin, task::Context};
+
+    #[test]
+    fn do_work_many_preserves_submission_order() {
+        let queue = WorkQueue::init();
+        let work = (0..3).map(|_| WorkToDo::Shutdown(EngineType::System));
+        let mut future = pin!(queue.do_work_many(work, 0));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(future.as_mut().poll(&mut cx).is_pending());
+
+        // All shards are available immediately. Complete them in reverse order,
+        // polling between completions to expose completion-order collection.
+        for index in (0..3).rev() {
+            let element = queue
+                .inner
+                .lock()
+                .unwrap()
+                .compute_queue
+                .pop_back()
+                .unwrap();
+            element.debt.fulfill(Ok(WorkDone::CompositionSet(
+                (0..=index).map(|_| None).collect(),
+            )));
+            if index > 0 {
+                assert!(future.as_mut().poll(&mut cx).is_pending());
+            }
+        }
+
+        let Poll::Ready(Ok(results)) = future.as_mut().poll(&mut cx) else {
+            panic!("all shards should have completed successfully");
+        };
+        let lengths: Vec<_> = results
+            .into_iter()
+            .map(|done| done.get_composition().len())
+            .collect();
+        assert_eq!(lengths, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn do_work_many_returns_later_error_without_waiting_for_first_shard() {
+        let queue = WorkQueue::init();
+        let work = (0..2).map(|_| WorkToDo::Shutdown(EngineType::System));
+        let mut future = pin!(queue.do_work_many(work, 0));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(future.as_mut().poll(&mut cx).is_pending());
+
+        // Dropping the second shard's debt produces an error while the first
+        // shard is still pending.
+        drop(
+            queue
+                .inner
+                .lock()
+                .unwrap()
+                .compute_queue
+                .pop_back()
+                .unwrap(),
+        );
+        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Ready(Err(_))));
+        assert_eq!(queue.inner.lock().unwrap().compute_queue.len(), 1);
+    }
+
+    #[test]
+    fn do_work_many_accepts_empty_input() {
+        let queue = WorkQueue::init();
+        let mut future = pin!(queue.do_work_many(std::iter::empty(), 0));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(results)) if results.is_empty()
+        ));
     }
 }
