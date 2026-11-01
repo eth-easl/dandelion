@@ -955,7 +955,7 @@ async fn load_durable_exports(
 #[cfg(feature = "at-least-once")]
 async fn load_io_completion_journal(directory: &Path) -> DandelionResult<Vec<IoCompletionRecord>> {
     let journal_path = directory.join(IO_COMPLETION_JOURNAL_FILE);
-    let contents = match fs::read_to_string(&journal_path).await {
+    let contents = match fs::read(&journal_path).await {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => {
@@ -967,17 +967,50 @@ async fn load_io_completion_journal(directory: &Path) -> DandelionResult<Vec<IoC
         }
     };
 
-    contents
-        .lines()
-        .map(|line| {
-            parse_io_completion_line(line)?.ok_or_else(|| {
-                export_registry_error(format!(
-                    "Invalid entry in IO completion journal {}",
+    #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+    {
+        let mut records = Vec::new();
+        // Validate records independently so invalid UTF-8 in one damaged record
+        // cannot prevent recovery of the remaining complete records.
+        for (index, bytes) in contents.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            let record = bytes
+                .strip_suffix(b"\n")
+                .and_then(|line| std::str::from_utf8(line).ok())
+                .and_then(|line| parse_io_completion_line(line).ok().flatten());
+            if let Some(record) = record {
+                records.push(record);
+            } else {
+                warn!(
+                    "Discarding damaged or incomplete IO completion journal record {} in {}",
+                    index + 1,
                     journal_path.display()
-                ))
+                );
+            }
+        }
+        Ok(records)
+    }
+
+    #[cfg(not(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once"))))]
+    {
+        let contents = std::str::from_utf8(&contents).map_err(|err| {
+            export_registry_error(format!(
+                "Invalid UTF-8 in IO completion journal {}: {}",
+                journal_path.display(),
+                err
+            ))
+        })?;
+        contents
+            .lines()
+            .map(|line| {
+                parse_io_completion_line(line)?.ok_or_else(|| {
+                    export_registry_error(format!(
+                        "Invalid entry in IO completion journal {}",
+                        journal_path.display()
+                    ))
+                })
             })
-        })
-        .collect()
+            .collect()
+    }
 }
 
 #[cfg(feature = "at-least-once")]
@@ -3672,6 +3705,68 @@ mod checkpoint_tests {
             .await
             .unwrap();
         (root, registry)
+    }
+
+    #[tokio::test]
+    async fn journal_loading_handles_damaged_records_according_to_guarantee() {
+        let (root, registry) = registry_for_test("damaged-journal").await;
+        let (key, _) = pending_completion(&registry).await;
+        let record = registry.pending_io_completion_records().pop().unwrap();
+        let valid = format_io_completion_line(&record).unwrap();
+        let path = root.join("7").join(IO_COMPLETION_JOURNAL_FILE);
+        // Cover malformed text, invalid UTF-8, an unknown event, and a valid
+        // record without its final newline. Valid records after damage survive.
+        for damaged in [
+            b"not a record\n".to_vec(),
+            vec![0xff, b'\n'],
+            b"event=unknown\n".to_vec(),
+        ] {
+            let mut bytes = valid.as_bytes().to_vec();
+            bytes.extend_from_slice(&damaged);
+            bytes.extend_from_slice(valid.as_bytes());
+            bytes.extend_from_slice(valid.trim_end_matches('\n').as_bytes());
+            fs::write(&path, bytes).await.unwrap();
+            let loaded = load_io_completion_journal(path.parent().unwrap()).await;
+            if cfg!(all(
+                feature = "checkpointed-at-least-once",
+                not(feature = "exactly-once")
+            )) {
+                let loaded = loaded.unwrap();
+                assert_eq!(loaded.len(), 2);
+                assert!(loaded
+                    .iter()
+                    .all(|record| record.request_id().unwrap() == key));
+                // Startup uses the same tolerant loader.
+                let restored = ExportRegistry::with_durable_storage(7, &root)
+                    .await
+                    .unwrap();
+                assert_eq!(restored.pending_io_completion_records().len(), 2);
+            } else {
+                assert!(loaded.is_err());
+            }
+        }
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn journal_loading_accepts_missing_empty_and_valid_journals() {
+        let (root, registry) = registry_for_test("valid-journal").await;
+        let directory = root.join("7");
+        assert!(load_io_completion_journal(&directory)
+            .await
+            .unwrap()
+            .is_empty());
+        let path = directory.join(IO_COMPLETION_JOURNAL_FILE);
+        fs::write(&path, []).await.unwrap();
+        assert!(load_io_completion_journal(&directory)
+            .await
+            .unwrap()
+            .is_empty());
+        let (key, _) = pending_completion(&registry).await;
+        let records = load_io_completion_journal(&directory).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].request_id().unwrap(), key);
+        fs::remove_dir_all(root).await.unwrap();
     }
 
     #[tokio::test]
