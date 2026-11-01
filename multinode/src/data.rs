@@ -784,14 +784,35 @@ fn write_atomic_file_blocking(path: &Path, contents: &[u8], sync: bool) -> Dande
             ))
         })?;
     }
-    drop(file);
     std::fs::rename(&temporary_path, path).map_err(|err| {
         export_registry_error(format!(
             "Failed to install durable export file {}: {}",
             path.display(),
             err
         ))
-    })
+    })?;
+    #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+    if !sync {
+        // Retain this inode even if a later journal write replaces its path.
+        // Publication waits for the write and rename, but not for disk sync.
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let result = file
+                .sync_all()
+                .map_err(|err| {
+                    export_registry_error(format!(
+                        "Failed to sync checkpoint {}: {}",
+                        path.display(),
+                        err
+                    ))
+                })
+                .and_then(|()| sync_directory_blocking(path.parent().unwrap()));
+            if let Err(error) = result {
+                warn!("Background checkpoint sync failed: {}", error);
+            }
+        });
+    }
+    Ok(())
 }
 
 #[cfg(feature = "at-least-once")]
@@ -818,6 +839,15 @@ async fn sync_checkpoint_directory(directory: &Path) -> DandelionResult<()> {
 
 #[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
 async fn sync_checkpoint_directory(_directory: &Path) -> DandelionResult<()> {
+    #[cfg(feature = "checkpointed-at-least-once")]
+    {
+        let directory = _directory.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = sync_directory_blocking(&directory) {
+                warn!("Background checkpoint directory sync failed: {}", error);
+            }
+        });
+    }
     Ok(())
 }
 

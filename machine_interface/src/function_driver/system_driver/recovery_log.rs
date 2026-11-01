@@ -432,6 +432,32 @@ fn append_run_log_blocking(log_path: &Path, content: &str, sync: bool) -> Dandel
             }
         }
     }
+    #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+    if !sync {
+        // Sync the exact file written above, not a potentially replaced path.
+        let log_path = log_path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let result = file
+                .sync_data()
+                .map_err(|error| {
+                    internal_error(format!(
+                        "Failed to sync invocation log {}: {}",
+                        log_path.display(),
+                        error
+                    ))
+                })
+                .and_then(|()| {
+                    if created {
+                        sync_directory_blocking(log_path.parent().unwrap())
+                    } else {
+                        Ok(())
+                    }
+                });
+            if let Err(error) = result {
+                warn!("Background invocation log sync failed: {}", error);
+            }
+        });
+    }
     Ok(())
 }
 
