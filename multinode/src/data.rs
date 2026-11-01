@@ -851,6 +851,22 @@ async fn sync_checkpoint_directory(_directory: &Path) -> DandelionResult<()> {
     Ok(())
 }
 
+// reservations must survive a machine crash before
+// any ID is published. Reusing a lost reservation could alias an old checkpoint.
+#[cfg(feature = "at-least-once")]
+async fn persist_durable_data_id_reservation(
+    directory: &Path,
+    reserved_until: u64,
+) -> DandelionResult<()> {
+    let directory = directory.to_path_buf();
+    run_blocking_file_io(move || {
+        let path = directory.join(NEXT_DURABLE_DATA_ID_FILE);
+        write_atomic_file_blocking(&path, reserved_until.to_string().as_bytes(), true)?;
+        sync_directory_blocking(&directory)
+    })
+    .await
+}
+
 #[cfg(feature = "at-least-once")]
 async fn reserve_durable_data_id_block(
     directory: &Path,
@@ -864,9 +880,7 @@ async fn reserve_durable_data_id_block(
             "Durable export data id space exhausted",
         ));
     }
-    let next_data_id_path = directory.join(NEXT_DURABLE_DATA_ID_FILE);
-    write_checkpoint_atomic_file(&next_data_id_path, reserved_until.to_string().into_bytes())
-        .await?;
+    persist_durable_data_id_reservation(directory, reserved_until).await?;
     Ok(reserved_until)
 }
 
@@ -1879,12 +1893,7 @@ impl ExportRegistry {
                 }
                 reserved_until = expanded;
             }
-            let next_data_id_path = directory.join(NEXT_DURABLE_DATA_ID_FILE);
-            write_checkpoint_atomic_file(
-                &next_data_id_path,
-                reserved_until.to_string().into_bytes(),
-            )
-            .await?;
+            persist_durable_data_id_reservation(&directory, reserved_until).await?;
             Some(reserved_until)
         } else {
             None
@@ -3725,6 +3734,33 @@ mod checkpoint_tests {
 
         assert_eq!(after_restart.data_id, first_high_watermark);
         assert!(after_restart.data_id > first.data_id);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_reservation_does_not_publish_batch_ids() {
+        let (root, registry) = registry_for_test("durable-id-reservation-failure").await;
+        let (directory, boundary) = {
+            let mut inner = registry.inner.lock().unwrap();
+            let store = inner.durable_store.as_mut().unwrap();
+            store.next_data_id = store.reserved_until;
+            (store.directory.clone(), store.reserved_until)
+        };
+        // Force the atomic reservation replacement to fail.
+        let path = directory.join(NEXT_DURABLE_DATA_ID_FILE);
+        fs::remove_file(&path).await.unwrap();
+        fs::create_dir(&path).await.unwrap();
+        assert!(registry
+            .reserve_durable_export_batch(RunId::now_v7(), 2)
+            .await
+            .is_err());
+        {
+            let inner = registry.inner.lock().unwrap();
+            let store = inner.durable_store.as_ref().unwrap();
+            assert_eq!(store.next_data_id, boundary);
+            assert_eq!(store.reserved_until, boundary);
+            assert!(inner.pending_durable_exports.is_empty());
+        }
         fs::remove_dir_all(root).await.unwrap();
     }
 
