@@ -52,13 +52,10 @@ struct RegisterFunction {
     /// value of > 0) the JoinIterator will combine any sets to achieve this size best-effort.
     #[serde(default)]
     min_set_bytes: Vec<usize>,
-    /// Whether the binary is the selector of a metafunction, which returns the identifier of
-    /// the function to run on the input sets instead of computing the output sets itself.
+    /// Whether the binary is the selector of a metafunction, which returns the composition to run
+    /// in its place. The input sets are the selector params and there are no output sets.
     #[serde(default)]
     meta_function: bool,
-    /// Input sets of a metafunction the selector only gets the metadata of.
-    #[serde(default)]
-    metadata_sets: Vec<String>,
 }
 
 async fn handle_function_registration(
@@ -127,12 +124,7 @@ async fn handle_function_registration(
             request_map.context_size as usize,
             path_string,
             metadata,
-            &request_map.metadata_sets,
         )
-    } else if !request_map.metadata_sets.is_empty() {
-        return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
-            String::from("Metadata sets can only be given for metafunctions"),
-        )));
     } else {
         dispatcher.insert_function(
             request_map.name,

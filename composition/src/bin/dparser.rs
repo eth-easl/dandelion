@@ -20,6 +20,10 @@ impl Registry for NoRegistry {
         Ok(())
     }
 
+    fn check_meta_declaration(&self, _id: &str, _params: &[&str]) -> DandelionResult<()> {
+        Ok(())
+    }
+
     fn id_exists(&self, _id: &str) -> bool {
         false
     }

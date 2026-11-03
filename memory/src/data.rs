@@ -210,14 +210,21 @@ impl DataSet {
     pub fn from_bytes<I: IntoIterator<Item = (String, Vec<u8>)>>(
         items: I,
     ) -> DandelionResult<DataSet> {
+        Self::from_keyed_bytes(items.into_iter().map(|(ident, data)| (ident, 0, data)))
+    }
+
+    /// Builds a set out of named and keyed byte buffers, each backed by its own read only context.
+    pub fn from_keyed_bytes<I: IntoIterator<Item = (String, u32, Vec<u8>)>>(
+        items: I,
+    ) -> DandelionResult<DataSet> {
         let items = items
             .into_iter()
-            .map(|(ident, data)| {
+            .map(|(ident, key, data)| {
                 let size = data.len();
                 let ctx = ReadOnlyContext::from_boxed(data.into_boxed_slice())?;
                 Ok(DataItem::new_local(
                     ident,
-                    0,
+                    key,
                     LocalData {
                         ctx: Arc::new(ctx),
                         pos: Position { offset: 0, size },

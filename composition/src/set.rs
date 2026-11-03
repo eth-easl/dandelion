@@ -164,6 +164,7 @@ mod tests {
             vec![0].into(),
             vec![],
             vec![],
+            None
         ));
         set.add_blocking_consumer(consumer.clone(), 0, false);
 
@@ -201,6 +202,7 @@ mod tests {
             vec![0].into(),
             vec![],
             vec![],
+            None
         ));
         set.add_non_blocking_consumer(consumer.clone(), 0);
 

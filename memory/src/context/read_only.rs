@@ -65,7 +65,8 @@ impl ReadOnlyContext {
         Ok(Context::new(
             super::ContextType::ReadOnly(Box::new(ReadOnlyContext {
                 storage: new_ref,
-                layout: Some(layout),
+                // a box without content holds a dangling pointer and was never allocated
+                layout: (ref_len != 0).then_some(layout),
             })),
             ref_len,
         ))
