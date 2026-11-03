@@ -294,8 +294,10 @@ pub enum FunctionRegistryError {
     LocalLoadingReceive,
     /// The registration of a metafunction is inconsistent with its input sets
     InvalidMetaInsert(String),
-    /// A metafunction selected a function that cannot be run in its place
-    InvalidSelection(String),
+    /// The composition returned by the planner of a metafunction cannot be run in its place
+    InvalidPlan(String),
+    /// A metafunction was invoked other than by a metafunction application in a composition
+    InvalidMetaInvocation(String),
 }
 
 impl FunctionRegistryError {
@@ -308,7 +310,8 @@ impl FunctionRegistryError {
             | FunctionRegistryError::InvalidUserInsert(msg)
             | FunctionRegistryError::UnknownFunction(msg)
             | FunctionRegistryError::InvalidMetaInsert(msg)
-            | FunctionRegistryError::InvalidSelection(msg) => msg.clone(),
+            | FunctionRegistryError::InvalidPlan(msg)
+            | FunctionRegistryError::InvalidMetaInvocation(msg) => msg.clone(),
             _ => format!("{:?}", self),
         }
     }

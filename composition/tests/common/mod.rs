@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use composition::{Composition, CompositionTemplate, Executor, Registry};
+use composition::{Composition, CompositionTemplate, Executor, MetaApplication, Registry};
 use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, FunctionId,
     FunctionRegistryError,
@@ -32,6 +32,8 @@ pub fn test_context() -> Arc<Context> {
 #[derive(Default)]
 pub struct TestRegistry {
     functions: HashMap<String, (Vec<String>, Vec<String>)>,
+    /// Metafunctions with the params of their planner.
+    meta_functions: HashMap<String, Vec<String>>,
 }
 
 impl TestRegistry {
@@ -47,6 +49,15 @@ impl TestRegistry {
                 params.iter().map(|s| s.to_string()).collect(),
                 returns.iter().map(|s| s.to_string()).collect(),
             ),
+        );
+        self
+    }
+
+    /// Registers a metafunction with the given planner parameter names, builder-style.
+    pub fn with_meta_function(mut self, name: &str, params: &[&str]) -> Self {
+        self.meta_functions.insert(
+            name.to_string(),
+            params.iter().map(|s| s.to_string()).collect(),
         );
         self
     }
@@ -73,8 +84,27 @@ impl Registry for TestRegistry {
         }
     }
 
+    fn check_meta_declaration(&self, id: &str, params: &[&str]) -> DandelionResult<()> {
+        let reg_params = self.meta_functions.get(id).ok_or_else(|| {
+            dandelion_err!(DandelionError::Parsing(format!(
+                "unknown metafunction '{id}' in test registry"
+            )))
+        })?;
+        if reg_params
+            .iter()
+            .map(String::as_str)
+            .eq(params.iter().copied())
+        {
+            Ok(())
+        } else {
+            Err(dandelion_err!(DandelionError::Parsing(format!(
+                "registered signature for '{id}' does not match its declaration"
+            ))))
+        }
+    }
+
     fn id_exists(&self, id: &str) -> bool {
-        self.functions.contains_key(id)
+        self.functions.contains_key(id) || self.meta_functions.contains_key(id)
     }
 
     fn get_min_set_bytes(&self, id: &FunctionId) -> DandelionResult<Vec<usize>> {
@@ -82,6 +112,7 @@ impl Registry for TestRegistry {
             .functions
             .get(id.as_str())
             .map(|(params, _)| vec![0; params.len()])
+            .or_else(|| self.meta_functions.get(id.as_str()).map(|_| vec![]))
         {
             Some(x) => Ok(x),
             None => err_dandelion!(DandelionError::FunctionRegistry(
@@ -123,6 +154,8 @@ pub struct Invocation {
     pub function_id: FunctionId,
     pub composition_idx: usize,
     pub input: Vec<DataSet>,
+    /// Set if the invocation is one of a metafunction application.
+    pub meta: Option<Arc<MetaApplication>>,
 }
 
 /// An `ExecutionQueue` that simply collects all enqueued invocations.
@@ -142,6 +175,23 @@ impl Executor for InvocationQueue {
                 function_id: function_id.clone(),
                 composition_idx,
                 input,
+                meta: None,
+            }));
+    }
+
+    fn enqueue_meta_invocations<T: IntoIterator<Item = Vec<DataSet>>>(
+        &mut self,
+        function_id: FunctionId,
+        composition_idx: usize,
+        application: Arc<MetaApplication>,
+        inv_input_iter: T,
+    ) {
+        self.0
+            .extend(inv_input_iter.into_iter().map(|input| Invocation {
+                function_id: function_id.clone(),
+                composition_idx,
+                input,
+                meta: Some(application.clone()),
             }));
     }
 }

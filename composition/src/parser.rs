@@ -56,6 +56,15 @@ struct FunctionDecl<'src> {
 }
 type SpannedFunctionDecl<'src> = Spanned<FunctionDecl<'src>>;
 
+/// Declaration of a metafunction, which only declares the input sets of the planner. The data
+/// input and output sets are given per application.
+#[derive(Debug)]
+struct MetaFunctionDecl<'src> {
+    name: Ident<'src>,
+    params: Vec<Ident<'src>>,
+}
+type SpannedMetaFunctionDecl<'src> = Spanned<MetaFunctionDecl<'src>>;
+
 #[derive(Debug)]
 struct InputDescriptor<'src> {
     name: Ident<'src>,
@@ -89,6 +98,24 @@ struct FunctionApplication<'src> {
 }
 type SpannedFunctionApplication<'src> = Spanned<FunctionApplication<'src>>;
 
+/// Binds a data set to an input set of the selector of a metafunction.
+#[derive(Debug)]
+struct MetaInputDescriptor<'src> {
+    name: Ident<'src>,
+    ident: Ident<'src>,
+}
+type SpannedMetaInputDescriptor<'src> = Spanned<MetaInputDescriptor<'src>>;
+
+/// Application of a metafunction.
+#[derive(Debug)]
+struct MetaFunctionApplication<'src> {
+    name: Ident<'src>,
+    args: Vec<SpannedMetaInputDescriptor<'src>>,
+    inputs: Vec<Spanned<Ident<'src>>>,
+    outputs: Vec<Spanned<Ident<'src>>>,
+}
+type SpannedMetaFunctionApplication<'src> = Spanned<MetaFunctionApplication<'src>>;
+
 // TODO: not constructed yet - loop_ parser below is not implemented, same as in dparser.
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -111,6 +138,7 @@ type SpannedLoop<'src> = Spanned<Loop<'src>>;
 #[derive(Debug)]
 enum Statement<'src> {
     FunctionApplication(SpannedFunctionApplication<'src>),
+    MetaFunctionApplication(SpannedMetaFunctionApplication<'src>),
     #[allow(dead_code)]
     Loop(SpannedLoop<'src>),
 }
@@ -127,6 +155,7 @@ type SpannedCompositionDecl<'src> = Spanned<CompositionDecl<'src>>;
 #[derive(Debug)]
 enum Item<'src> {
     FunctionDecl(SpannedFunctionDecl<'src>),
+    MetaFunctionDecl(SpannedMetaFunctionDecl<'src>),
     CompositionDecl(SpannedCompositionDecl<'src>),
 }
 
@@ -164,6 +193,20 @@ impl<'src, R: Registry> Parser<'src, R> {
                 params,
                 returns,
             })
+            .map_with(|v, e| Spanned::new(v, e.span().into_range()));
+
+        let meta_function_decl = just("metafunction")
+            .padded_by(pad())
+            .ignore_then(ident().padded_by(pad()))
+            .then(
+                ident()
+                    .padded_by(pad())
+                    .separated_by(just(','))
+                    .collect::<Vec<_>>()
+                    .delimited_by(just('('), just(')')),
+            )
+            .then_ignore(just(";").padded_by(pad()))
+            .map(|(name, params)| MetaFunctionDecl { name, params })
             .map_with(|v, e| Spanned::new(v, e.span().into_range()));
 
         let input_descriptor = ident()
@@ -276,7 +319,46 @@ impl<'src, R: Registry> Parser<'src, R> {
             .map_with(|v, e| Spanned::new(v, e.span().into_range()))
             .map(Statement::FunctionApplication);
 
-        let statement = function_application.then_ignore(just(';').padded_by(pad()));
+        let meta_input_descriptor = ident()
+            .padded_by(pad())
+            .then_ignore(just('=').padded_by(pad()))
+            .then(ident().padded_by(pad()))
+            .map(|(name, ident)| MetaInputDescriptor { name, ident })
+            .map_with(|v, e| Spanned::new(v, e.span().into_range()));
+
+        let set_list = ident()
+            .map_with(|v, e| Spanned::new(v, e.span().into_range()))
+            .padded_by(pad())
+            .separated_by(just(',').padded_by(pad()))
+            .collect::<Vec<_>>()
+            .delimited_by(just('(').padded_by(pad()), just(')').padded_by(pad()));
+
+        let meta_function_application = ident()
+            .then(
+                meta_input_descriptor
+                    .separated_by(just(',').padded_by(pad()))
+                    .collect::<Vec<_>>()
+                    .delimited_by(just('(').padded_by(pad()), just(')').padded_by(pad())),
+            )
+            .then(set_list.clone())
+            .padded_by(pad())
+            .then_ignore(just("=>").padded_by(pad()))
+            .then(set_list)
+            .padded_by(pad())
+            .map(
+                |(((name, args), inputs), outputs)| MetaFunctionApplication {
+                    name,
+                    args,
+                    inputs,
+                    outputs,
+                },
+            )
+            .map_with(|v, e| Spanned::new(v, e.span().into_range()))
+            .map(Statement::MetaFunctionApplication);
+
+        let statement = function_application
+            .or(meta_function_application)
+            .then_ignore(just(';').padded_by(pad()));
 
         // TODO: loop syntax (`loop { input_descriptor* => function_application* => output_descriptor* }`)
         // is not parsed yet.
@@ -317,6 +399,7 @@ impl<'src, R: Registry> Parser<'src, R> {
 
         let parser = (function_decl
             .map(Item::FunctionDecl)
+            .or(meta_function_decl.map(Item::MetaFunctionDecl))
             .or(composition.map(Item::CompositionDecl)))
         .repeated()
         .collect::<Vec<_>>()
@@ -344,6 +427,9 @@ impl<'src, R: Registry> Parser<'src, R> {
         for item in module.0.iter() {
             match item {
                 Item::FunctionDecl(fdecl) => builder.add_declaration(fdecl).map_err(|e| vec![e])?,
+                Item::MetaFunctionDecl(mdecl) => builder
+                    .add_meta_function_declaration(mdecl)
+                    .map_err(|e| vec![e])?,
                 Item::CompositionDecl(cdecl) => {
                     builder.add_composition(cdecl).map_err(|e| vec![e])?
                 }

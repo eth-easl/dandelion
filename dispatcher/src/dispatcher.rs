@@ -1,10 +1,10 @@
 use crate::{
-    function_registry::{FunctionInfo, FunctionRegistry, FunctionType, MetaFunctionInfo},
-    meta_function::{metadata_set, read_selection, SelectorInput},
+    function_registry::{FunctionInfo, FunctionRegistry, FunctionType},
+    meta_function::{input_metadata_set, output_metadata_set, read_composition},
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
-use composition::{AnyShardingMode, Composition, CompositionTemplate, Executor};
+use composition::{AnyShardingMode, Composition, CompositionTemplate, Executor, MetaApplication};
 use dandelion_commons::{
     err_dandelion,
     records::{RecordPoint, Recorder},
@@ -31,9 +31,6 @@ use std::{
     pin::Pin,
     sync::{atomic::AtomicUsize, Arc},
 };
-
-/// Maximum number of selections in a row when metafunctions select other metafunctions.
-const MAX_SELECTION_DEPTH: usize = 8;
 
 type InvocationResult = DandelionResult<(usize, ExecutionOutput)>;
 type InvocationFuture<'a> = Pin<Box<dyn Future<Output = InvocationResult> + Send + 'a>>;
@@ -103,25 +100,9 @@ impl<'a> Executor for CompositionExecutor<'a> {
                     }));
                 }
             }
-            FunctionType::MetaFunction(meta_info) => {
-                for input in inv_input_iter {
-                    let recorder = self.new_child_recorder(&function_id, composition_idx);
-                    let function_id = function_id.clone();
-                    let meta_info = meta_info.clone();
-                    self.awaited.push(Box::pin(async move {
-                        dispatcher
-                            .queue_meta_function(
-                                composition_id,
-                                function_id,
-                                meta_info,
-                                input,
-                                caching,
-                                recorder,
-                            )
-                            .await
-                            .map(|items| (composition_idx, items))
-                    }));
-                }
+            FunctionType::MetaFunction(_) => {
+                self.awaited
+                    .push(Box::pin(future::ready(meta_invocation_error(&function_id))));
             }
             FunctionType::SystemFunction(sys_function) => {
                 for input in inv_input_iter {
@@ -179,6 +160,59 @@ impl<'a> Executor for CompositionExecutor<'a> {
             }
         };
     }
+
+    fn enqueue_meta_invocations<T: IntoIterator<Item = Vec<DataSet>>>(
+        &mut self,
+        function_id: FunctionId,
+        composition_idx: usize,
+        application: Arc<MetaApplication>,
+        inv_input_iter: T,
+    ) {
+        let dispatcher = self.dispatcher;
+        let composition_id = self.composition_id;
+        let caching = self.caching;
+
+        let FunctionType::MetaFunction(planner) = dispatcher
+            .function_registry
+            .get_function(&function_id)
+            .expect("Should never have a lookup for non registered function")
+        else {
+            self.awaited
+                .push(Box::pin(future::ready(meta_invocation_error(&function_id))));
+            return;
+        };
+        for input in inv_input_iter {
+            let recorder = self.new_child_recorder(&function_id, composition_idx);
+            let function_id = function_id.clone();
+            let planner = planner.clone();
+            let application = application.clone();
+            self.awaited.push(Box::pin(async move {
+                dispatcher
+                    .queue_meta_function(
+                        composition_id,
+                        function_id,
+                        planner,
+                        application,
+                        input,
+                        caching,
+                        recorder,
+                    )
+                    .await
+                    .map(|items| (composition_idx, items))
+            }));
+        }
+    }
+}
+
+/// The error for invoking a function as metafunction that is none or vice versa.
+fn meta_invocation_error<T>(function_id: &FunctionId) -> DandelionResult<T> {
+    err_dandelion!(DandelionError::FunctionRegistry(
+        FunctionRegistryError::InvalidMetaInvocation(format!(
+            "{} can only be invoked as metafunction if it is one and only by a metafunction \
+             application in a composition",
+            function_id
+        )),
+    ))
 }
 
 // TODO: Here and in the registry replace Arc<Box<...>> with static references from leaked boxes for
@@ -261,7 +295,6 @@ impl Dispatcher {
         ctx_size: usize,
         path: String,
         metadata: Metadata,
-        metadata_sets: &[String],
     ) -> DandelionResult<()> {
         let function_id = Arc::new(function_name);
         let domain_type = engine_type.get_domain_type();
@@ -272,7 +305,6 @@ impl Dispatcher {
             ctx_size,
             path,
             metadata,
-            metadata_sets,
         )
     }
 
@@ -474,75 +506,107 @@ impl Dispatcher {
         Ok(sets)
     }
 
-    /// Runs a metafunction. Caps maximum "recursion" depth
+    /// Runs a metafunction application: the planner on the planner inputs and the metadata of the
+    /// data inputs and outputs, then the composition it returns on the data inputs.
     async fn queue_meta_function(
         &self,
         composition_id: usize,
-        mut function_id: FunctionId,
-        mut meta_info: MetaFunctionInfo,
-        input_sets: Vec<DataSet>,
+        function_id: FunctionId,
+        planner: FunctionInfo,
+        application: Arc<MetaApplication>,
+        mut input_sets: Vec<DataSet>,
         caching: bool,
         mut recorder: Recorder,
     ) -> DandelionResult<ExecutionOutput> {
-        // one recorder per selector run and one for the selected function
-        let mut children = Vec::new();
-        for _ in 0..MAX_SELECTION_DEPTH {
-            let selector_inputs = input_sets
-                .iter()
-                .zip(meta_info.signature.selector_inputs.iter())
-                .map(|(set, input)| match input {
-                    SelectorInput::Data => Ok(set.clone()),
-                    SelectorInput::Metadata => metadata_set(set),
-                })
-                .collect::<DandelionResult<Vec<_>>>()?;
-            let selector_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
-            children.push(Some(vec![selector_recorder.clone()]));
-            let selector_output = self
-                .queue_compute_function(
-                    composition_id,
-                    function_id.clone(),
-                    meta_info.selector.clone(),
-                    selector_inputs,
-                    caching,
-                    selector_recorder,
-                )
-                .await?;
+        let data_inputs = input_sets.split_off(application.num_planner_inputs);
+        let mut planner_inputs = input_sets;
+        planner_inputs.push(input_metadata_set(&application.input_names, &data_inputs)?);
+        planner_inputs.push(output_metadata_set(&application.output_names)?);
 
-            let selection = read_selection(&selector_output)?;
-            debug!("Metafunction {} selected {}", function_id, selection);
-            // check if all types of the selected function match with the function we're current in
-            self.function_registry
-                .check_selection(&selection, &meta_info)?;
-            function_id = Arc::new(selection);
+        // planner is executed as normal function
+        let planner_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
+        let planner_output = self
+            .queue_compute_function(
+                composition_id,
+                function_id.clone(),
+                planner,
+                planner_inputs,
+                caching,
+                planner_recorder.clone(),
+            )
+            .await?;
+        let (plan_id, plan) = self.parse_plan(
+            &function_id,
+            &read_composition(&planner_output)?,
+            &application,
+        )?;
+        debug!("Metafunction {} planned {}", function_id, plan_id);
 
-            match self.function_registry.get_function(&function_id)? {
-                // if selected function is a metafunction itself, execute it too
-                FunctionType::MetaFunction(next_info) => meta_info = next_info,
-                // if not, do the final execution to obtain actual output sets
-                _ => {
-                    let target_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
-                    children.push(Some(vec![target_recorder.clone()]));
-                    // boxed, as queuing the selection may lead back here
-                    let result = Box::pin(self.queue_function(
-                        composition_id,
-                        function_id,
-                        input_sets,
-                        caching,
-                        target_recorder,
-                    ))
-                    .await;
-                    recorder.add_children(children);
-                    recorder.record(RecordPoint::FutureReturn);
-                    return result;
-                }
+        // upon having obtained the selected composition from the selector, execute it normally via queue_composition
+        let plan_recorder = Recorder::new_from_parent(plan_id, &recorder);
+        let result = self
+            .queue_composition(
+                composition_id,
+                Composition::from_template(
+                    &plan,
+                    self.any_sharding_mode.clone(),
+                    &self.function_registry,
+                ),
+                data_inputs,
+                caching,
+                plan_recorder.clone(),
+            )
+            .await;
+        recorder.add_children(vec![
+            Some(vec![planner_recorder]),
+            Some(vec![plan_recorder]),
+        ]);
+        recorder.record(RecordPoint::FutureReturn);
+        result
+    }
+
+    /// Parses the composition returned by the planner of a metafunction and checks that it takes
+    /// the data inputs and produces the outputs of the application.
+    fn parse_plan(
+        &self,
+        function_id: &FunctionId,
+        plan: &str,
+        application: &MetaApplication,
+    ) -> DandelionResult<(FunctionId, CompositionTemplate)> {
+        let invalid_plan = |reason: String| {
+            err_dandelion!(DandelionError::FunctionRegistry(
+                FunctionRegistryError::InvalidPlan(format!(
+                    "Composition returned by the planner of {} {}",
+                    function_id, reason
+                )),
+            ))
+        };
+        let mut templates = match CompositionTemplate::parse(plan, &self.function_registry) {
+            Ok(templates) => templates,
+            Err(err) => return invalid_plan(format!("failed to parse: {}", err.error)),
+        };
+        let num_compositions = templates.len();
+        let (plan_id, template, metadata) = match templates.pop() {
+            Some(parsed) if num_compositions == 1 => parsed,
+            _ => {
+                return invalid_plan(format!(
+                    "has to contain exactly one composition, found {}",
+                    num_compositions
+                ))
             }
+        };
+        if metadata.input_sets.len() != application.input_names.len()
+            || metadata.output_sets.len() != application.output_names.len()
+        {
+            return invalid_plan(format!(
+                "takes {} input sets and returns {} output sets instead of {} and {}",
+                metadata.input_sets.len(),
+                metadata.output_sets.len(),
+                application.input_names.len(),
+                application.output_names.len()
+            ));
         }
-        err_dandelion!(DandelionError::FunctionRegistry(
-            FunctionRegistryError::InvalidSelection(format!(
-                "Exceeded the maximum of {} selections, last selection was {}",
-                MAX_SELECTION_DEPTH, function_id
-            )),
-        ))
+        Ok((plan_id, template))
     }
 
     /// returns a vector of pairs of a index and a composition set
@@ -581,17 +645,9 @@ impl Dispatcher {
                 )
                 .await
             }
-            FunctionType::MetaFunction(meta_info) => {
-                self.queue_meta_function(
-                    composition_id,
-                    function_id,
-                    meta_info,
-                    input_sets,
-                    caching,
-                    recorder,
-                )
-                .await
-            }
+            // cannot directly run a MetaFunction. To run a metafunction, there needs to be a MetaFunctionApplication.
+            // This can currently only happen in a composition.
+            FunctionType::MetaFunction(_) => meta_invocation_error(&function_id),
             FunctionType::Composition(comp_info) => {
                 self.queue_composition(
                     composition_id,

@@ -6,7 +6,7 @@ use std::{
 use crate::{
     set::CompositionSet,
     sharding::{create_sharding_iter, AnyShardingMode, Sharding},
-    Executor,
+    Executor, MetaApplication,
 };
 use dandelion_commons::FunctionId;
 use log::trace;
@@ -78,6 +78,8 @@ pub(crate) struct Function {
     min_set_bytes: Vec<usize>,
     function_id: FunctionId,
     join_order: Arc<Vec<usize>>,
+    /// Set if the function is a metafunction application.
+    meta: Option<Arc<MetaApplication>>,
 }
 
 impl Function {
@@ -88,6 +90,7 @@ impl Function {
         join_order: Arc<Vec<usize>>,
         outputs: Vec<Option<Arc<CompositionSet>>>,
         mut min_set_bytes: Vec<usize>,
+        meta: Option<Arc<MetaApplication>>,
     ) -> Function {
         min_set_bytes.resize(inputs.len(), 0);
         // TODO: Retention is only needed when more than one input is still streaming. So this could
@@ -131,6 +134,7 @@ impl Function {
             min_set_bytes,
             function_id,
             join_order,
+            meta,
         }
     }
 
@@ -384,27 +388,36 @@ impl Function {
         };
 
         let mut num_created = 0;
-        exec.enqueue_invocations(
-            self.function_id.clone(),
-            self.composition_idx,
-            iter::from_fn(|| {
-                // The sharding iterator starts out on its first element, so only advance after that.
-                // Once `advance` returned false we're done.
-                if num_created > 0 && !iter.advance() {
-                    return None;
-                }
-                let mut input = vec![DataSet::default(); num_sets];
-                iter.fill_in(&mut input);
-                trace!(
-                    "Computed sharding invocation: {}, {}, {:?}",
-                    self.function_id,
-                    self.composition_idx,
-                    input
-                );
-                num_created += 1;
-                Some(input)
-            }),
-        );
+        let inv_input_iter = iter::from_fn(|| {
+            // The sharding iterator starts out on its first element, so only advance after that.
+            // Once `advance` returned false we're done.
+            if num_created > 0 && !iter.advance() {
+                return None;
+            }
+            let mut input = vec![DataSet::default(); num_sets];
+            iter.fill_in(&mut input);
+            trace!(
+                "Computed sharding invocation: {}, {}, {:?}",
+                self.function_id,
+                self.composition_idx,
+                input
+            );
+            num_created += 1;
+            Some(input)
+        });
+        match &self.meta {
+            None => exec.enqueue_invocations(
+                self.function_id.clone(),
+                self.composition_idx,
+                inv_input_iter,
+            ),
+            Some(application) => exec.enqueue_meta_invocations(
+                self.function_id.clone(),
+                self.composition_idx,
+                application.clone(),
+                inv_input_iter,
+            ),
+        }
         num_created
     }
 
@@ -470,6 +483,16 @@ mod tests {
                 input,
             }));
         }
+
+        fn enqueue_meta_invocations<T: IntoIterator<Item = Vec<DataSet>>>(
+            &mut self,
+            function_id: FunctionId,
+            composition_idx: usize,
+            _application: Arc<MetaApplication>,
+            inv_input_iter: T,
+        ) {
+            self.enqueue_invocations(function_id, composition_idx, inv_input_iter);
+        }
     }
     use memory::{data::Position, Context, LocalData};
 
@@ -528,6 +551,7 @@ mod tests {
             vec![0].into(),
             vec![None],
             vec![0],
+            None
         ));
         input_set.add_blocking_consumer(function.clone(), 0, false);
 
@@ -557,6 +581,7 @@ mod tests {
             vec![0, 1].into(),
             vec![None],
             vec![0, 0],
+            None
         ));
         all_set.add_blocking_consumer(function.clone(), 0, false);
         each_set.add_non_blocking_consumer(function.clone(), 1);
@@ -609,6 +634,7 @@ mod tests {
             vec![0].into(),
             vec![Some(output_set.clone())],
             vec![0],
+            None
         ));
         input_set.add_blocking_consumer(function.clone(), 0, false);
 
@@ -639,6 +665,7 @@ mod tests {
             vec![0].into(),
             vec![None],
             vec![0],
+            None
         ));
         input_set.add_blocking_consumer(function.clone(), 0, false);
 
@@ -664,6 +691,7 @@ mod tests {
             vec![0, 1].into(),
             vec![None],
             vec![0, 0],
+            None
         ));
         set_a.add_non_blocking_consumer(function.clone(), 0);
         set_b.add_non_blocking_consumer(function.clone(), 1);
@@ -707,6 +735,7 @@ mod tests {
             vec![0, 1].into(),
             vec![None],
             vec![0, 0],
+            None
         ));
         set_a.add_non_blocking_consumer(function.clone(), 0);
         set_b.add_non_blocking_consumer(function.clone(), 1);
