@@ -6,7 +6,7 @@ use std::{
 use crate::{
     set::CompositionSet,
     sharding::{create_sharding_iter, AnyShardingMode, Sharding},
-    Executor,
+    Executor, MetaApplication,
 };
 use dandelion_commons::FunctionId;
 use log::trace;
@@ -53,6 +53,8 @@ pub(crate) struct Function {
     min_set_bytes: Vec<usize>,
     function_id: FunctionId,
     join_order: Arc<Vec<usize>>,
+    /// Set if the function is a metafunction application.
+    meta: Option<Arc<MetaApplication>>,
 }
 
 impl Function {
@@ -60,6 +62,7 @@ impl Function {
         idx: usize,
         function_id: FunctionId,
         join_order: Arc<Vec<usize>>,
+        meta: Option<Arc<MetaApplication>>,
     ) -> Function {
         Function {
             composition_idx: idx,
@@ -74,6 +77,7 @@ impl Function {
             min_set_bytes: vec![],
             function_id,
             join_order,
+            meta,
         }
     }
 
@@ -292,27 +296,36 @@ impl Function {
         };
 
         let mut num_created = 0;
-        exec.enqueue_invocations(
-            self.function_id.clone(),
-            self.composition_idx,
-            iter::from_fn(|| {
-                // The sharding iterator starts out on its first element, so only advance after that.
-                // Once `advance` returned false we're done.
-                if num_created > 0 && !iter.advance() {
-                    return None;
-                }
-                let mut input = vec![DataSet::default(); num_sets];
-                iter.fill_in(&mut input);
-                trace!(
-                    "Computed sharding invocation: {}, {}, {:?}",
-                    self.function_id,
-                    self.composition_idx,
-                    input
-                );
-                num_created += 1;
-                Some(input)
-            }),
-        );
+        let inv_input_iter = iter::from_fn(|| {
+            // The sharding iterator starts out on its first element, so only advance after that.
+            // Once `advance` returned false we're done.
+            if num_created > 0 && !iter.advance() {
+                return None;
+            }
+            let mut input = vec![DataSet::default(); num_sets];
+            iter.fill_in(&mut input);
+            trace!(
+                "Computed sharding invocation: {}, {}, {:?}",
+                self.function_id,
+                self.composition_idx,
+                input
+            );
+            num_created += 1;
+            Some(input)
+        });
+        match &self.meta {
+            None => exec.enqueue_invocations(
+                self.function_id.clone(),
+                self.composition_idx,
+                inv_input_iter,
+            ),
+            Some(application) => exec.enqueue_meta_invocations(
+                self.function_id.clone(),
+                self.composition_idx,
+                application.clone(),
+                inv_input_iter,
+            ),
+        }
         num_created
     }
 
@@ -378,6 +391,16 @@ mod tests {
                 input,
             }));
         }
+
+        fn enqueue_meta_invocations<T: IntoIterator<Item = Vec<DataSet>>>(
+            &mut self,
+            function_id: FunctionId,
+            composition_idx: usize,
+            _application: Arc<MetaApplication>,
+            inv_input_iter: T,
+        ) {
+            self.enqueue_invocations(function_id, composition_idx, inv_input_iter);
+        }
     }
     use memory::{data::Position, Context, LocalData};
 
@@ -430,7 +453,7 @@ mod tests {
     #[test]
     fn blocking_input_defers_invocation_until_complete() {
         let input_set = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0].into());
+        let mut function = Function::new(0, fid("F"), vec![0].into(), None);
         function.update_io(&[Some((Sharding::All, false))], vec![None], vec![0]);
         let function = Arc::new(function);
         input_set.add_blocking_consumer(function.clone(), 0, false);
@@ -451,7 +474,7 @@ mod tests {
     fn all_input_combines_with_each_input_producing_one_invocation_per_each_item() {
         let all_set = Arc::new(CompositionSet::new());
         let each_set = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0, 1].into());
+        let mut function = Function::new(0, fid("F"), vec![0, 1].into(), None);
         function.update_io(
             &[Some((Sharding::All, false)), Some((Sharding::Each, false))],
             vec![None],
@@ -501,7 +524,7 @@ mod tests {
         let input_set = Arc::new(CompositionSet::new());
         let output_set = Arc::new(CompositionSet::new());
         output_set.mark_retained();
-        let mut function = Function::new(0, fid("F"), vec![0].into());
+        let mut function = Function::new(0, fid("F"), vec![0].into(), None);
         function.update_io(
             &[Some((Sharding::All, false))],
             vec![Some(output_set.clone())],
@@ -530,7 +553,7 @@ mod tests {
     #[test]
     fn non_optional_empty_input_skips_invocation_but_still_completes() {
         let input_set = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0].into());
+        let mut function = Function::new(0, fid("F"), vec![0].into(), None);
         function.update_io(&[Some((Sharding::All, false))], vec![None], vec![0]);
         let function = Arc::new(function);
         input_set.add_blocking_consumer(function.clone(), 0, false);
@@ -547,7 +570,7 @@ mod tests {
     fn two_each_inputs_only_combine_once_both_have_items() {
         let set_a = Arc::new(CompositionSet::new());
         let set_b = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0, 1].into());
+        let mut function = Function::new(0, fid("F"), vec![0, 1].into(), None);
         function.update_io(
             &[Some((Sharding::Each, false)), Some((Sharding::Each, false))],
             vec![None],
@@ -586,7 +609,7 @@ mod tests {
     fn each_each_second_input_arriving_first_is_not_lost() {
         let set_a = Arc::new(CompositionSet::new());
         let set_b = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0, 1].into());
+        let mut function = Function::new(0, fid("F"), vec![0, 1].into(), None);
         function.update_io(
             &[Some((Sharding::Each, false)), Some((Sharding::Each, false))],
             vec![None],

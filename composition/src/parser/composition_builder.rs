@@ -8,11 +8,12 @@ use memory::data::Metadata;
 
 use crate::{
     parser::{
-        ErrorDiagnostic, FunctionDecl, Registry, Span, SpannedCompositionDecl,
-        SpannedFunctionApplication, SpannedFunctionDecl, Statement,
+        ErrorDiagnostic, FunctionDecl, MetaFunctionDecl, Registry, Span, SpannedCompositionDecl,
+        SpannedFunctionApplication, SpannedFunctionDecl, SpannedMetaFunctionApplication,
+        SpannedMetaFunctionDecl, Statement,
     },
     sharding::{JoinStrategy, Sharding},
-    CompositionTemplate, FunctionTemplate, InputSetTemplate,
+    CompositionTemplate, FunctionTemplate, InputSetTemplate, MetaApplication,
 };
 
 /// Builds the compositions from the parser outputs validating them and building the correct join
@@ -20,6 +21,7 @@ use crate::{
 pub(super) struct CompositionBuilder<'src, R: Registry> {
     registry: &'src R,
     declared_functions: HashMap<&'src str, &'src FunctionDecl<'src>>,
+    declared_meta_functions: HashMap<&'src str, &'src MetaFunctionDecl<'src>>,
     composition_ids: HashSet<&'src str>,
     compositions: Vec<(FunctionId, CompositionTemplate, Metadata)>,
 }
@@ -29,6 +31,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         CompositionBuilder {
             registry,
             declared_functions: HashMap::new(),
+            declared_meta_functions: HashMap::new(),
             composition_ids: HashSet::new(),
             compositions: Vec::new(),
         }
@@ -43,6 +46,113 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             .map_err(|err| ErrorDiagnostic::new(decl.span.clone(), err))?;
         self.declared_functions.insert(decl.v.name, &decl.v);
         Ok(())
+    }
+
+    pub(super) fn add_meta_function_declaration(
+        &mut self,
+        decl: &'src SpannedMetaFunctionDecl<'src>,
+    ) -> Result<(), ErrorDiagnostic> {
+        self.registry
+            .check_meta_declaration(decl.v.name, &decl.v.params)
+            .map_err(|err| ErrorDiagnostic::new(decl.span.clone(), err))?;
+        self.declared_meta_functions.insert(decl.v.name, &decl.v);
+        Ok(())
+    }
+
+    /// Builds the function template of a metafunction application, validating it against its
+    /// declaration and the sets available in the composition. Its params are the selector params in
+    /// declaration order followed by the data inputs, all of which are needed.
+    fn process_meta_function_application(
+        &mut self,
+        mappl: &SpannedMetaFunctionApplication,
+        data_set_ids: &HashMap<&str, usize>,
+    ) -> Result<FunctionTemplate, ErrorDiagnostic> {
+        let mdecl = self
+            .declared_meta_functions
+            .get(&mappl.v.name)
+            .ok_or_else(|| {
+                ErrorDiagnostic::new(
+                    mappl.span.clone(),
+                    dandelion_err!(DandelionError::Composition(
+                        CompositionError::UnknownFunction(format!(
+                            "Unknown metafunction '{}'.",
+                            mappl.v.name
+                        ))
+                    )),
+                )
+            })?;
+        let undefined_set = |span: &Span, set: &str, usage: String| {
+            ErrorDiagnostic::new(
+                span.clone(),
+                dandelion_err!(DandelionError::Composition(
+                    CompositionError::UndefinedDataSet(format!(
+                        "Could not find data set {} used as {} in metafunction {}.",
+                        set, usage, mappl.v.name
+                    ))
+                )),
+            )
+        };
+        let num_planner_inputs = mdecl.params.len();
+        let mut params = vec![None; num_planner_inputs];
+        for arg in mappl.v.args.iter() {
+            let Some(arg_set_idx) = mdecl
+                .params
+                .iter()
+                .position(|param_name| arg.v.name == *param_name)
+            else {
+                return Err(ErrorDiagnostic::new(
+                    arg.span.clone(),
+                    dandelion_err!(DandelionError::Composition(
+                        CompositionError::InvalidFunctionApplication(format!(
+                        "Argument {} does not match any of the declared arguments for metafunction {}.",
+                        arg.v.name, mappl.v.name
+                    ))
+                    )),
+                ));
+            };
+            let set_idx = data_set_ids.get(arg.v.ident).ok_or_else(|| {
+                undefined_set(
+                    &arg.span,
+                    arg.v.ident,
+                    format!("input for argument {}", arg.v.name),
+                )
+            })?;
+            params[arg_set_idx] = Some(InputSetTemplate {
+                set_idx: *set_idx,
+                sharding: Sharding::All,
+                optional: false,
+            });
+        }
+        for input in mappl.v.inputs.iter() {
+            let set_idx = data_set_ids
+                .get(input.v)
+                .ok_or_else(|| undefined_set(&input.span, input.v, String::from("input")))?;
+            // the planner also runs on empty data inputs, it sees them in the metadata
+            params.push(Some(InputSetTemplate {
+                set_idx: *set_idx,
+                sharding: Sharding::All,
+                optional: true,
+            }));
+        }
+        // outputs were already registered with the other return sets
+        let returns = mappl
+            .v
+            .outputs
+            .iter()
+            .map(|output| Some(data_set_ids[output.v]))
+            .collect();
+
+        Ok(FunctionTemplate {
+            id: Arc::new(mdecl.name.to_string()),
+            join_order: Arc::new((0..params.len()).collect()),
+            params,
+            returns,
+            meta: Some(Arc::new(MetaApplication {
+                num_planner_inputs,
+                input_names: mappl.v.inputs.iter().map(|i| i.v.to_string()).collect(),
+                output_names: mappl.v.outputs.iter().map(|o| o.v.to_string()).collect(),
+            })),
+        })
     }
 
     fn process_function_application(
@@ -269,6 +379,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             params: input_templates,
             join_order: Arc::new(join_order),
             returns: outputs,
+            meta: None,
         })
     }
 
@@ -332,34 +443,46 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
 
         // add all return sets from functions
         for statement in comp.v.statements.iter() {
-            match statement {
-                Statement::FunctionApplication(spanned_fa) => {
-                    for ret in spanned_fa.v.rets.iter() {
-                        match data_set_ids.entry(ret.v.ident) {
-                            Entry::Vacant(v) => {
-                                v.insert(data_set_counter);
-                                data_set_counter += 1;
-                            }
-                            Entry::Occupied(o) => {
-                                if output_sets_start <= *o.get() && *o.get() < output_end_idx {
-                                    continue;
-                                } else {
-                                    return Err(ErrorDiagnostic::new(
-                                        ret.span.clone(),
-                                        dandelion_err!(DandelionError::Composition(
-                                            CompositionError::DuplicateSetName(format!(
-                                                "Duplicate set name '{}'.",
-                                                ret.v.ident
-                                            ))
-                                        )),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
+            let rets: Vec<(&str, &Span)> = match statement {
+                Statement::FunctionApplication(spanned_fa) => spanned_fa
+                    .v
+                    .rets
+                    .iter()
+                    .map(|ret| (ret.v.ident, &ret.span))
+                    .collect(),
+                Statement::MetaFunctionApplication(spanned_ma) => spanned_ma
+                    .v
+                    .outputs
+                    .iter()
+                    .map(|output| (output.v, &output.span))
+                    .collect(),
                 Statement::Loop(_) => {
                     todo!("loop semantics need to be fleshed out and compositions extended to acomodate them");
+                }
+            };
+
+            // check uniqueness of all return sets
+            for (ret_ident, ret_span) in rets {
+                match data_set_ids.entry(ret_ident) {
+                    Entry::Vacant(v) => {
+                        v.insert(data_set_counter);
+                        data_set_counter += 1;
+                    }
+                    Entry::Occupied(o) => {
+                        if output_sets_start <= *o.get() && *o.get() < output_end_idx {
+                            continue;
+                        } else {
+                            return Err(ErrorDiagnostic::new(
+                                ret_span.clone(),
+                                dandelion_err!(DandelionError::Composition(
+                                    CompositionError::DuplicateSetName(format!(
+                                        "Duplicate set name '{}'.",
+                                        ret_ident
+                                    ))
+                                )),
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -372,6 +495,9 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             .map(|statement| match statement {
                 Statement::FunctionApplication(fappl) => {
                     self.process_function_application(fappl, &mut data_set_ids)
+                }
+                Statement::MetaFunctionApplication(mappl) => {
+                    self.process_meta_function_application(mappl, &data_set_ids)
                 }
                 Statement::Loop(_) => {
                     todo!("Need to implement loop support in compositions")
@@ -475,6 +601,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                             .collect();
                         let span = match &function_spans[succ] {
                             Statement::FunctionApplication(fappl) => fappl.span.clone(),
+                            Statement::MetaFunctionApplication(mappl) => mappl.span.clone(),
                             Statement::Loop(_) => {
                                 todo!("Need to implement loop support in compositions")
                             }

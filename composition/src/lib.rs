@@ -24,6 +24,8 @@ use memory::{
 pub trait Registry {
     /// Confirms the declared function is registered with matching params and returns.
     fn check_declaration(&self, id: &str, params: &[&str], rets: &[&str]) -> DandelionResult<()>;
+    /// Confirms the declared metafunction is registered with a selector taking matching params.
+    fn check_meta_declaration(&self, id: &str, params: &[&str]) -> DandelionResult<()>;
     /// Simple lookup whether an identifier is already registered.
     fn id_exists(&self, id: &str) -> bool;
     /// Get min_set_bytes for a function.
@@ -39,6 +41,26 @@ pub trait Executor {
         composition_idx: usize,
         inv_input_iter: T,
     );
+    /// Enqueues invocations of a metafunction application from an iterator over the invocation's
+    /// input sets.
+    fn enqueue_meta_invocations<T: IntoIterator<Item = Vec<DataSet>>>(
+        &mut self,
+        function_id: FunctionId,
+        composition_idx: usize,
+        application: Arc<MetaApplication>,
+        inv_input_iter: T,
+    );
+}
+
+/// The input sets of its invocations are the selector inputs followed by the data inputs.
+#[derive(Debug)]
+pub struct MetaApplication {
+    /// Number of selector inputs at the start of the input sets.
+    pub num_planner_inputs: usize,
+    /// Names of the data input sets in the composition applying the metafunction.
+    pub input_names: Vec<String>,
+    /// Names of the output sets in the composition applying the metafunction.
+    pub output_names: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -54,6 +76,8 @@ pub(crate) struct FunctionTemplate {
     params: Vec<Option<InputSetTemplate>>,
     join_order: Arc<Vec<usize>>,
     returns: Vec<Option<usize>>,
+    /// Set if the function is a metafunction application.
+    meta: Option<Arc<MetaApplication>>,
 }
 
 #[derive(Debug)]
@@ -128,7 +152,7 @@ impl Composition {
 
         let mut functions = Vec::with_capacity(template.functions.len());
         for (i, f) in template.functions.iter().enumerate() {
-            let mut function = Function::new(i, f.id.clone(), f.join_order.clone());
+            let mut function = Function::new(i, f.id.clone(), f.join_order.clone(), f.meta.clone());
             let mut inputs = Vec::with_capacity(f.params.len());
             for in_opt in f.params.iter() {
                 if let Some(in_templ) = in_opt {

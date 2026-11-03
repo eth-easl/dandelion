@@ -1,7 +1,7 @@
-use crate::meta_function::{SelectorInput, SELECTION_SET};
-use composition::{CompositionTemplate, Registry};
+use crate::meta_function::{COMPOSITION_SET, INPUT_METADATA_SET, OUTPUT_METADATA_SET};
+use composition::CompositionTemplate;
 use dandelion_commons::{
-    dandelion_err, err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
+    err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
     FunctionRegistryError, SystemFunction,
 };
 use itertools::Itertools;
@@ -48,25 +48,6 @@ impl FunctionInfo {
     }
 }
 
-/// What a metafunction adds on top of its selector
-#[derive(Debug)]
-pub struct MetaSignature {
-    /// How each input set is passed to the selector, in input set order.
-    pub selector_inputs: Vec<SelectorInput>,
-    /// The output sets of the metafunction, which the selected function has to produce.
-    pub output_sets: Vec<String>,
-}
-
-/// Struct holding a metafunction. This struct can be cloned cheaply and given to the
-/// dispatcher for function execution.
-#[derive(Debug, Clone)]
-pub struct MetaFunctionInfo {
-    /// The selector, its metadata holds the input sets of the metafunction and the
-    /// [`SELECTION_SET`] as the only output set.
-    pub selector: FunctionInfo,
-    pub signature: Arc<MetaSignature>,
-}
-
 /// Struct holding the parsed composition and corresponding metadata. This struct
 /// can be cloned cheaply and given to the scheduler for function execution.
 #[derive(Debug, Clone)]
@@ -83,8 +64,8 @@ pub enum FunctionType {
     SystemFunction(SystemFunction),
     /// A user defined function.
     Function(FunctionInfo),
-    /// A user defined function selecting the function to run on its inputs.
-    MetaFunction(MetaFunctionInfo),
+    /// A user defined meta function.
+    MetaFunction(FunctionInfo),
     /// A composition of functions.
     Composition(CompositionInfo),
 }
@@ -92,19 +73,19 @@ pub enum FunctionType {
 /// A `BTreeMap` linking function identifiers to function types.
 type FunctionMap = BTreeMap<String, FunctionType>;
 
-// inserts the function into the function map, as metafunction if a signature is given
+// inserts the function into the function map, as selector of a metafunction if is_meta is set
 fn fmap_insert_function(
     fmap: &mut FunctionMap,
     key: FunctionId,
     func_alt: FunctionAlternative,
     func_meta: Metadata,
-    meta: Option<MetaSignature>,
+    is_meta: bool,
 ) -> DandelionResult<()> {
     match fmap.get(&(*key)) {
         Some(entry) => {
-            let func_info = match (entry, &meta) {
-                (FunctionType::Function(info), None) => info,
-                (FunctionType::MetaFunction(info), Some(_)) => &info.selector,
+            let func_info = match (entry, is_meta) {
+                (FunctionType::Function(info), false) => info,
+                (FunctionType::MetaFunction(info), true) => info,
                 (FunctionType::SystemFunction(_), _) => {
                     return err_dandelion!(DandelionError::FunctionRegistry(
                         FunctionRegistryError::InvalidSystemInsert((*key).clone()),
@@ -135,12 +116,9 @@ fn fmap_insert_function(
                 alternatives: Arc::new(RwLock::new(vec![Arc::new(func_alt)])),
                 metadata: Arc::new(func_meta),
             };
-            let entry = match meta {
-                None => FunctionType::Function(func_info),
-                Some(signature) => FunctionType::MetaFunction(MetaFunctionInfo {
-                    selector: func_info,
-                    signature: Arc::new(signature),
-                }),
+            let entry = match is_meta {
+                false => FunctionType::Function(func_info),
+                true => FunctionType::MetaFunction(func_info),
             };
             fmap.insert((*key).clone(), entry);
         }
@@ -243,11 +221,12 @@ impl FunctionRegistry {
             context_size,
             path,
             metadata,
-            None,
+            false,
         )
     }
 
-    /// Inserts a metafunction into the function registry
+    /// Inserts the selector of a metafunction into the function registry. The metadata holds the
+    /// selector params as input sets and no output sets, the sets passed to every selector are added.
     pub fn insert_meta_function(
         &self,
         function_id: FunctionId,
@@ -256,36 +235,37 @@ impl FunctionRegistry {
         context_size: usize,
         path: String,
         mut metadata: Metadata,
-        metadata_sets: &[String],
     ) -> DandelionResult<()> {
-        if let Some(unknown) = metadata_sets
-            .iter()
-            .find(|name| !metadata.input_sets.iter().any(|(input, _)| input == *name))
-        {
+        if !metadata.output_sets.is_empty() {
             return err_dandelion!(DandelionError::FunctionRegistry(
                 FunctionRegistryError::InvalidMetaInsert(format!(
-                    "Metadata set {} is not an input set of {}",
-                    unknown, function_id
+                    "Metafunction {} cannot have output sets, its selector returns the '{}' set",
+                    function_id, COMPOSITION_SET
                 )),
             ));
         }
-        let selector_inputs = metadata
+
+        // TODO: currently we're simply creating new input sets to pass the metadata. Maybe we can pass these things 
+        // via the metadata we're passing anyways to avoid having to create input sets behind the scenes
+        if let Some((reserved, _)) = metadata
             .input_sets
             .iter()
-            .map(|(name, static_set)| match metadata_sets.contains(name) {
-                // a static set always replaces the input, so there is no input to describe
-                true if static_set.is_some() => err_dandelion!(DandelionError::FunctionRegistry(
-                    FunctionRegistryError::InvalidMetaInsert(format!(
-                        "Metadata set {} of {} has static data",
-                        name, function_id
-                    )),
+            .find(|(name, _)| name == INPUT_METADATA_SET || name == OUTPUT_METADATA_SET)
+        {
+            return err_dandelion!(DandelionError::FunctionRegistry(
+                FunctionRegistryError::InvalidMetaInsert(format!(
+                    "Input set {} of metafunction {} is reserved for the selector",
+                    reserved, function_id
                 )),
-                true => Ok(SelectorInput::Metadata),
-                false => Ok(SelectorInput::Data),
-            })
-            .collect::<DandelionResult<_>>()?;
-        let output_sets =
-            std::mem::replace(&mut metadata.output_sets, vec![SELECTION_SET.to_string()]);
+            ));
+        }
+        metadata
+            .input_sets
+            .push((INPUT_METADATA_SET.to_string(), None));
+        metadata
+            .input_sets
+            .push((OUTPUT_METADATA_SET.to_string(), None));
+        metadata.output_sets = vec![COMPOSITION_SET.to_string()];
         self.insert_alternative(
             function_id,
             engine_type,
@@ -293,42 +273,8 @@ impl FunctionRegistry {
             context_size,
             path,
             metadata,
-            Some(MetaSignature {
-                selector_inputs,
-                output_sets,
-            }),
+            true,
         )
-    }
-
-    /// Checks that the function selected by a metafunction can be run in its place / has
-    /// the same input and output sets.
-    pub fn check_selection(
-        &self,
-        selection: &str,
-        meta_info: &MetaFunctionInfo,
-    ) -> DandelionResult<()> {
-        let params = meta_info
-            .selector
-            .metadata
-            .input_sets
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect_vec();
-        let returns = meta_info
-            .signature
-            .output_sets
-            .iter()
-            .map(String::as_str)
-            .collect_vec();
-        self.check_declaration(selection, &params, &returns)
-            .map_err(|err| {
-                dandelion_err!(DandelionError::FunctionRegistry(
-                    FunctionRegistryError::InvalidSelection(format!(
-                        "Selected function {} cannot replace the metafunction: {}",
-                        selection, err
-                    ))
-                ))
-            })
     }
 
     fn insert_alternative(
@@ -339,7 +285,7 @@ impl FunctionRegistry {
         context_size: usize,
         path: String,
         metadata: Metadata,
-        meta: Option<MetaSignature>,
+        is_meta: bool,
     ) -> DandelionResult<()> {
         // check that path exists
         if !Path::new(&path).exists() {
@@ -365,7 +311,7 @@ impl FunctionRegistry {
             .function_map
             .write()
             .expect("Function registry lock poisoned!");
-        fmap_insert_function(&mut lock_guard, function_id, func_alt, metadata, meta)
+        fmap_insert_function(&mut lock_guard, function_id, func_alt, metadata, is_meta)
     }
 
     /// Inserts the composition into the function registry.
@@ -408,10 +354,14 @@ impl composition::Registry for FunctionRegistry {
                     &func_info.metadata.input_sets,
                     &func_info.metadata.output_sets,
                 ),
-                FunctionType::MetaFunction(meta_info) => (
-                    &meta_info.selector.metadata.input_sets,
-                    &meta_info.signature.output_sets,
-                ),
+                FunctionType::MetaFunction(_) => {
+                    return err_dandelion!(DandelionError::Composition(
+                        CompositionError::InvalidFunctionDeclaration(format!(
+                            "{} is a metafunction and has to be declared as such",
+                            id
+                        )),
+                    ))
+                }
                 FunctionType::Composition(comp_info) => (
                     &comp_info.metadata.input_sets,
                     &comp_info.metadata.output_sets,
@@ -460,6 +410,50 @@ impl composition::Registry for FunctionRegistry {
         Ok(())
     }
 
+    /// Confirms the declared metafunction is registered with a selector taking matching params.
+    fn check_meta_declaration(&self, id: &str, params: &[&str]) -> DandelionResult<()> {
+        let lock_guard = self
+            .function_map
+            .read()
+            .expect("Function registry lock poisoned!");
+        let selector = match lock_guard.get(id) {
+            Some(FunctionType::MetaFunction(selector)) => selector,
+            Some(_) => {
+                return err_dandelion!(DandelionError::Composition(
+                    CompositionError::InvalidFunctionDeclaration(format!(
+                        "{} is not a metafunction",
+                        id
+                    )),
+                ))
+            }
+            None => {
+                return err_dandelion!(DandelionError::Composition(
+                    CompositionError::InvalidFunctionDeclaration(format!(
+                        "Unknown metafunction {}",
+                        id
+                    )),
+                ))
+            }
+        };
+        // the last two input sets are the metadata sets added at registration
+        let input_sets = &selector.metadata.input_sets;
+        let selector_params = &input_sets[..input_sets.len() - 2];
+        if params.len() != selector_params.len()
+            || params
+                .iter()
+                .zip_eq(selector_params.iter())
+                .any(|(decl_name, (metadata_name, _))| *decl_name != *metadata_name)
+        {
+            return err_dandelion!(DandelionError::Composition(
+                CompositionError::InvalidFunctionDeclaration(format!(
+                    "Metafunction arguments do not match registration for metafunction {}.",
+                    id
+                )),
+            ));
+        }
+        Ok(())
+    }
+
     /// Simple lookup whether an identifier is already registered.
     fn id_exists(&self, id: &str) -> bool {
         let lock_guard = self
@@ -478,9 +472,7 @@ impl composition::Registry for FunctionRegistry {
         match lock_guard.get(&(**id)) {
             Some(func_type) => match func_type {
                 FunctionType::Function(func_info) => Ok(func_info.metadata.min_set_bytes.clone()),
-                FunctionType::MetaFunction(meta_info) => {
-                    Ok(meta_info.selector.metadata.min_set_bytes.clone())
-                }
+                FunctionType::MetaFunction(planner) => Ok(planner.metadata.min_set_bytes.clone()),
                 FunctionType::Composition(comp_info) => {
                     Ok(comp_info.metadata.min_set_bytes.clone())
                 }

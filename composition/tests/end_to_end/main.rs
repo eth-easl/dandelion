@@ -7,5 +7,6 @@
 mod common;
 
 mod concurrency;
+mod meta_function;
 mod sharding;
 mod simple;
