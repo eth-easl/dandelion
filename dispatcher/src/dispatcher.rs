@@ -542,7 +542,7 @@ impl Dispatcher {
         )?;
         debug!("Metafunction {} planned {}", function_id, plan_id);
 
-        // upon having obtained the selected composition from the selector, execute it normally via queue_composition
+        // the composition returned by the planner is executed normally via queue_composition
         let plan_recorder = Recorder::new_from_parent(plan_id, &recorder);
         let result = self
             .queue_composition(

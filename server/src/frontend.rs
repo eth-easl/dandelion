@@ -52,8 +52,8 @@ struct RegisterFunction {
     /// value of > 0) the JoinIterator will combine any sets to achieve this size best-effort.
     #[serde(default)]
     min_set_bytes: Vec<usize>,
-    /// Whether the binary is the selector of a metafunction, which returns the composition to run
-    /// in its place. The input sets are the selector params and there are no output sets.
+    /// Whether the binary is the planner of a metafunction, which returns the composition to run
+    /// in its place. The input sets are the planner params and there are no output sets.
     #[serde(default)]
     meta_function: bool,
 }

@@ -60,7 +60,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
     }
 
     /// Builds the function template of a metafunction application, validating it against its
-    /// declaration and the sets available in the composition. Its params are the selector params in
+    /// declaration and the sets available in the composition. Its params are the planner params in
     /// declaration order followed by the data inputs, all of which are needed.
     fn process_meta_function_application(
         &mut self,
