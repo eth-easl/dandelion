@@ -40,7 +40,7 @@ impl EngineWorkQueue for TestQueue {
         (work, debt, Some(0))
     }
 
-    fn requeu_engine_args(
+    fn reenqueue_engine_args(
         &self,
         _work: WorkToDo,
         _debt: crate::promise::Debt,

@@ -5,16 +5,19 @@ mod dispatcher_tests {
 
     mod combination_tests;
 
-    use dandelion_commons::FunctionId;
+    use composition::AnyShardingMode;
+    use dandelion_commons::{records::Recorder, FunctionId};
     use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
-        composition::{AnyShardingMode, CompositionSet, ItemData},
-        function_driver::{ComputeResource, Metadata},
+        function_driver::ComputeResource,
         machine_config::{DomainType, EngineType},
-        memory_domain::{ContextTrait, MemoryResource},
-        DataItem,
     };
-    use std::{collections::BTreeMap, sync::Arc};
+    use memory::{
+        context::{ContextTrait, MemoryResource},
+        data::Metadata,
+        DataItem, DataSet,
+    };
+    use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
     const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
@@ -25,7 +28,7 @@ mod dispatcher_tests {
 
     fn setup_dispatcher(
         name: &str,
-        in_set_names: Vec<(String, Option<CompositionSet>)>,
+        in_set_names: Vec<(String, Option<DataSet>)>,
         out_set_names: Vec<String>,
         engine_type: EngineType,
         engine_resource: Vec<ComputeResource>,
@@ -37,10 +40,7 @@ mod dispatcher_tests {
         path.push(name);
         let path_string = path.to_str().expect("Path should be string").to_string();
         let metadata = Metadata {
-            input_sets: in_set_names
-                .into_iter()
-                .map(|(name, set_option)| (name, set_option.map(|set| set.into_local())))
-                .collect(),
+            input_sets: in_set_names,
             output_sets: out_set_names,
             min_set_bytes: vec![],
         };
@@ -75,12 +75,35 @@ mod dispatcher_tests {
         (dispatcher, function_id)
     }
 
-    fn check_matrix(data: &ItemData, item: &DataItem, rows: u64, expected: Vec<u64>) {
-        let context = match data {
-            ItemData::LocalData(context) => context,
-            _ => panic!("Should not get non local item data"),
-        };
-        let out_mat_position = item.data;
+    /// Parses `composition` (which must contain exactly one composition) and runs it to completion
+    /// on the given inputs, returning the (resolved) output sets.
+    fn run_composition(
+        dispatcher: &Dispatcher,
+        composition: &str,
+        inputs: Vec<DataSet>,
+    ) -> Vec<Arc<Vec<DataItem>>> {
+        let recorder = Recorder::new(zero_id(), Instant::now());
+        let result = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(dispatcher.queue_unregistered_composition(
+                composition.to_string(),
+                inputs,
+                false,
+                recorder,
+            ));
+        match result {
+            Ok((out_sets, _)) => out_sets,
+            Err(err) => panic!("Failed with: {:?}", err),
+        }
+    }
+
+    fn check_matrix(item: &DataItem, rows: u64, expected: Vec<u64>) {
+        let local = item
+            .local_ref()
+            .expect("Should not get non local item data");
+        let context = &local.ctx;
+        let out_mat_position = local.pos;
         let mut out_mat = Vec::<u64>::new();
         assert_eq!((expected.len() + 1) * 8, out_mat_position.size);
         out_mat.resize(expected.len() + 1, 0);
@@ -194,8 +217,8 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::MemoryResource,
         };
+        use memory::context::MemoryResource;
         dispatcherTests!(elf_cheri; (DomainType::Cheri, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Cheri; vec![ComputeResource::CPU(1)]);
     }
 
@@ -204,8 +227,8 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::MemoryResource,
         };
+        use memory::context::MemoryResource;
         #[cfg(target_arch = "x86_64")]
         dispatcherTests!(elf_mmu_x86_64; (DomainType::Process ,MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
@@ -217,8 +240,8 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::MemoryResource,
         };
+        use memory::context::MemoryResource;
         #[cfg(target_arch = "x86_64")]
         dispatcherTests!(elf_kvm_x86_64; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]

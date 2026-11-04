@@ -10,11 +10,11 @@ use hyper::{
     Request, Response, StatusCode,
 };
 use log::{debug, error, info, trace, warn};
-use machine_interface::{
-    composition::{CompositionSet, LocalCompositionSet},
-    function_driver::Metadata,
-    machine_config::EngineType,
-    memory_domain::bytes_context::BytesContext,
+use machine_interface::machine_config::EngineType;
+use memory::{
+    context::{bytes::BytesContext, read_only::ReadOnlyContext},
+    data::Metadata,
+    DataItem, DataSet, LocalData, Position,
 };
 use serde::Deserialize;
 use std::{
@@ -109,7 +109,7 @@ async fn handle_function_registration(
     let input_sets = request_map
         .input_sets
         .into_iter()
-        .map(|(name, data)| (name, data.map(LocalCompositionSet::from_byte_items)))
+        .map(|(name, data)| (name, data.map(static_data_set)))
         .collect();
 
     let metadata = Metadata {
@@ -129,6 +129,27 @@ async fn handle_function_registration(
     Ok(DandelionBody::from_vec(
         "Function registered".as_bytes().to_vec(),
     ))
+}
+
+/// Builds a set out of static items given at function registration, each backed by its own context.
+fn static_data_set(items: Vec<(String, Vec<u8>)>) -> DataSet {
+    let items = items
+        .into_iter()
+        .map(|(name, data)| {
+            let size = data.len();
+            let ctx = ReadOnlyContext::from_boxed(data.into_boxed_slice())
+                .expect("Should be able to create read only context for static data");
+            DataItem::new_local(
+                name,
+                0,
+                LocalData {
+                    ctx: Arc::new(ctx),
+                    pos: Position { offset: 0, size },
+                },
+            )
+        })
+        .collect();
+    DataSet::from_items(Arc::new(items))
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,9 +235,7 @@ async fn handle_request(
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
     debug!("Request number of request_context: {}", request_number);
-    let inputs = CompositionSet::from_context(request_context)
-        .into_iter()
-        .collect::<Vec<_>>();
+    let inputs = DataSet::from_context(request_context);
 
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
@@ -240,10 +259,7 @@ async fn handle_request(
     #[cfg(feature = "archive")]
     TRACING_ARCHIVE.get().unwrap().insert_recorder(recorder);
 
-    Ok(dandelion_server::DandelionBody::new(
-        function_output,
-        &recorder,
-    ))
+    dandelion_server::DandelionBody::new(function_output, &recorder)
 }
 
 //-----------------------
@@ -302,7 +318,7 @@ async fn service(
             warn!("Failed to serve request: {}", err);
             // for all other requests set response status to something not ok and write the error in the response body
             let mut response = Response::new(DandelionBody::from_vec(
-                format!("Failed to serve request: {}", err).into_bytes(),
+                format!("Failed to serve request: {}", err.message()).into_bytes(),
             ));
             *response.status_mut() = match err.error {
                 DandelionError::RequestError(FrontendError::InvalidRequest(_)) => {

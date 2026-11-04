@@ -11,7 +11,7 @@ const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_MIN_SYS_CORES: usize = 1;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_RECONNECT_INTERVAL: u64 = 1000;
-use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
+use composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
 use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
 
 /// Expand a leading `~` (or `~/...`) in a path to the current user's home directory,

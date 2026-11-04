@@ -1,0 +1,14 @@
+[package]
+name = "composition"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[dependencies]
+dandelion_commons = {path = "../dandelion_commons"}
+memory = { path = "../memory" }
+log = "0.4.21"
+chumsky = "0.13"
+ariadne = "0.6"

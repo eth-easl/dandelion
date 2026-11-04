@@ -10,3 +10,5 @@ workspace = true
 timestamp = []
 
 [dependencies]
+log = "0.4.20"
+tokio = { version = "1.38.2", features = ["sync"] }
