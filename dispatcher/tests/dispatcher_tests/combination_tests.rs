@@ -4,9 +4,7 @@ use machine_interface::{
     machine_config::{DomainType, EngineType},
 };
 use memory::{
-    context::{
-        read_only::ReadOnlyContext, ContextDataItem, ContextDataSet, MemoryDomain, MemoryResource,
-    },
+    context::{read_only::ReadOnlyContext, ContextDataItem, ContextDataSet, MemoryResource},
     DataSet, Position,
 };
 
@@ -41,13 +39,13 @@ impl Drop for HttpServer {
         let _ = self.proc_child.wait();
     }
 }
-pub fn fetch_compute<Domain: MemoryDomain>(
+pub fn fetch_compute(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     compute_engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, _) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher(
         relative_path,
         vec![(String::from("A"), None)],
         vec![String::from("Out")],

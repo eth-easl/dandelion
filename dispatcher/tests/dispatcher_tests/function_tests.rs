@@ -6,9 +6,7 @@ use machine_interface::{
     machine_config::{DomainType, EngineType},
 };
 use memory::{
-    context::{
-        read_only::ReadOnlyContext, ContextDataItem, ContextDataSet, MemoryDomain, MemoryResource,
-    },
+    context::{read_only::ReadOnlyContext, ContextDataItem, ContextDataSet, MemoryResource},
     DataSet, Position,
 };
 use std::{iter, time::Instant};
@@ -18,13 +16,13 @@ const DECL_1_TO_1: &str = "function test_function(A) => (Out);";
 /// Function declaration matching the three input/single output test function registration.
 const DECL_3_TO_1: &str = "function test_function(A, B, C) => (Out);";
 
-pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
+pub fn single_domain_and_engine_basic(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![],
         vec![],
@@ -44,13 +42,13 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     }
 }
 
-pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
+pub fn single_domain_and_engine_matmul(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -96,13 +94,13 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     check_matrix(item, 2, vec![5, 11, 11, 25])
 }
 
-pub fn composition_single_matmul<Domain: MemoryDomain>(
+pub fn composition_single_matmul(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, _) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher(
         relative_path,
         vec![(String::from("A"), None)],
         vec![String::from("Out")],
@@ -147,13 +145,13 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     check_matrix(item, 2, vec![5, 11, 11, 25])
 }
 
-pub fn composition_optional<Domain: MemoryDomain>(
+pub fn composition_optional(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, _) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher(
         relative_path,
         vec![(String::from("A"), None)],
         vec![String::from("Out1"), String::from("Out2")],
@@ -226,13 +224,13 @@ pub fn composition_optional<Domain: MemoryDomain>(
     assert!(out_sets[0].is_empty());
 }
 
-pub fn composition_parallel_matmul<Domain: MemoryDomain>(
+pub fn composition_parallel_matmul(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, _) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher(
         relative_path,
         vec![(String::from("A"), None)],
         vec![String::from("Out")],
@@ -295,13 +293,13 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     }
 }
 
-pub fn composition_chain_matmul<Domain: MemoryDomain>(
+pub fn composition_chain_matmul(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, _) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher(
         relative_path,
         vec![(String::from("A"), None)],
         vec![String::from("Out")],
@@ -347,13 +345,13 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     check_matrix(item, 2, vec![146, 330, 330, 746]);
 }
 
-pub fn composition_diamond_matmac<Domain: MemoryDomain>(
+pub fn composition_diamond_matmac(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, _) = self::setup_dispatcher::<Domain>(
+    let (dispatcher, _) = self::setup_dispatcher(
         relative_path,
         vec![
             (String::from("A"), None),
@@ -450,13 +448,13 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     );
 }
 
-pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
+pub fn composition_chain_large_matmac(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, _) = self::setup_dispatcher::<Domain>(
+    let (dispatcher, _) = self::setup_dispatcher(
         relative_path,
         vec![
             (String::from("A"), None),

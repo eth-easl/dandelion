@@ -6,8 +6,7 @@ use machine_interface::{
 };
 use memory::{
     context::{
-        read_only::ReadOnlyContext, Context, ContextDataItem, ContextDataSet, MemoryDomain,
-        MemoryResource,
+        read_only::ReadOnlyContext, Context, ContextDataItem, ContextDataSet, MemoryResource,
     },
     data::Metadata,
     DataSet, Position,
@@ -38,7 +37,7 @@ fn create_context(matrix: Box<[u64]>) -> Context {
 /// tests with a single set fixed in the metadata
 /// check once for the ouput being correct in absence of an input set for the fixed one,
 /// and once for correct behavior if there is a set provided for the fixed one
-pub fn single_input_fixed<Domain: MemoryDomain>(
+pub fn single_input_fixed(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
@@ -60,7 +59,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         (String::from(""), None),
     ];
     let out_set_names = vec![String::from("")];
-    let (dispatcher, _) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher(
         relative_path,
         in_set_names.clone(),
         out_set_names.clone(),
@@ -144,7 +143,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
 }
 
 /// check functionallity with multiple fixed inputs with and without input provided for the fixed sets
-pub fn multiple_input_fixed<Domain: MemoryDomain>(
+pub fn multiple_input_fixed(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
@@ -167,7 +166,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         (String::from(""), None),
     ];
     let out_set_names = vec![String::from("")];
-    let (dispatcher, _) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher(
         relative_path,
         in_set_names.clone(),
         out_set_names.clone(),
