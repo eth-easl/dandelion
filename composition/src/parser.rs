@@ -98,7 +98,7 @@ struct FunctionApplication<'src> {
 }
 type SpannedFunctionApplication<'src> = Spanned<FunctionApplication<'src>>;
 
-/// Binds a data set to an input set of the selector of a metafunction.
+/// Binds a data set to an input set of the planner of a metafunction.
 #[derive(Debug)]
 struct MetaInputDescriptor<'src> {
     name: Ident<'src>,
