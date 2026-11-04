@@ -535,6 +535,10 @@ impl Dispatcher {
                 planner_recorder.clone(),
             )
             .await?;
+
+        // parse plan is a string of composition DSL
+        // TODO: instead of using string and composition DSL, use own format to make it 
+        // easier to write in SDK & save the parsing pass here
         let (plan_id, plan) = self.parse_plan(
             &function_id,
             &read_composition(&planner_output)?,
