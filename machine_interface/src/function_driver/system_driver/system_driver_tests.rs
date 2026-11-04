@@ -100,7 +100,7 @@ fn get_http(
     let header_set = &result_sets[0];
     assert_eq!(1, header_set.len());
     let status_item = header_set[0].local_ref().unwrap();
-    let mut response_buffer = vec![0; status_item.pos.size];
+    let mut response_buffer = vec![0u8; status_item.pos.size];
     status_item
         .ctx
         .read(status_item.pos.offset, &mut response_buffer)

@@ -94,7 +94,7 @@ impl CompositionTemplate {
 
 pub struct Composition {
     functions: Vec<Arc<Function>>,
-    // This is a global setting, does every composition need it's own?
+    // TODO: This is a global setting, does every composition need it's own?
     any_sharding_mode: AnyShardingMode,
     input_sets: Vec<Arc<CompositionSet>>,
     output_sets: Vec<Arc<CompositionSet>>,
@@ -128,7 +128,6 @@ impl Composition {
 
         let mut functions = Vec::with_capacity(template.functions.len());
         for (i, f) in template.functions.iter().enumerate() {
-            let mut function = Function::new(i, f.id.clone(), f.join_order.clone());
             let mut inputs = Vec::with_capacity(f.params.len());
             for in_opt in f.params.iter() {
                 if let Some(in_templ) = in_opt {
@@ -142,10 +141,16 @@ impl Composition {
                 .iter()
                 .map(|set_idx_opt| set_idx_opt.map(|i| sets[i].clone()))
                 .collect();
-            let min_set_bytes = registry.get_min_set_bytes(&f.id).unwrap(); // TODO
-            function.update_io(&inputs, outputs, min_set_bytes);
+            let min_set_bytes = registry.get_min_set_bytes(&f.id).unwrap();
 
-            let function_arc = Arc::new(function);
+            let function_arc = Arc::new(Function::new(
+                i,
+                f.id.clone(),
+                &inputs,
+                f.join_order.clone(),
+                outputs,
+                min_set_bytes,
+            ));
 
             for (in_idx, in_opt) in f.params.iter().enumerate() {
                 if let Some(in_templ) = in_opt {
@@ -183,7 +188,7 @@ impl Composition {
         debug_assert_eq!(composition_inputs.len(), self.input_sets.len());
 
         for (i, in_set) in composition_inputs.into_iter().enumerate() {
-            self.input_sets[i].set_composition_input(in_set, &self.any_sharding_mode, exec);
+            self.input_sets[i].push_items(in_set.items, true, &self.any_sharding_mode, exec);
         }
         self.input_sets.clear();
     }

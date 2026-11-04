@@ -13,8 +13,6 @@ pub mod machine_config;
 mod interface;
 pub mod util;
 
-// use serde::{Deserialize, Serialize};
-
 #[derive(PartialEq, Debug)]
 pub enum OffsetOrAlignment {
     Offset(usize),

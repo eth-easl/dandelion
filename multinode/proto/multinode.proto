@@ -38,8 +38,7 @@ message MetadataItem {
 }
 
 message MetadataSet {
-    string ident = 1;
-    repeated MetadataItem items = 2;
+    repeated MetadataItem items = 1;
 }
 
 message Invocation {

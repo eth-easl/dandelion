@@ -1,23 +1,26 @@
-//! End-to-end stress tests for the composition scheduling.
+//! End-to-end benchmark for the composition scheduling.
 //!
-//! The tests start a server and run compositions with very wide fan-outs and very long chains of
+//! Starts a server and runs compositions with very wide fan-outs and very long chains of
 //! the `test_{name}_basic` function to measure the scheduling overhead.
 //!
-//! As they take a while, they are ignored by default. Run them and see the runtimes with:
-//! `cargo test --features <engine> --test composition_stress_tests -- --ignored --nocapture`.
+//! Run it and see the runtimes with: `cargo bench --features <engine> --bench composition_stress`.
+//! Pass `fan_out`, `fan_out_fan_in` or `chain` as an argument to only run the matching benchmark.
 
 #[cfg(any(feature = "mmu", feature = "kvm", feature = "cheri"))]
-mod composition_stress_tests {
+#[path = "../tests/common/mod.rs"]
+mod common;
+
+#[cfg(any(feature = "mmu", feature = "kvm", feature = "cheri"))]
+mod composition_stress {
     use dandelion_server::{DandelionDeserializeResponse, DandelionRequest, InputItem, InputSet};
     use reqwest::blocking::Client;
     use serde::Serialize;
-    use serial_test::serial;
     use std::{
-        io::{BufRead, BufReader},
-        process::{Child, Command, Stdio},
-        thread::spawn,
+        process::{Command, Stdio},
         time::{Duration, Instant},
     };
+
+    use crate::common::ServerKiller;
 
     const ENDPOINT: &str = "http://localhost:8080/hot/chain_scaling";
     const FUNCTION_NAME: &str = "basic";
@@ -49,55 +52,17 @@ mod composition_stress_tests {
         composition: String,
     }
 
-    /// Kills the server when dropped, so it is also cleaned up when a test panics.
-    struct ServerKiller {
-        server: Child,
-    }
-
-    impl ServerKiller {
-        fn start() -> Self {
-            let mut server = Command::new(assert_cmd::cargo::cargo_bin!())
-                .stdout(Stdio::piped())
-                // the logs go to stderr, which are not of interest here and would distort timings
-                .stderr(Stdio::null())
-                .env("RUST_LOG", "error")
-                .spawn()
-                .unwrap();
-            let mut stdout = BufReader::new(server.stdout.take().unwrap());
-            loop {
-                let mut buf = String::new();
-                let len = stdout.read_line(&mut buf).unwrap();
-                assert_ne!(len, 0, "Server exited unexpectedly");
-                print!("Server out: {}", buf);
-                if buf.contains("Socket ready") {
-                    break;
-                }
-            }
-            // keep draining stdout so the server never blocks on a full pipe
-            spawn(move || {
-                let mut buf = String::new();
-                while stdout.read_line(&mut buf).is_ok_and(|len| len > 0) {
-                    print!("Server out: {}", buf);
-                    buf.clear();
-                }
-            });
-            Self { server }
-        }
-
-        fn assert_running(mut self) {
-            let status = self.server.try_wait().unwrap();
-            assert_eq!(status, None, "Server exited unexpectedly");
-        }
-    }
-
-    impl Drop for ServerKiller {
-        fn drop(&mut self) {
-            Command::new("kill")
-                .args(["-s", "TERM", &self.server.id().to_string()])
-                .status()
-                .unwrap();
-            let _ = self.server.wait();
-        }
+    /// Starts the server with only error logs, so the log output does not distort timings.
+    fn start_server() -> ServerKiller {
+        let server = Command::new(assert_cmd::cargo::cargo_bin!())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("RUST_LOG", "error")
+            .spawn()
+            .unwrap();
+        let mut server_killer = ServerKiller::new("Server", server);
+        server_killer.check_for_start();
+        server_killer
     }
 
     fn client() -> Client {
@@ -293,11 +258,8 @@ mod composition_stress_tests {
         )
     }
 
-    #[test]
-    #[serial]
-    #[ignore = "stress test, run with --ignored"]
-    fn stress_fan_out() {
-        let server = ServerKiller::start();
+    pub fn bench_fan_out() {
+        let server = start_server();
         let client = client();
         register_basic(&client);
 
@@ -317,11 +279,8 @@ mod composition_stress_tests {
         server.assert_running();
     }
 
-    #[test]
-    #[serial]
-    #[ignore = "stress test, run with --ignored"]
-    fn stress_fan_out_fan_in() {
-        let server = ServerKiller::start();
+    pub fn bench_fan_out_fan_in() {
+        let server = start_server();
         let client = client();
         register_basic(&client);
 
@@ -341,11 +300,8 @@ mod composition_stress_tests {
         server.assert_running();
     }
 
-    #[test]
-    #[serial]
-    #[ignore = "stress test, run with --ignored"]
-    fn stress_chain() {
-        let server = ServerKiller::start();
+    pub fn bench_chain() {
+        let server = start_server();
         let client = client();
         register_basic(&client);
 
@@ -364,4 +320,28 @@ mod composition_stress_tests {
 
         server.assert_running();
     }
+}
+
+#[cfg(any(feature = "mmu", feature = "kvm", feature = "cheri"))]
+fn main() {
+    // `cargo bench` passes `--bench`, any other non-flag argument is used as a name filter
+    let filter = std::env::args().skip(1).find(|arg| !arg.starts_with('-'));
+    let benches: [(&str, fn()); 3] = [
+        ("fan_out", composition_stress::bench_fan_out),
+        ("fan_out_fan_in", composition_stress::bench_fan_out_fan_in),
+        ("chain", composition_stress::bench_chain),
+    ];
+    for (name, bench) in benches {
+        if filter
+            .as_ref()
+            .is_none_or(|filter| name.contains(filter.as_str()))
+        {
+            bench();
+        }
+    }
+}
+
+#[cfg(not(any(feature = "mmu", feature = "kvm", feature = "cheri")))]
+fn main() {
+    println!("Enable one of the engine features (mmu, kvm, cheri) to run this benchmark");
 }

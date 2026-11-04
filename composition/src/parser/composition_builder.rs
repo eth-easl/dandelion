@@ -8,7 +8,7 @@ use memory::data::Metadata;
 
 use crate::{
     parser::{
-        ErrorDiagnostic, FunctionDecl, Registry, Span, SpannedCompositionDecl,
+        ErrorDiagnostic, FunctionDecl, Registry, SpannedCompositionDecl,
         SpannedFunctionApplication, SpannedFunctionDecl, Statement,
     },
     sharding::{JoinStrategy, Sharding},
@@ -75,12 +75,10 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         let num_params = fdecl.params.len();
 
         // find the indices of the sets in the function application by looking though the definition
-        let mut input_templates = Vec::new();
-        input_templates.resize(num_params, None);
+        let mut input_templates = vec![None; num_params];
         // spans of the arguments that filled each parameter slot, kept around to point join
         // related errors at the argument rather than the whole application
-        let mut arg_spans: Vec<Option<Span>> = Vec::new();
-        arg_spans.resize(num_params, None);
+        let mut arg_spans = vec![None; num_params];
         for arg in fappl.v.args.iter() {
             if let Some(arg_set_idx) = fdecl
                 .params
@@ -116,8 +114,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         }
 
         // find the join order
-        let mut processed_sets = Vec::new();
-        processed_sets.resize(num_params, false);
+        let mut processed_sets = vec![false; num_params];
         let mut join_order = Vec::new();
         let mut any_join_order = Vec::new();
         if let Some(strategy) = fappl
@@ -234,8 +231,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         }
 
         // find the index in the original definition for each return set in the application
-        let mut outputs = Vec::new();
-        outputs.resize(fdecl.returns.len(), None);
+        let mut outputs = vec![None; fdecl.returns.len()];
         for ret in fappl.v.rets.iter() {
             if let Some(ret_set_idx) = fdecl
                 .returns
@@ -294,20 +290,20 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         let mut data_set_counter = 0usize;
         let mut data_set_ids = HashMap::new();
         for input_set_name in comp.v.params.iter() {
-            match data_set_ids.entry(*input_set_name) {
-                Entry::Vacant(v) => v.insert(data_set_counter),
-                Entry::Occupied(_) => {
-                    return Err(ErrorDiagnostic::new(
-                        comp.span.clone(),
-                        dandelion_err!(DandelionError::Composition(
-                            CompositionError::DuplicateSetName(format!(
-                                "Duplicate set name '{}'.",
-                                input_set_name
-                            ))
-                        )),
-                    ))
-                }
-            };
+            if data_set_ids
+                .insert(*input_set_name, data_set_counter)
+                .is_some()
+            {
+                return Err(ErrorDiagnostic::new(
+                    comp.span.clone(),
+                    dandelion_err!(DandelionError::Composition(
+                        CompositionError::DuplicateSetName(format!(
+                            "Duplicate set name '{}'.",
+                            input_set_name
+                        ))
+                    )),
+                ));
+            }
             data_set_counter += 1;
         }
         let inputs_end_idx = data_set_counter;

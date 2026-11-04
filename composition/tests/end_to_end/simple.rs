@@ -77,9 +77,9 @@ fn each_sharded_input_runs_one_invocation_per_item() {
 }
 
 /// Regression test: a function whose only input is `each`/`anyEach`-sharded and fed purely by
-/// another function's streamed output (never a composition-level input, so it never goes through
-/// `set_composition_input`) must still be scheduled correctly by the initial `in_set_complete`
-/// sweep in `Composition::start_execution`.
+/// another function's streamed output (never a composition-level input, so nothing is pushed to it
+/// at start) must still be scheduled correctly by the initial `in_set_complete` sweep in
+/// `Composition::start_execution`.
 #[test]
 fn each_to_each_streaming_chain_runs_without_a_composition_level_intermediate() {
     let src = r#"

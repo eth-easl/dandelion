@@ -384,7 +384,7 @@ impl Dispatcher {
         input_sets: Vec<DataSet>,
         caching: bool,
         mut recorder: Recorder,
-    ) -> DandelionResult<Vec<Arc<Vec<DataItem>>>> {
+    ) -> DandelionResult<ExecutionOutput> {
         debug!("Queueing function with id: {}", function_id);
         // find an engine capable of running the function
         match self.function_registry.get_function(&function_id)? {
@@ -463,7 +463,7 @@ impl Dispatcher {
 
 #[cfg(feature = "log_function_stdio")]
 fn log_io_sets(
-    sets: &Vec<Arc<Vec<DataItem>>>,
+    sets: &ExecutionOutput,
     stdio_index: Option<usize>,
     function_id: &FunctionId,
 ) -> DandelionResult<()> {

@@ -176,13 +176,6 @@ fn remote_data_to_proto(remote_data: &RemoteData) -> proto::RemoteData {
     }
 }
 
-fn item_data_to_proto(
-    data: ItemData,
-    export_local_data: &mut impl FnMut(LocalData) -> RemoteData,
-) -> proto::ItemData {
-    item_data_to_proto_and_ref(data, export_local_data).0
-}
-
 fn item_data_to_proto_and_ref(
     data: ItemData,
     export_local_data: &mut impl FnMut(LocalData) -> RemoteData,
@@ -303,14 +296,10 @@ pub(crate) fn composition_sets_to_proto(
             metadata_items.push(proto::MetadataItem {
                 ident: item.ident.clone(),
                 key: item.key,
-                data: Some(item_data_to_proto(
-                    item.data.clone(),
-                    &mut export_local_data,
-                )), // TODO: do we want to clone here?
+                data: Some(item_data_to_proto_and_ref(item.data.clone(), &mut export_local_data).0), // TODO: do we want to clone here?
             })
         }
         metadata_sets.push(proto::MetadataSet {
-            ident: "".to_string(), // TODO
             items: metadata_items,
         });
     }
@@ -344,7 +333,6 @@ pub(crate) fn composition_sets_to_proto_and_refs(
             }
         }
         metadata_sets.push(proto::MetadataSet {
-            ident: "".to_string(), // TODO
             items: metadata_items,
         });
     }

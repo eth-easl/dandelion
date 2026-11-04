@@ -46,6 +46,8 @@ pub enum DandelionError {
     WriteMisaligned,
     /// tried to write to domain ouside of domain bounds
     InvalidWrite,
+    /// tried to get a local reference from a non-local data item
+    NonLocalDeref,
     /// found a case with a data item that is a set but has no entries
     EmptyDataSet,
     /// error converting pointers or integers

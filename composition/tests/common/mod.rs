@@ -24,9 +24,8 @@ use memory::{
 /// A small real context for tests; the composition layer only tracks items, it never reads their
 /// bytes, so any context of sufficient size will do.
 pub fn test_context() -> Arc<Context> {
-    use memory::context::{malloc::MallocMemoryDomain, MemoryDomain, MemoryResource};
-    let domain = MallocMemoryDomain::init(MemoryResource::None).expect("malloc domain");
-    Arc::new(domain.acquire_context(4096).expect("context"))
+    use memory::context::read_only::ReadOnlyContext;
+    Arc::new(ReadOnlyContext::from_boxed(vec![0u8; 4096].into_boxed_slice()).expect("context"))
 }
 
 /// A hand-rolled [`Registry`] for tests: a function must be registered with

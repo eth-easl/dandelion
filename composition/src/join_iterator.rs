@@ -708,10 +708,10 @@ impl JoinIterator for AnyIterator {
 
                     // create the set group for all other sets
                     for (set_idx, group_set) in set_group.iter_mut().enumerate() {
-                        let mut accum = DataSetAccumulator::new();
                         if set_idx == self.largest_set_idx {
                             continue;
                         }
+                        let mut accum = DataSetAccumulator::new();
                         for i in start_idx..curr_idx {
                             accum.push_set(mem::take(&mut self.set_groups[i][set_idx]));
                         }
@@ -793,9 +793,8 @@ mod tests {
     /// A small real context for tests; the composition layer only tracks items, it never reads
     /// their bytes, so any context of sufficient size will do.
     fn test_context() -> Arc<Context> {
-        use memory::context::{malloc::MallocMemoryDomain, MemoryDomain, MemoryResource};
-        let domain = MallocMemoryDomain::init(MemoryResource::None).expect("malloc domain");
-        Arc::new(domain.acquire_context(4096).expect("context"))
+        use memory::context::read_only::ReadOnlyContext;
+        Arc::new(ReadOnlyContext::from_boxed(vec![0u8; 4096].into_boxed_slice()).expect("context"))
     }
 
     fn item(key: u32) -> DataItem {

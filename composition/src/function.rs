@@ -36,6 +36,8 @@ impl InputSet {
 }
 
 struct Inner {
+    /// Vector of optional inputs.
+    /// Each is a tuple of (InputSet, Sharding, whether it is optional, if it has received items).
     inputs: Vec<Option<(InputSet, Sharding, bool, bool)>>,
     outputs: Vec<Option<Arc<CompositionSet>>>,
     needs_retention: bool,
@@ -59,44 +61,21 @@ impl Function {
     pub(crate) fn new(
         idx: usize,
         function_id: FunctionId,
-        join_order: Arc<Vec<usize>>,
-    ) -> Function {
-        Function {
-            composition_idx: idx,
-            inner: Mutex::new(Inner {
-                inputs: vec![],
-                outputs: vec![],
-                is_blocking: false,
-                needs_retention: false,
-                num_outstanding: 0,
-                all_started: false,
-            }),
-            min_set_bytes: vec![],
-            function_id,
-            join_order,
-        }
-    }
-
-    pub(crate) fn update_io(
-        &mut self,
         inputs: &[Option<(Sharding, bool)>],
+        join_order: Arc<Vec<usize>>,
         outputs: Vec<Option<Arc<CompositionSet>>>,
         mut min_set_bytes: Vec<usize>,
-    ) {
+    ) -> Function {
         min_set_bytes.resize(inputs.len(), 0);
-        self.min_set_bytes = min_set_bytes;
-
-        let mut inner = self.inner.lock().expect("Function lock poisoned!");
-
-        inner.is_blocking = inputs.iter().any(|in_opt| {
+        let is_blocking = inputs.iter().any(|in_opt| {
             in_opt
                 .as_ref()
                 .is_some_and(|(sharding, _)| sharding.is_blocking())
         });
         // TODO: Retention is only needed when more than one input is still streaming. So this could
         //       be improved further.
-        inner.needs_retention = inputs.len() > 1;
-        inner.inputs = inputs
+        let needs_retention = inputs.len() > 1;
+        let inputs = inputs
             .iter()
             .map(|in_opt| {
                 in_opt.as_ref().map(|(sharding, optional)| {
@@ -109,7 +88,21 @@ impl Function {
                 })
             })
             .collect();
-        inner.outputs = outputs;
+
+        Function {
+            composition_idx: idx,
+            inner: Mutex::new(Inner {
+                inputs,
+                outputs,
+                is_blocking,
+                needs_retention,
+                num_outstanding: 0,
+                all_started: false,
+            }),
+            min_set_bytes,
+            function_id,
+            join_order,
+        }
     }
 
     pub(crate) fn in_set_complete(
@@ -384,9 +377,8 @@ mod tests {
     /// A small real context for tests; the composition layer only tracks items, it never reads
     /// their bytes, so any context of sufficient size will do.
     fn test_context() -> Arc<Context> {
-        use memory::context::{malloc::MallocMemoryDomain, MemoryDomain, MemoryResource};
-        let domain = MallocMemoryDomain::init(MemoryResource::None).expect("malloc domain");
-        Arc::new(domain.acquire_context(4096).expect("context"))
+        use memory::context::read_only::ReadOnlyContext;
+        Arc::new(ReadOnlyContext::from_boxed(vec![0u8; 4096].into_boxed_slice()).expect("context"))
     }
 
     impl Function {
@@ -430,9 +422,14 @@ mod tests {
     #[test]
     fn blocking_input_defers_invocation_until_complete() {
         let input_set = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0].into());
-        function.update_io(&[Some((Sharding::All, false))], vec![None], vec![0]);
-        let function = Arc::new(function);
+        let function = Arc::new(Function::new(
+            0,
+            fid("F"),
+            &[Some((Sharding::All, false))],
+            vec![0].into(),
+            vec![None],
+            vec![0],
+        ));
         input_set.add_blocking_consumer(function.clone(), 0, false);
 
         // The input hasn't arrived yet.
@@ -451,21 +448,23 @@ mod tests {
     fn all_input_combines_with_each_input_producing_one_invocation_per_each_item() {
         let all_set = Arc::new(CompositionSet::new());
         let each_set = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0, 1].into());
-        function.update_io(
+        let function = Arc::new(Function::new(
+            0,
+            fid("F"),
             &[Some((Sharding::All, false)), Some((Sharding::Each, false))],
+            vec![0, 1].into(),
             vec![None],
             vec![0, 0],
-        );
-        let function = Arc::new(function);
+        ));
         all_set.add_blocking_consumer(function.clone(), 0, false);
         each_set.add_non_blocking_consumer(function.clone(), 1);
 
         // As `Composition::start_execution` does for composition-level inputs: both arrive
         // "instantly complete", the `each` input first so it's already there once the blocking
         // `all` input fires.
-        each_set.set_composition_input(
-            DataSet::from_items(items(&[10, 11])),
+        each_set.push_items(
+            items(&[10, 11]),
+            true,
             &AnyShardingMode::MaxSharding,
             &mut Vec::new(),
         );
@@ -501,13 +500,14 @@ mod tests {
         let input_set = Arc::new(CompositionSet::new());
         let output_set = Arc::new(CompositionSet::new());
         output_set.mark_retained();
-        let mut function = Function::new(0, fid("F"), vec![0].into());
-        function.update_io(
+        let function = Arc::new(Function::new(
+            0,
+            fid("F"),
             &[Some((Sharding::All, false))],
+            vec![0].into(),
             vec![Some(output_set.clone())],
             vec![0],
-        );
-        let function = Arc::new(function);
+        ));
         input_set.add_blocking_consumer(function.clone(), 0, false);
 
         let invocations = push(&input_set, &[1, 2], true);
@@ -530,9 +530,14 @@ mod tests {
     #[test]
     fn non_optional_empty_input_skips_invocation_but_still_completes() {
         let input_set = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0].into());
-        function.update_io(&[Some((Sharding::All, false))], vec![None], vec![0]);
-        let function = Arc::new(function);
+        let function = Arc::new(Function::new(
+            0,
+            fid("F"),
+            &[Some((Sharding::All, false))],
+            vec![0].into(),
+            vec![None],
+            vec![0],
+        ));
         input_set.add_blocking_consumer(function.clone(), 0, false);
 
         let invocations = push(&input_set, &[], true);
@@ -547,13 +552,14 @@ mod tests {
     fn two_each_inputs_only_combine_once_both_have_items() {
         let set_a = Arc::new(CompositionSet::new());
         let set_b = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0, 1].into());
-        function.update_io(
+        let function = Arc::new(Function::new(
+            0,
+            fid("F"),
             &[Some((Sharding::Each, false)), Some((Sharding::Each, false))],
+            vec![0, 1].into(),
             vec![None],
             vec![0, 0],
-        );
-        let function = Arc::new(function);
+        ));
         set_a.add_non_blocking_consumer(function.clone(), 0);
         set_b.add_non_blocking_consumer(function.clone(), 1);
 
@@ -586,13 +592,14 @@ mod tests {
     fn each_each_second_input_arriving_first_is_not_lost() {
         let set_a = Arc::new(CompositionSet::new());
         let set_b = Arc::new(CompositionSet::new());
-        let mut function = Function::new(0, fid("F"), vec![0, 1].into());
-        function.update_io(
+        let function = Arc::new(Function::new(
+            0,
+            fid("F"),
             &[Some((Sharding::Each, false)), Some((Sharding::Each, false))],
+            vec![0, 1].into(),
             vec![None],
             vec![0, 0],
-        );
-        let function = Arc::new(function);
+        ));
         set_a.add_non_blocking_consumer(function.clone(), 0);
         set_b.add_non_blocking_consumer(function.clone(), 1);
 

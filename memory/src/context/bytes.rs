@@ -20,8 +20,7 @@ impl core::fmt::Debug for BytesContext {
         for frame in self.frames.iter() {
             f.write_fmt(format_args!("Bytes with len: {}, ", frame.len()))?;
         }
-        f.write_fmt(format_args!("]}}"))?;
-        Ok(())
+        f.write_fmt(format_args!("]}}"))
     }
 }
 
@@ -474,12 +473,12 @@ fn read_test() {
         .collect();
     let read_context = BytesContext { frames };
     let expected_data = vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8];
-    let mut all_read_vec = vec![0; 8];
+    let mut all_read_vec = vec![0u8; 8];
     read_context
         .read(0, &mut all_read_vec)
         .expect("read should succeed");
     assert_eq!(expected_data, all_read_vec.as_slice());
-    let mut partial_read_vec = vec![0; 4];
+    let mut partial_read_vec = vec![0u8; 4];
     read_context
         .read(2, &mut partial_read_vec)
         .expect("Partial read should succeed");

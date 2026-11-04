@@ -174,8 +174,7 @@ impl DataItem {
         if let ItemData::Local(local) = &self.data {
             Ok(local)
         } else {
-            // TODO make specific error to make it easer to recognize
-            dandelion_commons::err_dandelion!(dandelion_commons::DandelionError::InvalidRead)
+            dandelion_commons::err_dandelion!(dandelion_commons::DandelionError::NonLocalDeref)
         }
     }
 }
@@ -218,22 +217,6 @@ impl DataSet {
 
     pub fn is_local(&self) -> bool {
         self.num_unresolved == 0
-    }
-
-    pub fn combine(mut sets: Vec<DataSet>) -> DataSet {
-        let mut out_set = match sets.pop() {
-            Some(set) => set,
-            None => return DataSet::default(),
-        };
-        let mut items = (*out_set.items).clone();
-        while let Some(next_set) = sets.pop() {
-            items.extend(next_set.items.iter().cloned());
-            out_set.num_unresolved += next_set.num_unresolved;
-            out_set.total_size += next_set.total_size;
-        }
-        items.sort_by_key(|a| a.key);
-        out_set.items = Arc::new(items);
-        out_set
     }
 
     pub fn from_context(mut ctx: Context) -> Vec<DataSet> {

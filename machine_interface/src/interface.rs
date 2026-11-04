@@ -154,8 +154,6 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         return err_dandelion!(DandelionError::OutOfMemory);
     }
     // start writing input set info structs
-    // TODO: removed the set identifier -> to completely remove it here we might need to change
-    //       the dlibc?
     for (c, (name, _)) in input_set_names
         .iter()
         .enumerate()
@@ -369,7 +367,7 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         if buffers.try_reserve(buffer_number).is_err() {
             return err_dandelion!(DandelionError::OutOfMemory);
         }
-        // let mut total_size = 0;
+
         for output_buffer in &output_buffers[first_buffer..one_past_last_buffer] {
             let buffer_ident_offset = usize_ptr!(output_buffer.ident);
             let buffer_ident_length = usize!(output_buffer.ident_len);

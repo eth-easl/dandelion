@@ -3,7 +3,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use log::error;
 use memory::data::{DataItem, DataSet, DataSetAccumulator};
 
 use crate::{sharding::AnyShardingMode, Executor, Function};
@@ -20,7 +19,6 @@ struct Inner {
     consumers_blocking: Vec<(Arc<Function>, usize)>,
     consumers_streaming: Vec<(Arc<Function>, usize)>,
     requires_sorting: bool,
-    requires_retention: bool,
 }
 
 pub(crate) struct CompositionSet {
@@ -35,7 +33,6 @@ impl CompositionSet {
                 consumers_blocking: Vec::new(),
                 consumers_streaming: Vec::new(),
                 requires_sorting: false,
-                requires_retention: false,
             }),
         }
     }
@@ -51,7 +48,6 @@ impl CompositionSet {
             .consumers_blocking
             .push((consumer, consumer_in_set_idx));
         inner.requires_sorting |= requires_sorting;
-        inner.requires_retention = true;
         if matches!(inner.state, State::Empty) {
             inner.state = State::Pending(DataSetAccumulator::new());
         }
@@ -70,7 +66,6 @@ impl CompositionSet {
 
     pub(crate) fn mark_retained(&self) {
         let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
-        inner.requires_retention = true;
         if matches!(inner.state, State::Empty) {
             inner.state = State::Pending(DataSetAccumulator::new());
         }
@@ -96,14 +91,8 @@ impl CompositionSet {
             f.push_streaming_items(*set_idx, items.clone(), complete, any_sharding_mode, exec);
         }
 
-        if inner.requires_retention {
-            if let State::Pending(acc) = &mut inner.state {
-                acc.push_items(&items);
-            } else {
-                error!(
-                    "CompositionSet requires retention but does not have a pending accumulator."
-                );
-            }
+        if let State::Pending(acc) = &mut inner.state {
+            acc.push_items(&items);
         }
 
         if complete {
@@ -117,28 +106,6 @@ impl CompositionSet {
                 }
                 inner.state = State::Complete(data_set);
             }
-        }
-    }
-
-    /// Sets the composition set to the given set.
-    /// Assumes the set is ordered if the input requires ordering (unchecked).
-    pub(crate) fn set_composition_input(
-        &self,
-        set: DataSet,
-        any_sharding_mode: &AnyShardingMode,
-        exec: &mut impl Executor,
-    ) {
-        let inner = self.inner.lock().expect("CompositionSet lock poisoned!");
-        debug_assert!(
-            !matches!(inner.state, State::Complete(_)),
-            "CompositionSet is alreay complete!"
-        );
-
-        for (c, set_idx) in inner.consumers_blocking.iter() {
-            c.in_set_complete(set.clone(), *set_idx, any_sharding_mode, exec);
-        }
-        for (c, set_idx) in inner.consumers_streaming.iter() {
-            c.push_streaming_items(*set_idx, set.items.clone(), true, any_sharding_mode, exec);
         }
     }
 
@@ -161,9 +128,8 @@ mod tests {
     /// A small real context for tests; the composition layer only tracks items, it never reads
     /// their bytes, so any context of sufficient size will do.
     fn test_context() -> Arc<Context> {
-        use memory::context::{malloc::MallocMemoryDomain, MemoryDomain, MemoryResource};
-        let domain = MallocMemoryDomain::init(MemoryResource::None).expect("malloc domain");
-        Arc::new(domain.acquire_context(4096).expect("context"))
+        use memory::context::read_only::ReadOnlyContext;
+        Arc::new(ReadOnlyContext::from_boxed(vec![0u8; 4096].into_boxed_slice()).expect("context"))
     }
 
     fn item(key: u32) -> DataItem {
@@ -191,9 +157,14 @@ mod tests {
     fn blocking_consumer_is_retained_and_notified_on_completion() {
         let set = CompositionSet::new();
         // `set` notifying its blocking consumer below is what resolves the function.
-        let mut consumer = Function::new(0, Arc::new("Consumer".to_string()), vec![0].into());
-        consumer.update_io(&[Some((Sharding::All, false))], vec![], vec![]);
-        let consumer = Arc::new(consumer);
+        let consumer = Arc::new(Function::new(
+            0,
+            Arc::new("Consumer".to_string()),
+            &[Some((Sharding::All, false))],
+            vec![0].into(),
+            vec![],
+            vec![],
+        ));
         set.add_blocking_consumer(consumer.clone(), 0, false);
 
         let mut invocations = Vec::new();
@@ -223,9 +194,14 @@ mod tests {
     #[test]
     fn streaming_only_single_param_consumer_is_not_retained_but_still_completes() {
         let set = CompositionSet::new();
-        let mut consumer = Function::new(0, Arc::new("Consumer".to_string()), vec![0].into());
-        consumer.update_io(&[Some((Sharding::Each, false))], vec![], vec![]);
-        let consumer = Arc::new(consumer);
+        let consumer = Arc::new(Function::new(
+            0,
+            Arc::new("Consumer".to_string()),
+            &[Some((Sharding::Each, false))],
+            vec![0].into(),
+            vec![],
+            vec![],
+        ));
         set.add_non_blocking_consumer(consumer.clone(), 0);
 
         let mut invocations = Vec::new();
