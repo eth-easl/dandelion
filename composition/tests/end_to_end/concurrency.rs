@@ -4,11 +4,9 @@ use std::{
     time::Duration,
 };
 
-use crate::common::{
-    data_set, item, items, parse_composition, Invocation, InvocationQueue, TestRegistry,
-};
+use crate::common::{item, parse_composition, Invocation, InvocationQueue, TestRegistry};
 use composition::{AnyShardingMode, Composition};
-use memory::DataItem;
+use memory::{DataItem, DataSet};
 
 /// How long a round may take before it is considered deadlocked.
 const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -58,7 +56,7 @@ fn run_groups_concurrently(
 }
 
 fn pass_through(invocation: &Invocation) -> Vec<Arc<Vec<DataItem>>> {
-    vec![items(vec![invocation.input[0].items[0].clone()])]
+    vec![Arc::new(vec![invocation.input[0].items[0].clone()])]
 }
 
 /// Two producers streaming into the two `each` inputs of the same function at the same time used
@@ -84,8 +82,12 @@ fn concurrent_streams_into_two_each_inputs_neither_deadlock_nor_duplicate() {
     for _ in 0..50 {
         let mut composition =
             Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
-        let in_a = data_set((0..n).map(|i| item(&format!("a{i}"), i)).collect());
-        let in_b = data_set((0..n).map(|i| item(&format!("b{i}"), i)).collect());
+        let in_a = DataSet::from_items(Arc::new(
+            (0..n).map(|i| item(&format!("a{i}"), i)).collect(),
+        ));
+        let in_b = DataSet::from_items(Arc::new(
+            (0..n).map(|i| item(&format!("b{i}"), i)).collect(),
+        ));
         let mut initial = InvocationQueue::default();
         composition.start_execution(vec![in_a, in_b], &mut initial);
         let (side_a, side_b) = initial
@@ -132,7 +134,10 @@ fn concurrent_last_invocations_of_a_function_keep_all_output() {
             Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
         let mut initial = InvocationQueue::default();
         composition.start_execution(
-            vec![data_set(vec![item("a0", 0), item("a1", 1)])],
+            vec![DataSet::from_items(Arc::new(vec![
+                item("a0", 0),
+                item("a1", 1),
+            ]))],
             &mut initial,
         );
         let groups = initial

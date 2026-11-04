@@ -1,5 +1,7 @@
-use crate::common::{data_set, item, items, parse_composition, run_to_completion, TestRegistry};
+use crate::common::{item, parse_composition, run_to_completion, TestRegistry};
 use composition::{AnyShardingMode, Composition};
+use memory::DataSet;
+use std::sync::Arc;
 
 #[test]
 fn keyed_inner_join_pairs_matching_composition_inputs() {
@@ -19,8 +21,8 @@ fn keyed_inner_join_pairs_matching_composition_inputs() {
     let composition =
         Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
-    let input_a = data_set(vec![item("a1", 1), item("a2", 2), item("a3", 3)]);
-    let input_b = data_set(vec![item("b2", 2), item("b3", 3), item("b4", 4)]);
+    let input_a = DataSet::from_items(Arc::new(vec![item("a1", 1), item("a2", 2), item("a3", 3)]));
+    let input_b = DataSet::from_items(Arc::new(vec![item("b2", 2), item("b3", 3), item("b4", 4)]));
 
     let mut seen_keys = Vec::new();
     let outputs = run_to_completion(composition, vec![input_a, input_b], |invocation| {
@@ -32,7 +34,7 @@ fn keyed_inner_join_pairs_matching_composition_inputs() {
             "an inner join must only ever see matching keys"
         );
         seen_keys.push(a_item.key);
-        vec![items(vec![item("combined", a_item.key)])]
+        vec![Arc::new(vec![item("combined", a_item.key)])]
     });
 
     seen_keys.sort();
@@ -63,12 +65,12 @@ fn two_stage_pipeline_aggregates_streamed_outputs() {
     let composition =
         Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
-    let numbers = data_set(vec![item("2", 0), item("3", 0), item("4", 0)]);
+    let numbers = DataSet::from_items(Arc::new(vec![item("2", 0), item("3", 0), item("4", 0)]));
     let outputs = run_to_completion(composition, vec![numbers], |invocation| {
         match invocation.function_id.as_str() {
             "Square" => {
                 let n: i64 = invocation.input[0].items[0].ident.parse().unwrap();
-                vec![items(vec![item(&(n * n).to_string(), 0)])]
+                vec![Arc::new(vec![item(&(n * n).to_string(), 0)])]
             }
             "Sum" => {
                 let total: i64 = invocation.input[0]
@@ -76,7 +78,7 @@ fn two_stage_pipeline_aggregates_streamed_outputs() {
                     .iter()
                     .map(|i| i.ident.parse::<i64>().unwrap())
                     .sum();
-                vec![items(vec![item(&total.to_string(), 0)])]
+                vec![Arc::new(vec![item(&total.to_string(), 0)])]
             }
             other => panic!("unexpected function invoked: {other}"),
         }
@@ -110,14 +112,14 @@ fn two_each_inputs_wait_for_both_sides_before_combining() {
     let composition =
         Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
-    let in_a = data_set(vec![item("a1", 1), item("a2", 2)]);
-    let in_b = data_set(vec![item("b1", 1), item("b2", 2)]);
+    let in_a = DataSet::from_items(Arc::new(vec![item("a1", 1), item("a2", 2)]));
+    let in_b = DataSet::from_items(Arc::new(vec![item("b1", 1), item("b2", 2)]));
 
     let mut combine_pairs = Vec::new();
     let outputs = run_to_completion(composition, vec![in_a, in_b], |invocation| {
         match invocation.function_id.as_str() {
             // Pass the item through unchanged, preserving its key, so Combine can be checked below.
-            "Emit" => vec![items(vec![invocation.input[0].items[0].clone()])],
+            "Emit" => vec![Arc::new(vec![invocation.input[0].items[0].clone()])],
             "Combine" => {
                 assert_eq!(
                     invocation.input[0].items.len(),
@@ -133,7 +135,7 @@ fn two_each_inputs_wait_for_both_sides_before_combining() {
                     invocation.input[0].items[0].key,
                     invocation.input[1].items[0].key,
                 ));
-                vec![items(vec![item("out", 0)])]
+                vec![Arc::new(vec![item("out", 0)])]
             }
             other => panic!("unexpected function invoked: {other}"),
         }
@@ -164,8 +166,8 @@ fn optional_each_input_that_stays_empty_does_not_block_or_appear() {
     let composition =
         Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
-    let in_a = data_set(vec![item("a1", 1), item("a2", 2)]);
-    let in_b = data_set(vec![]); // a real composition input, but genuinely empty
+    let in_a = DataSet::from_items(Arc::new(vec![item("a1", 1), item("a2", 2)]));
+    let in_b = DataSet::from_items(Arc::new(vec![])); // a real composition input, but genuinely empty
 
     let mut invocation_count = 0;
     let outputs = run_to_completion(composition, vec![in_a, in_b], |invocation| {
@@ -179,7 +181,7 @@ fn optional_each_input_that_stays_empty_does_not_block_or_appear() {
             invocation.input[1].items.is_empty(),
             "B is optional and stayed empty"
         );
-        vec![items(vec![item("out", 0)])]
+        vec![Arc::new(vec![item("out", 0)])]
     });
 
     assert_eq!(
@@ -210,8 +212,8 @@ fn each_items_arriving_before_blocking_all_input_wait_for_it() {
     let composition =
         Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
-    let in_a = data_set(vec![item("a1", 1), item("a2", 2)]);
-    let in_b = data_set(vec![item("b1", 1), item("b2", 2)]);
+    let in_a = DataSet::from_items(Arc::new(vec![item("a1", 1), item("a2", 2)]));
+    let in_b = DataSet::from_items(Arc::new(vec![item("b1", 1), item("b2", 2)]));
 
     // LIFO order: all of MidA arrives before any of MidB
     let mut combine_inputs = Vec::new();
@@ -219,13 +221,13 @@ fn each_items_arriving_before_blocking_all_input_wait_for_it() {
         .function_id
         .as_str()
     {
-        "Emit" => vec![items(vec![invocation.input[0].items[0].clone()])],
+        "Emit" => vec![Arc::new(vec![invocation.input[0].items[0].clone()])],
         _ => {
             combine_inputs.push((
                 invocation.input[0].items[0].key,
                 invocation.input[1].items.len(),
             ));
-            vec![items(vec![item("out", 0)])]
+            vec![Arc::new(vec![item("out", 0)])]
         }
     });
 
@@ -262,13 +264,16 @@ fn empty_push_into_optional_each_input_does_not_duplicate_invocations() {
     let mut combine_count = 0;
     run_to_completion(
         composition,
-        vec![data_set(vec![item("a1", 1)]), data_set(vec![item("b1", 1)])],
+        vec![
+            DataSet::from_items(Arc::new(vec![item("a1", 1)])),
+            DataSet::from_items(Arc::new(vec![item("b1", 1)])),
+        ],
         |invocation| match invocation.function_id.as_str() {
-            "Emit" if invocation.input[0].items[0].ident == "b1" => vec![items(vec![])],
-            "Emit" => vec![items(vec![invocation.input[0].items[0].clone()])],
+            "Emit" if invocation.input[0].items[0].ident == "b1" => vec![Arc::new(vec![])],
+            "Emit" => vec![Arc::new(vec![invocation.input[0].items[0].clone()])],
             _ => {
                 combine_count += 1;
-                vec![items(vec![item("out", 0)])]
+                vec![Arc::new(vec![item("out", 0)])]
             }
         },
     );
@@ -297,18 +302,18 @@ fn empty_final_push_into_optional_each_input_that_had_items_does_not_run_without
         Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     // LIFO order: Emit(b1) -> Combine(a1, b1) -> Emit(b0), which produces nothing and completes MidB
-    let in_a = data_set(vec![item("a1", 1)]);
-    let in_b = data_set(vec![item("b0", 0), item("b1", 1)]);
+    let in_a = DataSet::from_items(Arc::new(vec![item("a1", 1)]));
+    let in_b = DataSet::from_items(Arc::new(vec![item("b0", 0), item("b1", 1)]));
     let mut combine_b_sizes = Vec::new();
     run_to_completion(composition, vec![in_a, in_b], |invocation| match invocation
         .function_id
         .as_str()
     {
-        "Emit" if invocation.input[0].items[0].ident == "b0" => vec![items(vec![])],
-        "Emit" => vec![items(vec![invocation.input[0].items[0].clone()])],
+        "Emit" if invocation.input[0].items[0].ident == "b0" => vec![Arc::new(vec![])],
+        "Emit" => vec![Arc::new(vec![invocation.input[0].items[0].clone()])],
         _ => {
             combine_b_sizes.push(invocation.input[1].items.len());
-            vec![items(vec![item("out", 0)])]
+            vec![Arc::new(vec![item("out", 0)])]
         }
     });
 
@@ -333,14 +338,17 @@ fn empty_optional_all_input_is_treated_as_absent() {
     let mut invocation_count = 0;
     let outputs = run_to_completion(
         composition,
-        vec![data_set(vec![item("a1", 1)]), data_set(vec![])],
+        vec![
+            DataSet::from_items(Arc::new(vec![item("a1", 1)])),
+            DataSet::from_items(Arc::new(vec![])),
+        ],
         |invocation| {
             invocation_count += 1;
             assert!(
                 invocation.input[1].items.is_empty(),
                 "B is optional and stayed empty"
             );
-            vec![items(vec![item("out", 0)])]
+            vec![Arc::new(vec![item("out", 0)])]
         },
     );
 

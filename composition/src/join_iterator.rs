@@ -279,7 +279,12 @@ impl SetKeyIterator {
                         key = left_it.key;
                     }
                 }
-                JoinStrategy::Right | JoinStrategy::Cross => {
+                JoinStrategy::Right => {
+                    *join_group_key_set = key_groups.iter().map(|(k, _)| *k).collect();
+                    // move left up to the first key of this set, so a match is not missed
+                    while left_it.key < key && left_it.advance() {}
+                }
+                JoinStrategy::Cross => {
                     *join_group_key_set = key_groups.iter().map(|(k, _)| *k).collect()
                     // -> already has the correct key set
                 }
