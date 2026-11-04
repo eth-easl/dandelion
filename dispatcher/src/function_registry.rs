@@ -73,7 +73,7 @@ pub enum FunctionType {
 /// A `BTreeMap` linking function identifiers to function types.
 type FunctionMap = BTreeMap<String, FunctionType>;
 
-// inserts the function into the function map, as selector of a metafunction if is_meta is set
+// inserts the function into the function map, as planner of a metafunction if is_meta is set
 fn fmap_insert_function(
     fmap: &mut FunctionMap,
     key: FunctionId,
@@ -225,8 +225,8 @@ impl FunctionRegistry {
         )
     }
 
-    /// Inserts the selector of a metafunction into the function registry. The metadata holds the
-    /// selector params as input sets and no output sets, the sets passed to every selector are added.
+    /// Inserts the planner of a metafunction into the function registry. The metadata holds the
+    /// planner params as input sets and no output sets, the sets passed to every planner are added.
     pub fn insert_meta_function(
         &self,
         function_id: FunctionId,
@@ -239,7 +239,7 @@ impl FunctionRegistry {
         if !metadata.output_sets.is_empty() {
             return err_dandelion!(DandelionError::FunctionRegistry(
                 FunctionRegistryError::InvalidMetaInsert(format!(
-                    "Metafunction {} cannot have output sets, its selector returns the '{}' set",
+                    "Metafunction {} cannot have output sets, its planner returns the '{}' set",
                     function_id, COMPOSITION_SET
                 )),
             ));
@@ -254,7 +254,7 @@ impl FunctionRegistry {
         {
             return err_dandelion!(DandelionError::FunctionRegistry(
                 FunctionRegistryError::InvalidMetaInsert(format!(
-                    "Input set {} of metafunction {} is reserved for the selector",
+                    "Input set {} of metafunction {} is reserved for the planner",
                     reserved, function_id
                 )),
             ));
@@ -410,14 +410,14 @@ impl composition::Registry for FunctionRegistry {
         Ok(())
     }
 
-    /// Confirms the declared metafunction is registered with a selector taking matching params.
+    /// Confirms the declared metafunction is registered with a planner taking matching params.
     fn check_meta_declaration(&self, id: &str, params: &[&str]) -> DandelionResult<()> {
         let lock_guard = self
             .function_map
             .read()
             .expect("Function registry lock poisoned!");
-        let selector = match lock_guard.get(id) {
-            Some(FunctionType::MetaFunction(selector)) => selector,
+        let planner = match lock_guard.get(id) {
+            Some(FunctionType::MetaFunction(planner)) => planner,
             Some(_) => {
                 return err_dandelion!(DandelionError::Composition(
                     CompositionError::InvalidFunctionDeclaration(format!(
@@ -436,12 +436,12 @@ impl composition::Registry for FunctionRegistry {
             }
         };
         // the last two input sets are the metadata sets added at registration
-        let input_sets = &selector.metadata.input_sets;
-        let selector_params = &input_sets[..input_sets.len() - 2];
-        if params.len() != selector_params.len()
+        let input_sets = &planner.metadata.input_sets;
+        let planner_params = &input_sets[..input_sets.len() - 2];
+        if params.len() != planner_params.len()
             || params
                 .iter()
-                .zip_eq(selector_params.iter())
+                .zip_eq(planner_params.iter())
                 .any(|(decl_name, (metadata_name, _))| *decl_name != *metadata_name)
         {
             return err_dandelion!(DandelionError::Composition(

@@ -24,7 +24,7 @@ use memory::{
 pub trait Registry {
     /// Confirms the declared function is registered with matching params and returns.
     fn check_declaration(&self, id: &str, params: &[&str], rets: &[&str]) -> DandelionResult<()>;
-    /// Confirms the declared metafunction is registered with a selector taking matching params.
+    /// Confirms the declared metafunction is registered with a planner taking matching params.
     fn check_meta_declaration(&self, id: &str, params: &[&str]) -> DandelionResult<()>;
     /// Simple lookup whether an identifier is already registered.
     fn id_exists(&self, id: &str) -> bool;
@@ -52,10 +52,10 @@ pub trait Executor {
     );
 }
 
-/// The input sets of its invocations are the selector inputs followed by the data inputs.
+/// The input sets of its invocations are the planner inputs followed by the data inputs.
 #[derive(Debug)]
 pub struct MetaApplication {
-    /// Number of selector inputs at the start of the input sets.
+    /// Number of planner inputs at the start of the input sets.
     pub num_planner_inputs: usize,
     /// Names of the data input sets in the composition applying the metafunction.
     pub input_names: Vec<String>,
