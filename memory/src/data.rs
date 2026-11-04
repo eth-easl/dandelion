@@ -189,7 +189,6 @@ pub struct DataSet {
 }
 
 impl DataSet {
-    // TODO this does construct an unsorted data set, meaning we cannot rely on datasets always being sorted.
     // Should check if we need this or it would make sense to only construct datasets that are sorted (or never sorted, and leave that to the composition sets?)
     pub fn from_items(items: Arc<Vec<DataItem>>) -> DataSet {
         let mut num_unresolved = 0;

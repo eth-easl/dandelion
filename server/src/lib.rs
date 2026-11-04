@@ -23,7 +23,6 @@ pub struct DandelionDeserializeResponse<'data> {
 
 #[derive(Serialize, Deserialize)]
 pub struct InputSet<'data> {
-    pub identifier: String,
     #[serde(borrow)]
     pub items: Vec<InputItem<'data>>,
 }
@@ -110,15 +109,6 @@ fn encode_sets(
         // start doc by making space for size
         let doc_start = response.len();
         response.extend_from_slice(&0i32.to_le_bytes());
-
-        // set identifier: string type, identifier e_name and actual set name as length, string, null byte
-        response.push(2);
-        response.extend_from_slice("identifier\0".as_bytes());
-        // TODO: sets no longer carry names, send them once we have them again
-        let set_name = "";
-        response.extend_from_slice(&((set_name.len() + 1) as i32).to_le_bytes());
-        response.extend_from_slice(set_name.as_bytes());
-        response.push(0);
 
         // set items: array type, items e_name and a doc for the array
         response.push(4);
@@ -441,8 +431,6 @@ fn test_dandelion_body_serialization() {
 
     let expected_response_struct = DandelionDeserializeResponse {
         sets: vec![InputSet {
-            // TODO: sets currently have no names, so the response always contains empty set identifiers
-            identifier: String::from(""),
             items: vec![InputItem {
                 identifier: String::from("item_ident"),
                 key: 7,

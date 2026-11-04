@@ -139,7 +139,6 @@ mod composition_stress {
         let request = DandelionRequest {
             name: String::from(composition),
             sets: vec![InputSet {
-                identifier: String::from(""),
                 items: data
                     .iter()
                     .enumerate()

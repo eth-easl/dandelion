@@ -2,7 +2,7 @@ use crate::context::{Context, ContextDataItem, ContextDataSet, ContextTrait};
 use bytes::{Buf, Bytes};
 use core::mem::size_of;
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, FrontendError};
-use log::{debug, error, warn};
+use log::{debug, error};
 
 pub struct BytesContext {
     frames: Vec<Bytes>,
@@ -304,55 +304,32 @@ fn read_data_set(
     let _doc_name = read_cstring(buf)?;
     let _doc_lenght = read_length(buf)?;
 
-    // allow for arbitrary ordering of data set fields
-    let mut items = Vec::new();
-    let mut total_size = 0;
-    let mut check = false;
-    for _ in 0..2 {
-        let next_type = read_type_byte(buf)?;
-        match next_type {
-            2 => {
-                // -> expect the identifier part
-                read_and_check_cstring(buf, "identifier\0")?;
-                let _ = read_string(buf)?;
-                warn!("Set identifiers are deprecated!");
-            }
-            4 => {
-                // -> expect the items part
-                read_and_check_cstring(buf, "items\0")?;
-                let array_end = buf.remaining() - read_length(buf)?;
-
-                // reads all items
-                while buf.remaining() > array_end {
-                    if let Some(item) = read_data_item(buf, total_length)? {
-                        total_size += item.data.size;
-                        items.push(item);
-                    } else {
-                        break;
-                    }
-                }
-
-                check = true;
-            }
-            x => {
-                debug!("Got type {}, expected either 2 (string), 4 (array)", x);
-                let next_id = read_cstring(buf)?;
-                debug!("Next identifier is {}", next_id);
-                return err_dandelion!(DandelionError::RequestError(
-                    FrontendError::MalformedMessage,
-                ));
-            }
-        };
-    }
-    read_and_check_termination(buf)?;
-
-    // check that both fields have been read
-    if !check {
-        debug!("Some set field is missing.");
+    let next_type = read_type_byte(buf)?;
+    if next_type != 4 {
+        debug!("Got type {}, expected 4 (array)", next_type);
+        let next_id = read_cstring(buf)?;
+        debug!("Next identifier is {}", next_id);
         return err_dandelion!(DandelionError::RequestError(
             FrontendError::MalformedMessage,
         ));
     }
+
+    // expect the items part
+    read_and_check_cstring(buf, "items\0")?;
+    let array_end = buf.remaining() - read_length(buf)?;
+
+    // reads all items
+    let mut items = Vec::new();
+    let mut total_size = 0;
+    while buf.remaining() > array_end {
+        if let Some(item) = read_data_item(buf, total_length)? {
+            total_size += item.data.size;
+            items.push(item);
+        } else {
+            break;
+        }
+    }
+    read_and_check_termination(buf)?;
 
     Ok(Some(ContextDataSet { items, total_size }))
 }

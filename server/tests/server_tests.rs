@@ -80,7 +80,6 @@ mod server_tests {
         let mat_request = DandelionRequest {
             name: function_name,
             sets: vec![InputSet {
-                identifier: String::from(""),
                 items: vec![InputItem {
                     identifier: String::from(""),
                     key: 0,

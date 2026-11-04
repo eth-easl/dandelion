@@ -41,9 +41,19 @@ struct Inner {
     inputs: Vec<Option<(InputSet, Sharding, bool, bool)>>,
     outputs: Vec<Option<Arc<CompositionSet>>>,
     needs_retention: bool,
-    is_blocking: bool,
+    incomplete_blocking: usize,
+    incomplete_total: usize,
     num_outstanding: usize,
     all_started: bool,
+}
+
+impl Inner {
+    fn is_blocking(&self) -> bool {
+        self.incomplete_blocking > 0
+    }
+    fn is_complete(&self) -> bool {
+        self.incomplete_total == 0
+    }
 }
 
 pub(crate) struct Function {
@@ -67,14 +77,11 @@ impl Function {
         mut min_set_bytes: Vec<usize>,
     ) -> Function {
         min_set_bytes.resize(inputs.len(), 0);
-        let is_blocking = inputs.iter().any(|in_opt| {
-            in_opt
-                .as_ref()
-                .is_some_and(|(sharding, _)| sharding.is_blocking())
-        });
         // TODO: Retention is only needed when more than one input is still streaming. So this could
         //       be improved further.
         let needs_retention = inputs.len() > 1;
+        let mut incomplete_blocking = 0;
+        let mut incomplete_total = 0;
         let inputs = inputs
             .iter()
             .map(|in_opt| {
@@ -82,8 +89,10 @@ impl Function {
                     let in_set = if !sharding.is_blocking() {
                         InputSet::StreamingPending(DataSetAccumulator::new())
                     } else {
+                        incomplete_blocking += 1;
                         InputSet::Incomplete
                     };
+                    incomplete_total += 1;
                     (in_set, *sharding, *optional, false)
                 })
             })
@@ -94,7 +103,8 @@ impl Function {
             inner: Mutex::new(Inner {
                 inputs,
                 outputs,
-                is_blocking,
+                incomplete_blocking,
+                incomplete_total,
                 needs_retention,
                 num_outstanding: 0,
                 all_started: false,
@@ -105,6 +115,7 @@ impl Function {
         }
     }
 
+    /// Assumes this is only called once for each blocking input set.
     pub(crate) fn in_set_complete(
         &self,
         data_set: DataSet,
@@ -113,30 +124,30 @@ impl Function {
         exec: &mut impl Executor,
     ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
+        debug_assert!(
+            inner.is_blocking(),
+            "in_set_complete was called on non-blocking function!"
+        );
+        debug_assert!(
+            inner.inputs[set_idx]
+                .as_ref()
+                .map_or_else(|| true, |x| x.1.is_blocking()),
+            "in_set_complete was called on non-blocking input set"
+        );
 
-        if let Some((set, _, _, _)) = inner.inputs[set_idx].as_mut() {
+        if let Some((set, sharding, _, _)) = inner.inputs[set_idx].as_mut() {
             *set = InputSet::Complete(data_set);
+            if sharding.is_blocking() {
+                inner.incomplete_blocking -= 1;
+            }
+            inner.incomplete_total -= 1;
         }
 
-        let mut blocking = false;
-        let mut complete = true;
-        for (set, sharding, _, _) in inner.inputs.iter().flatten() {
-            let set_complete = set.is_complete();
-            blocking |= sharding.is_blocking() && !set_complete;
-            complete &= set_complete;
-            if !complete && blocking {
-                break;
-            }
-        }
+        let blocking = inner.is_blocking();
+        let complete = inner.is_complete();
 
         let mut num_created = 0;
         if !blocking {
-            debug_assert!(
-                inner.is_blocking,
-                "in_set_complete was called on non-blocking function!"
-            );
-            inner.is_blocking = false;
-
             let mut sets = Vec::with_capacity(inner.inputs.len());
             let mut runnable = true;
             for in_opt in inner.inputs.iter() {
@@ -178,6 +189,7 @@ impl Function {
         }
     }
 
+    /// Assumes this is only called once with `complete = true` for each input set.
     pub(crate) fn push_streaming_items(
         &self,
         set_idx: usize,
@@ -187,6 +199,12 @@ impl Function {
         exec: &mut impl Executor,
     ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
+        debug_assert!(
+            inner.inputs[set_idx]
+                .as_ref()
+                .map_or_else(|| true, |x| !x.1.is_blocking()),
+            "push_streaming_items was called on blocking input set"
+        );
 
         let needs_retention = inner.needs_retention;
         if let Some((ref mut in_set, _, _, ref mut received_items)) = inner.inputs[set_idx] {
@@ -201,7 +219,7 @@ impl Function {
             panic!("Streamed input set is None.");
         }
 
-        let mut runnable = !inner.is_blocking;
+        let mut runnable = !inner.is_blocking();
         let mut sets = Vec::with_capacity(inner.inputs.len());
         if runnable {
             for (idx, in_opt) in inner.inputs.iter().enumerate() {
@@ -238,6 +256,7 @@ impl Function {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
         inner.num_outstanding += num_created;
         if complete {
+            inner.incomplete_total -= 1;
             if inner.needs_retention {
                 if let Some((InputSet::StreamingPending(acc), sharding, optional, received_items)) =
                     inner.inputs[set_idx].take()
