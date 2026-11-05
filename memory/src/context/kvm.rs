@@ -1,4 +1,7 @@
-use crate::context::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::{
+    context::{Context, ContextTrait, ContextType, MemoryDomain},
+    Position,
+};
 
 /// Guest page size. Defined here rather than in the kvm compute driver so that this crate does not
 /// depend back on `machine_interface`; the driver's arch module uses the same value.
@@ -203,21 +206,8 @@ impl Drop for Memory {
 
 #[derive(Debug)]
 pub struct KvmContext {
-    /// The overlay stores information about valid data to read in the context.
-    /// the data structure records where overlay items END and how big they are.
-    /// The end is recorded as start + size - 1 (so it is the index of the last byte).
-    /// We are using the end, as it makes overlap checks easier, since we can be sure,
-    /// there is no overlap if the offset we are looking for is bigger than the end.
-    /// The condition to check for no overlap is, that either is strictly before the other,
-    /// meaning overlay_start >= check_end || check_start > overlay_end, so checking for
-    /// overlap is equivalent to the negation of that, which can be expressed as:
-    /// overlay_start < check_end && check_start =< overlay_end.
-    /// Additionally overlay should only contain whole pages.
-    /// The values are tuples of the overlay starts and items containing the context,
-    /// that is overlayed with the offset into those contexts.
-    /// The overlay item can contain a context, which is supposed to be mapped into the
-    /// current context, or if it does not, it indicates that the item has been written to
-    /// the location the overlay covers.
+    /// Map of all the pages that are backing this context.
+    /// Keys are the base addresses of the pages.
     pub overlay: BTreeMap<usize, (PageType, Page)>,
     // TODO: document lifetime dependencies somewhere, to make sure it is clear that unmapping the memory can cause issues.
     pub backing_memory: Arc<Memory>,
@@ -248,6 +238,28 @@ impl KvmContext {
                 ))
             }
         }
+    }
+
+    pub fn get_subcontext(&self, position: &Position) -> Context {
+        let overlay_start = round_down_to_page(position.offset);
+        let overlay_end = (position.offset + position.size).next_multiple_of(PAGE_SIZE);
+        let overlay: BTreeMap<_, _> = self
+            .overlay
+            .range(overlay_start..overlay_end)
+            .map(|(key, value)| (*key, value.clone()))
+            .collect();
+        let context_size = overlay
+            .last_key_value()
+            .and_then(|(key, _)| Some(*key + PAGE_SIZE))
+            .unwrap_or(0);
+        Context::new(
+            ContextType::Kvm(Box::new(Self {
+                context_size,
+                overlay,
+                backing_memory: self.backing_memory.clone(),
+            })),
+            context_size,
+        )
     }
 }
 
@@ -459,10 +471,6 @@ impl ContextTrait for KvmContext {
         }
 
         let read_size = core::mem::size_of_val(read_buffer);
-        if offset + read_size > self.context_size {
-            log::debug!("Read out of bounds at offset {}", offset);
-            return err_dandelion!(DandelionError::InvalidRead);
-        }
         let mut read_memory = unsafe {
             core::slice::from_raw_parts_mut(read_buffer.as_mut_ptr() as *mut u8, read_size)
         };

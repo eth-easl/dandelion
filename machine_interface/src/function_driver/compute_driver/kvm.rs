@@ -323,11 +323,8 @@ impl EngineLoop for KvmLoop {
         drop(pages);
 
         let (exit_code, items) =
-            read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
+            read_output_structs::<u64, u64>(kvm_context.as_mut(), elf_config.system_data_offset)?;
 
-        // TODO: after merge, create items that only contain the pages for that item
-
-        let context_arc = Arc::new(context);
         let mut set_vec = Vec::with_capacity(items.len());
         for set in items {
             set_vec.push(Arc::new(
@@ -337,7 +334,7 @@ impl EngineLoop for KvmLoop {
                             ident,
                             key,
                             LocalData {
-                                ctx: context_arc.clone(),
+                                ctx: Arc::new(kvm_context.get_subcontext(&pos)),
                                 pos,
                             },
                         )

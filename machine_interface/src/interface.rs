@@ -285,10 +285,9 @@ pub fn write_heap_end<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
 // Currently need to keep it this way, because KVM contexts to be changed after.
 // Introduce subslicing interface on context types, then can apply this here to get DataItems only covering the specific range of each element.
 pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
-    context: &mut Context,
+    context: &mut impl ContextTrait,
     base_address: usize,
 ) -> DandelionResult<(i32, Vec<Vec<(String, u32, Position)>>)> {
-    context.clear_metadata();
     // read the system buffer
     let mut system_struct = DandelionSystemData::<PtrT, SizeT>::default();
     context.read(base_address, core::slice::from_mut(&mut system_struct))?;
