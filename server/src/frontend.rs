@@ -2,7 +2,7 @@ use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::protocol::{
-    DandelionBody, DandelionRequest, InvocationTarget, RegisterChain, RegisterFunction,
+    DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterChain, RegisterFunction,
 };
 use dispatcher::dispatcher::Dispatcher;
 use http_body_util::BodyExt;
@@ -32,27 +32,29 @@ async fn handle_function_registration(
     folder_path: &'static str,
 ) -> DandelionResult<DandelionBody> {
     let request_map = RegisterFunction::decode(read_body(req).await?)?;
-    // if local is present ignore the binary
-    let path_string = if !request_map.local_path.is_empty() {
-        // check that file exists
-        if let Err(err) = std::fs::File::open(&request_map.local_path) {
-            return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
-                format!("Tried to register function with local path, but failed to open file with error {}",
-                err),
-            )));
-        };
-        request_map.local_path
-    } else {
-        // write function to file
-        std::fs::create_dir_all(folder_path).unwrap();
-        let mut path_buff = PathBuf::from(folder_path);
-        path_buff.push(request_map.name.clone());
-        let mut function_file = std::fs::File::create(path_buff.clone())
-            .expect("Failed to create file for registering function");
-        function_file
-            .write_all(&request_map.binary)
-            .expect("Failed to write file with content for registering");
-        path_buff.to_str().unwrap().to_string()
+    let path_string = match request_map.executable {
+        Executable::LocalPath(local_path) => {
+            // check that file exists
+            if let Err(err) = std::fs::File::open(&local_path) {
+                return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
+                    format!("Tried to register function with local path, but failed to open file with error {}",
+                    err),
+                )));
+            };
+            local_path
+        }
+        Executable::Binary(binary) => {
+            // write function to file
+            std::fs::create_dir_all(folder_path).unwrap();
+            let mut path_buff = PathBuf::from(folder_path);
+            path_buff.push(request_map.name.clone());
+            let mut function_file = std::fs::File::create(path_buff.clone())
+                .expect("Failed to create file for registering function");
+            function_file
+                .write_all(&binary)
+                .expect("Failed to write file with content for registering");
+            path_buff.to_str().unwrap().to_string()
+        }
     };
 
     // TODO: move to machine config

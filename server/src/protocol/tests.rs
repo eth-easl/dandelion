@@ -147,8 +147,7 @@ async fn test_happy_path() {
         name: "f".into(),
         context_size: 4096,
         engine_type: "Process".into(),
-        local_path: "path".into(),
-        binary_length: 2,
+        executable: Some(proto::register_function::Executable::BinaryLength(2)),
         input_sets: vec![
             set("dynamic", None),
             set("empty", Some(proto::StaticInputItems::default())),
@@ -169,8 +168,7 @@ async fn test_happy_path() {
     assert_eq!(registration.name, "f");
     assert_eq!(registration.context_size, 4096);
     assert_eq!(registration.engine_type, "Process");
-    assert_eq!(registration.local_path, "path");
-    assert_eq!(registration.binary, [0, 0xff]);
+    assert!(matches!(&registration.executable, Executable::Binary(binary) if *binary == [0, 0xff]));
     assert_eq!(
         registration.input_sets,
         [
@@ -184,6 +182,17 @@ async fn test_happy_path() {
     );
     assert_eq!(registration.output_sets, ["output"]);
     assert_eq!(registration.min_set_bytes, [8]);
+
+    // Function registration with a local path carries no binary payload.
+    let metadata = proto::RegisterFunction {
+        executable: Some(proto::register_function::Executable::LocalPath(
+            "path".into(),
+        )),
+        input_sets: vec![],
+        ..metadata
+    };
+    let registration = RegisterFunction::decode(frame(&encode(&metadata, &[]))).unwrap();
+    assert!(matches!(&registration.executable, Executable::LocalPath(path) if path == "path"));
 
     // Composition registration.
     let metadata = proto::RegisterChain {
@@ -269,7 +278,7 @@ fn test_invalid_registration() {
         name: "f".into(),
         engine_type: "Process".into(),
         context_size: 4096,
-        binary_length: 2,
+        executable: Some(proto::register_function::Executable::BinaryLength(2)),
         ..Default::default()
     };
     let unnamed = proto::RegisterFunction {
@@ -282,6 +291,11 @@ fn test_invalid_registration() {
         ..valid.clone()
     };
     assert_eq!(decode(&no_engine, b"ab"), "Missing engine type");
+    let no_executable = proto::RegisterFunction {
+        executable: None,
+        ..valid.clone()
+    };
+    assert_eq!(decode(&no_executable, b""), "Missing executable");
     assert_eq!(decode(&valid, b"a"), "Payload is truncated");
     assert_eq!(decode(&valid, b"abc"), "Unexpected trailing payload bytes");
 

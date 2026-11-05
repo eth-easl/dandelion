@@ -38,12 +38,17 @@ pub struct DandelionRequest {
 }
 
 #[derive(Debug)]
+pub enum Executable {
+    LocalPath(String),
+    Binary(Vec<u8>),
+}
+
+#[derive(Debug)]
 pub struct RegisterFunction {
     pub name: String,
     pub context_size: usize,
     pub engine_type: String,
-    pub local_path: String,
-    pub binary: Vec<u8>,
+    pub executable: Executable,
     pub input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
     pub output_sets: Vec<String>,
     pub min_set_bytes: Vec<usize>,
@@ -136,7 +141,15 @@ impl RegisterFunction {
             offset += size;
             Ok(data)
         };
-        let binary = read_data(metadata.binary_length)?;
+        let executable = match metadata
+            .executable
+            .ok_or_else(|| invalid("Missing executable"))?
+        {
+            proto::register_function::Executable::LocalPath(path) => Executable::LocalPath(path),
+            proto::register_function::Executable::BinaryLength(length) => {
+                Executable::Binary(read_data(length)?)
+            }
+        };
         let input_sets = metadata
             .input_sets
             .into_iter()
@@ -161,8 +174,7 @@ impl RegisterFunction {
             name: metadata.name,
             context_size,
             engine_type: metadata.engine_type,
-            local_path: metadata.local_path,
-            binary,
+            executable,
             input_sets,
             output_sets: metadata.output_sets,
             min_set_bytes,

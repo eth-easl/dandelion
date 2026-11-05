@@ -30,8 +30,10 @@ message RegisterFunction {
     string name = 1;
     uint64 context_size = 2;
     string engine_type = 3;
-    string local_path = 4;
-    uint64 binary_length = 5;
+    oneof executable {
+        string local_path = 4;
+        uint64 binary_length = 5;
+    }
     repeated RegistrationInputSet input_sets = 6;
     repeated string output_sets = 7;
     repeated uint64 min_set_bytes = 8;

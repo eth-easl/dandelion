@@ -4,7 +4,7 @@ mod server_tests {
     use byteorder::{LittleEndian, ReadBytesExt};
     use dandelion_server::protocol::PROTOCOL_VERSION;
     use prost::Message;
-    use proto::dandelion_request::Target;
+    use proto::{dandelion_request::Target, register_function::Executable};
     use reqwest::blocking::Client;
     use serial_test::serial;
     use std::{
@@ -261,18 +261,18 @@ mod server_tests {
         };
 
         let function_name = format!("matmul_{}", version_string);
-        let (local_path, binary) = if local {
-            (matmul_path, Vec::new())
+        let (executable, binary) = if local {
+            (Executable::LocalPath(matmul_path), Vec::new())
         } else {
-            (String::new(), std::fs::read(matmul_path).unwrap())
+            let binary = std::fs::read(matmul_path).unwrap();
+            (Executable::BinaryLength(binary.len() as u64), binary)
         };
         let register_request = encode(
             &proto::RegisterFunction {
                 name: function_name.clone(),
                 context_size: 0x802_0000,
                 min_set_bytes: vec![],
-                local_path,
-                binary_length: binary.len() as u64,
+                executable: Some(executable),
                 engine_type,
                 input_sets: vec![proto::RegistrationInputSet {
                     identifier: String::from("InMats"),
