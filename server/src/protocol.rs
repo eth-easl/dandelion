@@ -48,8 +48,7 @@ pub struct RegisterChain {
 }
 
 fn payload_size(length: u64, remaining: usize) -> DandelionResult<usize> {
-    let size = usize::try_from(length)
-        .map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))?;
+    let size = length as usize;
     if size > remaining {
         return Err(dandelion_err!(DandelionError::RequestError(
             FrontendError::StreamEnd
@@ -118,16 +117,6 @@ impl RegisterFunction {
                 FrontendError::MalformedMessage
             )));
         }
-        let context_size = usize::try_from(metadata.context_size)
-            .map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))?;
-        let min_set_bytes = metadata
-            .min_set_bytes
-            .into_iter()
-            .map(|size| {
-                usize::try_from(size)
-                    .map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))
-            })
-            .collect::<DandelionResult<Vec<_>>>()?;
         let total: usize = payload.iter().map(Bytes::len).sum();
         let payload = BytesContext::new(payload);
         let mut offset = 0;
@@ -172,12 +161,16 @@ impl RegisterFunction {
         }
         Ok(Self {
             name: metadata.name,
-            context_size,
+            context_size: metadata.context_size as usize,
             engine_type: metadata.engine_type,
             executable,
             input_sets,
             output_sets: metadata.output_sets,
-            min_set_bytes,
+            min_set_bytes: metadata
+                .min_set_bytes
+                .into_iter()
+                .map(|size| size as usize)
+                .collect(),
         })
     }
 }
