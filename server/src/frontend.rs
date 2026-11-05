@@ -1,5 +1,5 @@
 use dandelion_commons::{
-    err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
+    dandelion_err, err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::protocol::{
     DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterChain, RegisterFunction,
@@ -164,10 +164,10 @@ async fn read_body(req: Request<Incoming>) -> DandelionResult<Vec<bytes::Bytes>>
     let mut body = req.into_body();
     let mut frames = Vec::new();
     while let Some(frame) = body.frame().await {
-        let frame = frame.or_else(|err| {
-            err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
-                format!("Failed to read request body: {err}")
-            )))
+        let frame = frame.map_err(|_| {
+            dandelion_err!(DandelionError::RequestError(
+                FrontendError::FailledToGetFrames
+            ))
         })?;
         if let Ok(data) = frame.into_data() {
             frames.push(data);
@@ -233,9 +233,10 @@ async fn service(
         Err(err) => {
             warn!("Failed to serve request: {}", err);
             let status = match err.error {
-                DandelionError::RequestError(FrontendError::InvalidRequest(_)) => {
-                    StatusCode::BAD_REQUEST
+                DandelionError::RequestError(FrontendError::InternalError(_)) => {
+                    StatusCode::INTERNAL_SERVER_ERROR
                 }
+                DandelionError::RequestError(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             Ok(http_response(

@@ -352,7 +352,9 @@ mod server_tests {
             .send()
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-        assert!(status_message(&response.bytes().unwrap()).contains("Missing invocation target"));
+        assert!(
+            status_message(&response.bytes().unwrap()).contains("RequestError(MalformedMessage)")
+        );
 
         send_matrix_request(
             "http://localhost:8080/hot/matmul",

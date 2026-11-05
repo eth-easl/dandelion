@@ -6,24 +6,12 @@ mod tests;
 use crate::proto;
 pub use body::{DandelionBody, DandelionBuf};
 use bytes::Bytes;
-use dandelion_commons::{dandelion_err, DError, DandelionError, DandelionResult, FrontendError};
+use dandelion_commons::{dandelion_err, DandelionError, DandelionResult, FrontendError};
 pub use envelope::PROTOCOL_VERSION;
 use machine_interface::{
     memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
     DataItem, DataSet, Position,
 };
-
-fn invalid(message: impl Into<String>) -> DError {
-    dandelion_err!(DandelionError::RequestError(FrontendError::InvalidRequest(
-        message.into()
-    )))
-}
-
-fn encoding_error(message: impl Into<String>) -> DError {
-    dandelion_err!(DandelionError::RequestError(FrontendError::InternalError(
-        message.into()
-    )))
-}
 
 #[derive(Debug)]
 pub enum InvocationTarget {
@@ -60,10 +48,12 @@ pub struct RegisterChain {
 }
 
 fn payload_size(length: u64, remaining: usize) -> DandelionResult<usize> {
-    let size =
-        usize::try_from(length).map_err(|_| invalid("Payload length exceeds platform capacity"))?;
+    let size = usize::try_from(length)
+        .map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))?;
     if size > remaining {
-        return Err(invalid("Payload is truncated"));
+        return Err(dandelion_err!(DandelionError::RequestError(
+            FrontendError::StreamEnd
+        )));
     }
     Ok(size)
 }
@@ -71,10 +61,11 @@ fn payload_size(length: u64, remaining: usize) -> DandelionResult<usize> {
 impl DandelionRequest {
     pub fn decode(frames: Vec<Bytes>) -> DandelionResult<Self> {
         let (metadata, payload) = envelope::decode_frames::<proto::DandelionRequest>(frames)?;
-        let target = match metadata
-            .target
-            .ok_or_else(|| invalid("Missing invocation target"))?
-        {
+        let target = match metadata.target.ok_or_else(|| {
+            dandelion_err!(DandelionError::RequestError(
+                FrontendError::MalformedMessage
+            ))
+        })? {
             proto::dandelion_request::Target::Name(name) => InvocationTarget::Name(name),
             proto::dandelion_request::Target::Composition(source) => {
                 InvocationTarget::Composition(source)
@@ -100,7 +91,9 @@ impl DandelionRequest {
             }));
         }
         if offset != total {
-            return Err(invalid("Unexpected trailing payload bytes"));
+            return Err(dandelion_err!(DandelionError::RequestError(
+                FrontendError::ViolatedSpec
+            )));
         }
         let mut context = Context::new(
             ContextType::Bytes(Box::new(BytesContext::new(payload))),
@@ -116,19 +109,23 @@ impl RegisterFunction {
     pub fn decode(frames: Vec<Bytes>) -> DandelionResult<Self> {
         let (metadata, payload) = envelope::decode_frames::<proto::RegisterFunction>(frames)?;
         if metadata.name.is_empty() {
-            return Err(invalid("Missing function name"));
+            return Err(dandelion_err!(DandelionError::RequestError(
+                FrontendError::MalformedMessage
+            )));
         }
         if metadata.engine_type.is_empty() {
-            return Err(invalid("Missing engine type"));
+            return Err(dandelion_err!(DandelionError::RequestError(
+                FrontendError::MalformedMessage
+            )));
         }
         let context_size = usize::try_from(metadata.context_size)
-            .map_err(|_| invalid("Context size exceeds platform capacity"))?;
+            .map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))?;
         let min_set_bytes = metadata
             .min_set_bytes
             .into_iter()
             .map(|size| {
                 usize::try_from(size)
-                    .map_err(|_| invalid("Minimum set size exceeds platform capacity"))
+                    .map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))
             })
             .collect::<DandelionResult<Vec<_>>>()?;
         let total: usize = payload.iter().map(Bytes::len).sum();
@@ -141,10 +138,11 @@ impl RegisterFunction {
             offset += size;
             Ok(data)
         };
-        let executable = match metadata
-            .executable
-            .ok_or_else(|| invalid("Missing executable"))?
-        {
+        let executable = match metadata.executable.ok_or_else(|| {
+            dandelion_err!(DandelionError::RequestError(
+                FrontendError::MalformedMessage
+            ))
+        })? {
             proto::register_function::Executable::LocalPath(path) => Executable::LocalPath(path),
             proto::register_function::Executable::BinaryLength(length) => {
                 Executable::Binary(read_data(length)?)
@@ -168,7 +166,9 @@ impl RegisterFunction {
             })
             .collect::<DandelionResult<Vec<_>>>()?;
         if offset != total {
-            return Err(invalid("Unexpected trailing payload bytes"));
+            return Err(dandelion_err!(DandelionError::RequestError(
+                FrontendError::ViolatedSpec
+            )));
         }
         Ok(Self {
             name: metadata.name,
@@ -186,7 +186,9 @@ impl RegisterChain {
     pub fn decode(frames: Vec<Bytes>) -> DandelionResult<Self> {
         let (metadata, payload) = envelope::decode_frames::<proto::RegisterChain>(frames)?;
         if !payload.is_empty() {
-            return Err(invalid("Composition registration must not contain payload"));
+            return Err(dandelion_err!(DandelionError::RequestError(
+                FrontendError::ViolatedSpec
+            )));
         }
         Ok(Self {
             composition: metadata.composition,

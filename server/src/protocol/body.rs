@@ -1,7 +1,7 @@
-use super::{encoding_error, envelope};
+use super::envelope;
 use crate::proto;
 use bytes::{Buf, Bytes};
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
+use dandelion_commons::{dandelion_err, records::Recorder, DandelionError, DandelionResult};
 use machine_interface::{
     composition::LocalCompositionSet,
     memory_domain::{Context, ContextTrait},
@@ -65,11 +65,11 @@ impl DandelionBuf {
                 .filter(|end| *end <= context.size)
                 .is_none()
             {
-                return Err(encoding_error("Payload item exceeds its context"));
+                return Err(dandelion_err!(DandelionError::InvalidRead));
             }
             remaining = remaining
                 .checked_add(position.size)
-                .ok_or_else(|| encoding_error("Body size overflows"))?;
+                .ok_or_else(|| dandelion_err!(DandelionError::UsizeTypeConversionError))?;
             if position.size > 0 {
                 segments.push_back(Segment::Payload { context, position });
             }

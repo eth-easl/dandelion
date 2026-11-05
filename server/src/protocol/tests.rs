@@ -32,9 +32,9 @@ fn decode_response<M: Message + Default>(mut body: &[u8]) -> (M, &[u8]) {
     (metadata, body)
 }
 
-fn invalid_request<T: Debug>(result: DandelionResult<T>) -> String {
+fn request_error<T: Debug>(result: DandelionResult<T>) -> FrontendError {
     match result.unwrap_err().error {
-        DandelionError::RequestError(FrontendError::InvalidRequest(message)) => message,
+        DandelionError::RequestError(error) => error,
         error => panic!("Unexpected error: {error:?}"),
     }
 }
@@ -211,7 +211,7 @@ async fn test_happy_path() {
 
 #[test]
 fn test_malformed_envelope() {
-    let decode = |bytes: &[u8]| invalid_request(DandelionRequest::decode(frame(bytes)));
+    let decode = |bytes: &[u8]| request_error(DandelionRequest::decode(frame(bytes)));
     let valid = encode(
         &proto::DandelionRequest {
             target: target("f"),
@@ -221,36 +221,43 @@ fn test_malformed_envelope() {
     );
     let metadata = &valid[encoded_len_varint(PROTOCOL_VERSION)..];
     for (body, expected) in [
-        (vec![], "Invalid protocol version"),
+        // Invalid protocol version.
+        (vec![], FrontendError::ViolatedSpec),
+        // Unsupported protocol version.
         (
             versioned(PROTOCOL_VERSION + 1, metadata),
-            "Unsupported protocol version",
+            FrontendError::ViolatedSpec,
         ),
-        (versioned(PROTOCOL_VERSION, &[]), "Invalid metadata length"),
+        // Invalid metadata length.
+        (
+            versioned(PROTOCOL_VERSION, &[]),
+            FrontendError::ViolatedSpec,
+        ),
         (
             versioned(PROTOCOL_VERSION, &[0x80]),
-            "Invalid metadata length",
+            FrontendError::ViolatedSpec,
         ),
         (
             versioned(PROTOCOL_VERSION, &[0xff; 11]),
-            "Invalid metadata length",
+            FrontendError::ViolatedSpec,
         ),
-        (versioned(PROTOCOL_VERSION, &[1]), "Truncated metadata"),
+        // Truncated metadata.
+        (versioned(PROTOCOL_VERSION, &[1]), FrontendError::StreamEnd),
+        // Invalid Protobuf metadata.
         (
             versioned(PROTOCOL_VERSION, &[1, 0xff]),
-            "Invalid Protobuf metadata",
+            FrontendError::MalformedMessage,
         ),
     ] {
-        let message = decode(&body);
-        assert!(message.contains(expected), "{body:?}: {message}");
+        assert_eq!(decode(&body), expected, "{body:?}");
     }
 }
 
 #[test]
 fn test_invalid_invocation() {
-    let decode = |bytes: &[u8]| invalid_request(DandelionRequest::decode(frame(bytes)));
+    let decode = |bytes: &[u8]| request_error(DandelionRequest::decode(frame(bytes)));
     let missing = encode(&proto::DandelionRequest::default(), &[]);
-    assert_eq!(decode(&missing), "Missing invocation target");
+    assert_eq!(decode(&missing), FrontendError::MalformedMessage);
 
     let metadata = proto::DandelionRequest {
         target: target("f"),
@@ -262,17 +269,17 @@ fn test_invalid_invocation() {
             ..Default::default()
         }],
     };
-    assert_eq!(decode(&encode(&metadata, b"ab")), "Payload is truncated");
+    assert_eq!(decode(&encode(&metadata, b"ab")), FrontendError::StreamEnd);
     assert_eq!(
         decode(&encode(&metadata, b"abcd")),
-        "Unexpected trailing payload bytes"
+        FrontendError::ViolatedSpec
     );
 }
 
 #[test]
 fn test_invalid_registration() {
     let decode = |metadata: &proto::RegisterFunction, payload: &[u8]| {
-        invalid_request(RegisterFunction::decode(frame(&encode(metadata, payload))))
+        request_error(RegisterFunction::decode(frame(&encode(metadata, payload))))
     };
     let valid = proto::RegisterFunction {
         name: "f".into(),
@@ -285,26 +292,26 @@ fn test_invalid_registration() {
         name: String::new(),
         ..valid.clone()
     };
-    assert_eq!(decode(&unnamed, b"ab"), "Missing function name");
+    assert_eq!(decode(&unnamed, b"ab"), FrontendError::MalformedMessage);
     let no_engine = proto::RegisterFunction {
         engine_type: String::new(),
         ..valid.clone()
     };
-    assert_eq!(decode(&no_engine, b"ab"), "Missing engine type");
+    assert_eq!(decode(&no_engine, b"ab"), FrontendError::MalformedMessage);
     let no_executable = proto::RegisterFunction {
         executable: None,
         ..valid.clone()
     };
-    assert_eq!(decode(&no_executable, b""), "Missing executable");
-    assert_eq!(decode(&valid, b"a"), "Payload is truncated");
-    assert_eq!(decode(&valid, b"abc"), "Unexpected trailing payload bytes");
+    assert_eq!(decode(&no_executable, b""), FrontendError::MalformedMessage);
+    assert_eq!(decode(&valid, b"a"), FrontendError::StreamEnd);
+    assert_eq!(decode(&valid, b"abc"), FrontendError::ViolatedSpec);
 
     let chain = proto::RegisterChain {
         composition: "source".into(),
     };
     assert_eq!(
-        invalid_request(RegisterChain::decode(frame(&encode(&chain, b"a")))),
-        "Composition registration must not contain payload"
+        request_error(RegisterChain::decode(frame(&encode(&chain, b"a")))),
+        FrontendError::ViolatedSpec
     );
 }
 
@@ -325,8 +332,5 @@ fn test_invalid_output() {
         .collect();
     let recorder = Recorder::new(Arc::new("f".into()), Instant::now());
     let error = DandelionBody::new(outputs, &recorder).err().unwrap();
-    assert!(matches!(
-        error.error,
-        DandelionError::RequestError(FrontendError::InternalError(_))
-    ));
+    assert_eq!(error.error, DandelionError::InvalidRead);
 }
