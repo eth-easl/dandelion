@@ -2,10 +2,11 @@ use super::x86_64::{PAGE_SIZE, PDE64_ALL_ALLOWED, PDE64_PRESENT};
 use super::{GLOBAL_SYSTEM_MEMORY_SIZE, ROOT_PCID, SYSTEM_VIRTUAL_BASE};
 use core::arch::global_asm;
 
-// Assembly function that uses rax and rbx to fetch a new page address into rax, uses label 1
+// Assembly function that uses rax and rbx to fetch a new page address into rax, uses label 1.
+// Assumes the p2 index (* 8) in r14
 macro_rules! FETCH_PAGE {
    () => {r#"
-   mov rax, [0] # load the root of the free list
+   mov rax, [r14] # load the root of the free list
    # out 33, eax
 1: test rax, rax
    jz 0f # abort handling if head of free list is 0
@@ -215,6 +216,7 @@ page_fault_exception_handler:
    and r11, 0xFF8
    and r12, 0xFF8
    and r13, 0xFF8
+   mov r14, r13
    # find the entry addresses
    mov rax, rdx # load the old cr3
    and rax, ~0xFFF # filter out the PCID to get the p4 address
@@ -223,7 +225,7 @@ page_fault_exception_handler:
    and rbx, ~0xFFF # remove flags to get p3 address
    add r11, rbx # after add r11 holds the address of the p3 entry
    mov rcx, [r11]
-   and rcx, ~0xFFF # r14 now contains base address of p2 table
+   and rcx, ~0xFFF # now contains base address of p2 table
    add r12, rcx # after add r12 holds the address of the p2 entry
    mov rcx, [r12] # after rcx holds the p2 entry
    mov rax, [rsp] # load error code

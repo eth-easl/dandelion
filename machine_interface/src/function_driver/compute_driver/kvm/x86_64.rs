@@ -595,8 +595,8 @@ fn set_page_table(
 
     // always only need 1 p4 table, since it is top level
     // get physical page
-    let p4_physical = kvm_context.get_page()?;
-    let p3_physical = kvm_context.get_page()?;
+    let p4_physical = kvm_context.get_page((TABLE_SIZE -1 )* PAGE_SIZE)?;
+    let p3_physical = kvm_context.get_page( (TABLE_SIZE - 2) * PAGE_SIZE)?;
     // set up the p4 table, which only has 1 entry at the start, the single p3 table
     trace!("P4 address: {}, P3 address: {}", *p4_physical, *p3_physical);
 
@@ -611,7 +611,7 @@ fn set_page_table(
     // set up the p3 table, which points at all the p2 tables
     for p3_entry in 0..p2_table_number {
         // allocate a new p2 table
-        let p2_physical = kvm_context.get_page()?;
+        let p2_physical = kvm_context.get_page(p3_entry * PAGE_SIZE)?;
         let p2_table = p2_physical.get_slice();
         p2_table.fill(0);
         p3_physical.get_slice()[p3_entry] = PDE64_ALL_ALLOWED | *p2_physical;
@@ -661,7 +661,7 @@ fn set_page_table(
 
         // check if p2 entry points to valid p1 table, if not insert table
         if p2_entry & PDE64_PRESENT == 0 {
-            let new_p1 = kvm_context.get_page()?;
+            let new_p1 = kvm_context.get_page(p2_entry as usize * PAGE_SIZE)?;
             kvm_context.backing_memory.get_mut_u64()[p2_base + p2_index] =
                 PDE64_ALL_ALLOWED | *new_p1;
             new_p1.get_slice().fill(0);

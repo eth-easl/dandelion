@@ -8,6 +8,9 @@ use crate::{
 pub const PAGE_SHIFT: usize = 12;
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 
+// TODO: check if this needs to be an architecture dependent variable.
+const TABLE_SIZE: usize = 512;
+
 const _: () = assert!(PAGE_SIZE.is_power_of_two());
 
 pub fn round_down_to_page(address: usize) -> usize {
@@ -112,7 +115,7 @@ impl Memory {
 
     /// At the mapping at the 0 address, keep the root pointer for the free page list.
     /// This function takes a page from that list and makes it into a Page.
-    fn get_page(self: &Arc<Self>) -> DandelionResult<Page> {
+    fn get_page(self: &Arc<Self>, address: usize) -> DandelionResult<Page> {
         let u64_reference = unsafe {
             std::slice::from_raw_parts_mut(
                 self.slice.as_ptr() as *mut u64,
@@ -120,9 +123,10 @@ impl Memory {
             )
         };
         let atomic_slice = AtomicU64::from_mut_slice(u64_reference);
+        let base_index = (address / PAGE_SIZE) % TABLE_SIZE;
 
         // load where the current root is pointing
-        let mut next_free = atomic_slice[0].load(Ordering::SeqCst);
+        let mut next_free = atomic_slice[base_index].load(Ordering::SeqCst);
         loop {
             // make sure we are not trying to take the current root
             if next_free == 0 {
@@ -134,7 +138,7 @@ impl Memory {
             // load where the next free page is after the current root page
             let potential_root =
                 atomic_slice[next_free as usize / size_of::<u64>()].load(Ordering::SeqCst);
-            next_free = match atomic_slice[0].compare_exchange(
+            next_free = match atomic_slice[base_index].compare_exchange(
                 next_free,
                 potential_root,
                 Ordering::SeqCst,
@@ -156,15 +160,16 @@ impl Memory {
             )
         };
         let atomic_slice = AtomicU64::from_mut_slice(u64_reference);
+        let base_index = (physical as usize / PAGE_SIZE) % TABLE_SIZE;
 
         // load where the current root is pointing
-        let mut next_free = atomic_slice[0].load(Ordering::SeqCst);
+        let mut next_free = atomic_slice[base_index].load(Ordering::SeqCst);
         let physical_index = physical as usize / size_of::<u64>();
         loop {
             // write to the current physical where the next page is
             atomic_slice[physical_index].store(next_free, Ordering::SeqCst);
 
-            next_free = match atomic_slice[0].compare_exchange(
+            next_free = match atomic_slice[base_index].compare_exchange(
                 next_free,
                 physical,
                 Ordering::SeqCst,
@@ -178,13 +183,6 @@ impl Memory {
         }
     }
 }
-
-// impl Deref for Memory {
-//     type Target = [u8];
-//     fn deref(&self) -> &Self::Target {
-//         self.slice
-//     }
-// }
 
 impl Debug for Memory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -220,16 +218,17 @@ unsafe impl Send for KvmContext {}
 impl KvmContext {
     /// At the mapping at the 0 address, keep the root pointer for the free page list.
     /// This function takes pages from that list and makes them into a PageRange.
-    pub fn get_page(&self) -> DandelionResult<Page> {
-        self.backing_memory.get_page()
+    pub fn get_page(&self, address: usize) -> DandelionResult<Page> {
+        self.backing_memory.get_page(address)
     }
 
+    /// Adds a page at the give offset
     pub fn add_page(&mut self, offset: usize) -> DandelionResult<(u64, &mut [u8])> {
         debug_assert_ne!(0, offset);
         match self.overlay.entry(offset) {
             Occupied(_) => err_dandelion!(DandelionError::InvalidWrite),
             Vacant(vacant) => {
-                let page = self.backing_memory.get_page()?;
+                let page = self.backing_memory.get_page(offset)?;
                 let page_start = *page as usize;
                 vacant.insert_entry((PageType::Page, page));
                 Ok((
@@ -301,7 +300,7 @@ impl ContextTrait for KvmContext {
             };
             match self.overlay.entry(round_down_to_page(offset)) {
                 Vacant(vacant) => {
-                    let new_page = self.backing_memory.get_page()?;
+                    let new_page = self.backing_memory.get_page(offset)?;
                     let page_start = *new_page as usize;
                     let page =
                         &mut self.backing_memory.get_mut_u8()[page_start..page_start + PAGE_SIZE];
@@ -315,7 +314,7 @@ impl ContextTrait for KvmContext {
                     let (page_type, page) = occupied.get_mut();
                     match page_type {
                         PageType::CoW => {
-                            let new_page = self.backing_memory.get_page()?;
+                            let new_page = self.backing_memory.get_page(offset)?;
                             trace!(
                                 "root after get_page: {}",
                                 self.backing_memory.get_mut_u64()[0]
@@ -376,7 +375,7 @@ impl ContextTrait for KvmContext {
             // Don't need to check that rounded_start < write_end, since rounded_end is < write_end, and thus the virtual address also is < write_end.
             while rounded_start < virtual_page_address {
                 // get new page
-                let new_page = self.backing_memory.get_page()?;
+                let new_page = self.backing_memory.get_page(rounded_start)?;
                 // fill page
                 let start = *new_page as usize;
                 let page = &mut self.backing_memory.get_mut_u8()[start..start + PAGE_SIZE];
@@ -389,7 +388,7 @@ impl ContextTrait for KvmContext {
             let page_start = match page_type {
                 PageType::Page => **page as usize,
                 PageType::CoW => {
-                    let new_page = self.backing_memory.get_page()?;
+                    let new_page = self.backing_memory.get_page(rounded_start)?;
                     let page_start = *new_page as usize;
                     to_insert.push((rounded_start, (PageType::Page, new_page)));
                     page_start
@@ -404,7 +403,7 @@ impl ContextTrait for KvmContext {
         // Need to fill in pages in case the last page in the overlay was before the rounded_end.
         while rounded_start < rounded_end {
             // get new page
-            let new_page = self.backing_memory.get_page()?;
+            let new_page = self.backing_memory.get_page(rounded_start)?;
             // fill page
             let start = *new_page as usize;
             let page = &mut self.backing_memory.get_mut_u8()[start..start + PAGE_SIZE];
@@ -426,7 +425,7 @@ impl ContextTrait for KvmContext {
             debug_assert!(write_memory.len() < PAGE_SIZE);
             match self.overlay.entry(rounded_start) {
                 Vacant(vacant) => {
-                    let new_page = self.backing_memory.get_page()?;
+                    let new_page = self.backing_memory.get_page(rounded_start)?;
                     let page_start = *new_page as usize;
                     let page =
                         &mut self.backing_memory.get_mut_u8()[page_start..page_start + PAGE_SIZE];
@@ -439,7 +438,7 @@ impl ContextTrait for KvmContext {
                     match page_type {
                         PageType::CoW => {
                             let old_page_start = **page as usize;
-                            let new_page = self.backing_memory.get_page()?;
+                            let new_page = self.backing_memory.get_page(rounded_start)?;
                             let new_page_start = *new_page as usize;
                             self.backing_memory.get_mut_u8()
                                 [new_page_start..new_page_start + write_memory.len()]
@@ -539,12 +538,12 @@ impl MemoryDomain for KvmMemoryDomain {
             }
         };
 
-        let domain_size = if size == 0 {
-            warn!("Tried to create empty kvm domain, creating single page size instead");
+        let domain_size = if size < TABLE_SIZE * 2 * PAGE_SIZE {
+            warn!("Tried to create empty kvm domain, creating smallest possible size instead");
             // creating a single page domain, can be used for tests, but useless otherwise
-            PAGE_SIZE
+            TABLE_SIZE * 2 * PAGE_SIZE
         } else {
-            size.next_multiple_of(PAGE_SIZE)
+            size.next_multiple_of(PAGE_SIZE * TABLE_SIZE)
         };
         trace!("Creating KVM domain with size: {}", domain_size);
 
@@ -571,12 +570,55 @@ impl MemoryDomain for KvmMemoryDomain {
                 domain_size / size_of::<u64>(),
             )
         };
-        // step through in page / sizeof(u64) steps and set pointers
-        for (page_index, page_start) in memory.iter_mut().step_by(page_size).enumerate() {
-            *page_start = ((page_index + 1) * PAGE_SIZE) as u64;
+        let sendable_domain_start = domain_start as usize;
+
+        // check how many threads to start
+        let num_threads = std::thread::available_parallelism().unwrap().get();
+        // function to initialize a subset of the page linked lists
+        let init_func = move |thread_id: usize| {
+            let memory = unsafe {
+                core::slice::from_raw_parts_mut(
+                    sendable_domain_start as *mut u64,
+                    domain_size / size_of::<u64>(),
+                )
+            };
+            // find out which part of the lists this thread checks
+            for list_offset in (thread_id..TABLE_SIZE).step_by(num_threads) {
+                // the first address of the first page in the list
+                let initial_skip = if list_offset == 0 {
+                    TABLE_SIZE
+                } else {
+                    list_offset
+                };
+                // step by page size, skip to first page of this list, then skip by 512, to get to next one with same
+                // 2MB alignment
+                for (page_index, page_start) in memory
+                    .iter_mut()
+                    .step_by(page_size)
+                    .enumerate()
+                    .skip(initial_skip)
+                    .step_by(TABLE_SIZE)
+                {
+                    // adding page_size to skip 2 MB ahead
+                    *page_start = ((page_index + TABLE_SIZE) * PAGE_SIZE) as u64
+                }
+                // set the first one in the root list
+                memory[list_offset] = (initial_skip * PAGE_SIZE) as u64;
+            }
+        };
+
+        let mut handles = Vec::with_capacity(num_threads);
+        for thread_num in 0..num_threads {
+            handles.push(std::thread::spawn(move || init_func(thread_num)));
         }
-        // set last page to NULL pointer
-        memory[(domain_size - PAGE_SIZE) / size_of::<u64>()] = 0;
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // set last pages of each list to NULL pointer
+        for tail_index in 1..=TABLE_SIZE {
+            memory[(domain_size - tail_index * PAGE_SIZE) / size_of::<u64>()] = 0;
+        }
 
         Ok(Box::new(KvmMemoryDomain {
             domain_memory: Arc::new(Memory {
