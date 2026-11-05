@@ -1,5 +1,7 @@
 use dandelion_commons::{
-    dandelion_err, err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
+    dandelion_err, err_dandelion,
+    records::{RecordPoint, Recorder},
+    DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::protocol::{
     DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterChain, RegisterFunction,
@@ -122,12 +124,12 @@ async fn handle_request(
         target,
         context: request_context,
     } = DandelionRequest::decode(read_body(req).await?)?;
-    let function_id = Arc::new(match &target {
-        InvocationTarget::Name(name) => name.clone(),
-        InvocationTarget::Composition(_) => String::from("Composition"),
-    });
-    let mut recorder = Recorder::new(function_id.clone(), start_time);
-    recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
+    let deserialization_end = Instant::now();
+    let new_recorder = |function_id| {
+        let mut recorder = Recorder::new(function_id, start_time);
+        recorder.prerecorded(RecordPoint::DeserializationEnd, deserialization_end);
+        recorder
+    };
     debug!("finished creating request context");
 
     // TODO match set names to assign sets to composition sets
@@ -141,14 +143,25 @@ async fn handle_request(
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
     let (function_output, recorder) = match target {
-        InvocationTarget::Name(_) => {
+        InvocationTarget::Name(name) => {
+            let function_id = Arc::new(name);
             dispatcher
-                .queue_function_by_name(function_id, inputs, is_cold, recorder)
+                .queue_function_by_name(
+                    function_id.clone(),
+                    inputs,
+                    is_cold,
+                    new_recorder(function_id),
+                )
                 .await
         }
         InvocationTarget::Composition(composition) => {
             dispatcher
-                .queue_unregistered_composition(composition, inputs, !is_cold, recorder)
+                .queue_unregistered_composition(
+                    composition,
+                    inputs,
+                    !is_cold,
+                    new_recorder(Arc::new(String::from("Composition"))),
+                )
                 .await
         }
     }?;
