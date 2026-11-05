@@ -13,8 +13,10 @@ use log::trace;
 use memory::data::{DataItem, DataSet, DataSetAccumulator};
 
 enum InputSet {
-    /// This set is blocking and only set to complete once complete.
+    /// A completely empty blocking set.
     Incomplete,
+    /// A set retaining blocking input from multiple sources that are not all complete yet.
+    BlockingPending(DataSetAccumulator),
     /// A set retaining streaming input.
     StreamingPending(DataSetAccumulator),
     /// A complete set.
@@ -28,17 +30,28 @@ impl InputSet {
 
     fn get_set(&self) -> DataSet {
         match self {
-            InputSet::Incomplete => panic!("get_set() called on incomplete set!"),
+            InputSet::Incomplete | InputSet::BlockingPending(_) => {
+                panic!("get_set() called on incomplete set!")
+            }
             InputSet::StreamingPending(acc) => acc.clone_set(),
             InputSet::Complete(set) => set.clone(),
         }
     }
 }
 
+struct Input {
+    set: InputSet,
+    sharding: Sharding,
+    optional: bool,
+    /// Whether this input has received any items.
+    received_items: bool,
+    /// The number of sources feeding into this input that have not yet completed.
+    remaining_sources: usize,
+}
+
 struct Inner {
     /// Vector of optional inputs.
-    /// Each is a tuple of (InputSet, Sharding, whether it is optional, if it has received items).
-    inputs: Vec<Option<(InputSet, Sharding, bool, bool)>>,
+    inputs: Vec<Option<Input>>,
     outputs: Vec<Option<Arc<CompositionSet>>>,
     needs_retention: bool,
     incomplete_blocking: usize,
@@ -71,7 +84,7 @@ impl Function {
     pub(crate) fn new(
         idx: usize,
         function_id: FunctionId,
-        inputs: &[Option<(Sharding, bool)>],
+        inputs: &[Option<(Sharding, bool, usize)>],
         join_order: Arc<Vec<usize>>,
         outputs: Vec<Option<Arc<CompositionSet>>>,
         mut min_set_bytes: Vec<usize>,
@@ -85,15 +98,21 @@ impl Function {
         let inputs = inputs
             .iter()
             .map(|in_opt| {
-                in_opt.as_ref().map(|(sharding, optional)| {
-                    let in_set = if !sharding.is_blocking() {
+                in_opt.as_ref().map(|(sharding, optional, num_sources)| {
+                    let set = if !sharding.is_blocking() {
                         InputSet::StreamingPending(DataSetAccumulator::new())
                     } else {
                         incomplete_blocking += 1;
                         InputSet::Incomplete
                     };
                     incomplete_total += 1;
-                    (in_set, *sharding, *optional, false)
+                    Input {
+                        set,
+                        sharding: *sharding,
+                        optional: *optional,
+                        received_items: false,
+                        remaining_sources: *num_sources,
+                    }
                 })
             })
             .collect();
@@ -115,7 +134,7 @@ impl Function {
         }
     }
 
-    /// Assumes this is only called once for each blocking input set.
+    /// Assumes this is only called once for each set feeding a blocking input.
     pub(crate) fn in_set_complete(
         &self,
         data_set: DataSet,
@@ -124,6 +143,7 @@ impl Function {
         exec: &mut impl Executor,
     ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
+
         debug_assert!(
             inner.is_blocking(),
             "in_set_complete was called on non-blocking function!"
@@ -131,12 +151,47 @@ impl Function {
         debug_assert!(
             inner.inputs[set_idx]
                 .as_ref()
-                .map_or_else(|| true, |x| x.1.is_blocking()),
+                .map_or_else(|| true, |x| x.sharding.is_blocking()),
             "in_set_complete was called on non-blocking input set"
         );
 
-        if let Some((set, sharding, _, _)) = inner.inputs[set_idx].as_mut() {
-            *set = InputSet::Complete(data_set);
+        if let Some(input) = inner.inputs[set_idx].as_mut() {
+            debug_assert!(
+                input.remaining_sources > 0,
+                "in_set_complete was called on an already complete input set"
+            );
+
+            input.remaining_sources -= 1;
+            let input_complete = input.remaining_sources == 0;
+            let sharding = input.sharding;
+            input.set = match (
+                mem::replace(&mut input.set, InputSet::Incomplete),
+                input_complete,
+            ) {
+                (InputSet::Incomplete, true) => InputSet::Complete(data_set),
+                (InputSet::Incomplete, false) => {
+                    let mut acc = DataSetAccumulator::new();
+                    acc.push_set(data_set);
+                    InputSet::BlockingPending(acc)
+                }
+                (InputSet::BlockingPending(mut acc), complete) => {
+                    acc.push_set(data_set);
+                    if complete {
+                        InputSet::Complete(if sharding.requires_sorting() {
+                            acc.collect()
+                        } else {
+                            acc.collect_unsorted()
+                        })
+                    } else {
+                        InputSet::BlockingPending(acc)
+                    }
+                }
+                _ => panic!("Blocking input set is already complete."),
+            };
+            if !input_complete {
+                // still waiting for other sets feeding this input
+                return;
+            }
             if sharding.is_blocking() {
                 inner.incomplete_blocking -= 1;
             }
@@ -151,7 +206,13 @@ impl Function {
             let mut sets = Vec::with_capacity(inner.inputs.len());
             let mut runnable = true;
             for in_opt in inner.inputs.iter() {
-                if let Some((set, sharding, optional, _)) = in_opt {
+                if let Some(Input {
+                    set,
+                    sharding,
+                    optional,
+                    ..
+                }) = in_opt
+                {
                     let data_set = set.get_set();
                     if data_set.is_empty() {
                         if *optional && set.is_complete() {
@@ -189,7 +250,7 @@ impl Function {
         }
     }
 
-    /// Assumes this is only called once with `complete = true` for each input set.
+    /// Assumes this is only called once with `complete = true` for each set feeding the input.
     pub(crate) fn push_streaming_items(
         &self,
         set_idx: usize,
@@ -202,31 +263,47 @@ impl Function {
         debug_assert!(
             inner.inputs[set_idx]
                 .as_ref()
-                .map_or_else(|| true, |x| !x.1.is_blocking()),
+                .map_or_else(|| true, |x| !x.sharding.is_blocking()),
             "push_streaming_items was called on blocking input set"
         );
 
         let needs_retention = inner.needs_retention;
-        if let Some((ref mut in_set, _, _, ref mut received_items)) = inner.inputs[set_idx] {
-            *received_items |= !items.is_empty();
-            if needs_retention {
-                match in_set {
-                    InputSet::StreamingPending(acc) => acc.push_items(&items),
-                    _ => panic!("Streamed input set is not a pending local set."),
-                }
-            }
-        } else {
+        let Some(input) = inner.inputs[set_idx].as_mut() else {
             panic!("Streamed input set is None.");
+        };
+        debug_assert!(
+            input.remaining_sources > 0,
+            "push_streaming_items was called on an already complete input set"
+        );
+
+        // the input is only complete once all sets feeding it are complete
+        let input_complete = complete && {
+            input.remaining_sources -= 1;
+            input.remaining_sources == 0
+        };
+        input.received_items |= !items.is_empty();
+        if needs_retention {
+            match &mut input.set {
+                InputSet::StreamingPending(acc) => acc.push_items(&items),
+                _ => panic!("Streamed input set is not a pending local set."),
+            }
         }
 
         let mut runnable = !inner.is_blocking();
         let mut sets = Vec::with_capacity(inner.inputs.len());
         if runnable {
             for (idx, in_opt) in inner.inputs.iter().enumerate() {
-                if let Some((set, sharding, optional, received_items)) = in_opt {
+                if let Some(Input {
+                    set,
+                    sharding,
+                    optional,
+                    received_items,
+                    ..
+                }) = in_opt
+                {
                     let (data_set, set_complete) = if idx == set_idx {
                         // this is the case once so we can pass ownership with a mem::take
-                        (DataSet::from_items(mem::take(&mut items)), complete)
+                        (DataSet::from_items(mem::take(&mut items)), input_complete)
                     } else {
                         (set.get_set(), set.is_complete())
                     };
@@ -255,32 +332,35 @@ impl Function {
 
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
         inner.num_outstanding += num_created;
-        if complete {
+        if input_complete {
             inner.incomplete_total -= 1;
             if inner.needs_retention {
-                if let Some((InputSet::StreamingPending(acc), sharding, optional, received_items)) =
-                    inner.inputs[set_idx].take()
-                {
-                    inner.inputs[set_idx] = Some((
-                        InputSet::Complete(acc.collect_unsorted()),
-                        sharding,
-                        optional,
-                        received_items,
-                    ));
+                if let Some(input) = inner.inputs[set_idx].as_mut() {
+                    match mem::replace(&mut input.set, InputSet::Incomplete) {
+                        InputSet::StreamingPending(acc) => {
+                            input.set = InputSet::Complete(acc.collect_unsorted())
+                        }
+                        other => input.set = other,
+                    }
                 }
             }
 
             inner.all_started = inner.inputs.iter().enumerate().all(|(idx, in_opt)| {
                 in_opt
                     .as_ref()
-                    .is_none_or(|(set, _, _, _)| idx == set_idx || set.is_complete())
+                    .is_none_or(|input| idx == set_idx || input.set.is_complete())
             });
 
             if inner.all_started && inner.num_outstanding == 0 {
                 inner.inputs.clear();
                 let empty_items = Arc::new(vec![]);
                 for out_set in inner.outputs.iter().flatten() {
-                    out_set.push_items(empty_items.clone(), complete, any_sharding_mode, exec);
+                    out_set.push_items(
+                        empty_items.clone(),
+                        input_complete,
+                        any_sharding_mode,
+                        exec,
+                    );
                 }
                 inner.outputs.clear()
             }
@@ -444,7 +524,7 @@ mod tests {
         let function = Arc::new(Function::new(
             0,
             fid("F"),
-            &[Some((Sharding::All, false))],
+            &[Some((Sharding::All, false, 1))],
             vec![0].into(),
             vec![None],
             vec![0],
@@ -470,7 +550,10 @@ mod tests {
         let function = Arc::new(Function::new(
             0,
             fid("F"),
-            &[Some((Sharding::All, false)), Some((Sharding::Each, false))],
+            &[
+                Some((Sharding::All, false, 1)),
+                Some((Sharding::Each, false, 1)),
+            ],
             vec![0, 1].into(),
             vec![None],
             vec![0, 0],
@@ -522,7 +605,7 @@ mod tests {
         let function = Arc::new(Function::new(
             0,
             fid("F"),
-            &[Some((Sharding::All, false))],
+            &[Some((Sharding::All, false, 1))],
             vec![0].into(),
             vec![Some(output_set.clone())],
             vec![0],
@@ -552,7 +635,7 @@ mod tests {
         let function = Arc::new(Function::new(
             0,
             fid("F"),
-            &[Some((Sharding::All, false))],
+            &[Some((Sharding::All, false, 1))],
             vec![0].into(),
             vec![None],
             vec![0],
@@ -574,7 +657,10 @@ mod tests {
         let function = Arc::new(Function::new(
             0,
             fid("F"),
-            &[Some((Sharding::Each, false)), Some((Sharding::Each, false))],
+            &[
+                Some((Sharding::Each, false, 1)),
+                Some((Sharding::Each, false, 1)),
+            ],
             vec![0, 1].into(),
             vec![None],
             vec![0, 0],
@@ -614,7 +700,10 @@ mod tests {
         let function = Arc::new(Function::new(
             0,
             fid("F"),
-            &[Some((Sharding::Each, false)), Some((Sharding::Each, false))],
+            &[
+                Some((Sharding::Each, false, 1)),
+                Some((Sharding::Each, false, 1)),
+            ],
             vec![0, 1].into(),
             vec![None],
             vec![0, 0],

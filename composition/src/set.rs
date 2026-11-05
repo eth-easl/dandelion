@@ -160,7 +160,7 @@ mod tests {
         let consumer = Arc::new(Function::new(
             0,
             Arc::new("Consumer".to_string()),
-            &[Some((Sharding::All, false))],
+            &[Some((Sharding::All, false, 1))],
             vec![0].into(),
             vec![],
             vec![],
@@ -197,7 +197,7 @@ mod tests {
         let consumer = Arc::new(Function::new(
             0,
             Arc::new("Consumer".to_string()),
-            &[Some((Sharding::Each, false))],
+            &[Some((Sharding::Each, false, 1))],
             vec![0].into(),
             vec![],
             vec![],

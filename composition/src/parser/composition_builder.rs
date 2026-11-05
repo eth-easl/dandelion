@@ -85,18 +85,38 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 .iter()
                 .position(|param_name| arg.v.name == *param_name)
             {
-                let data_set_id = data_set_ids.get(&arg.v.ident).ok_or_else(|| {
-                    ErrorDiagnostic::new(
-                        arg.span.clone(),
-                        dandelion_err!(DandelionError::Composition(CompositionError::UndefinedDataSet(format!(
-                            "Could not find data set {} used as input for argument {} in function {}.",
-                            arg.v.ident, arg.v.name, fappl.v.name
-                        )))),
-                    )
-                })?;
+                let mut seen_set_ids = HashSet::new();
+                let data_set_ids_arg = arg
+                    .v
+                    .idents
+                    .iter()
+                    .map(|ident| {
+                        let set_id = *data_set_ids.get(ident).ok_or_else(|| {
+                            ErrorDiagnostic::new(
+                                arg.span.clone(),
+                                dandelion_err!(DandelionError::Composition(CompositionError::UndefinedDataSet(format!(
+                                    "Could not find data set {} used as input for argument {} in function {}.",
+                                    ident, arg.v.name, fappl.v.name
+                                )))),
+                            )
+                        })?;
+                        if !seen_set_ids.insert(set_id) {
+                            return Err(ErrorDiagnostic::new(
+                                arg.span.clone(),
+                                dandelion_err!(DandelionError::Composition(
+                                    CompositionError::InvalidFunctionApplication(format!(
+                                        "Data set {} is used more than once as source for argument {} in function {}.",
+                                        ident, arg.v.name, fappl.v.name
+                                    ))
+                                )),
+                            ));
+                        }
+                        Ok(set_id)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 arg_spans[arg_set_idx] = Some(arg.span.clone());
                 input_templates[arg_set_idx] = Some(InputSetTemplate {
-                    set_idx: *data_set_id,
+                    set_idcs: data_set_ids_arg,
                     sharding: arg.v.sharding,
                     optional: arg.v.optional,
                 });
@@ -424,7 +444,9 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         let mut set_consumers = vec![vec![]; num_sets];
         for (f_idx, f) in functions.iter().enumerate() {
             for in_templ in f.params.iter().flatten() {
-                set_consumers[in_templ.set_idx].push(f_idx);
+                for set_idx in in_templ.set_idcs.iter() {
+                    set_consumers[*set_idx].push(f_idx);
+                }
             }
         }
         // a function's successors are all functions consuming one of its return sets

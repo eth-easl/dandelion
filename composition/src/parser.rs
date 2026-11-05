@@ -59,7 +59,7 @@ type SpannedFunctionDecl<'src> = Spanned<FunctionDecl<'src>>;
 #[derive(Debug)]
 struct InputDescriptor<'src> {
     name: Ident<'src>,
-    ident: Ident<'src>,
+    idents: Vec<Ident<'src>>,
     sharding: Sharding,
     optional: bool,
     // TODO loop_cond: LoopCond,
@@ -186,10 +186,17 @@ impl<'src, R: Registry> Parser<'src, R> {
                 })
                 .padded_by(pad()),
             )
-            .then(ident().padded_by(pad()))
-            .map(|(((name, optional), sharding), ident)| InputDescriptor {
+            .then(
+                ident().padded_by(pad()).map(|i| vec![i]).or(ident()
+                    .padded_by(pad())
+                    .separated_by(just(',').padded_by(pad()))
+                    .at_least(1)
+                    .collect::<Vec<_>>()
+                    .delimited_by(just('{').padded_by(pad()), just('}').padded_by(pad()))),
+            )
+            .map(|(((name, optional), sharding), idents)| InputDescriptor {
                 name,
-                ident,
+                idents,
                 sharding,
                 optional: optional.is_some(),
             })

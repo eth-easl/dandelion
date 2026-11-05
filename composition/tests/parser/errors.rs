@@ -205,3 +205,27 @@ fn cycle_through_a_composition_output_set_is_rejected() {
     let registry = TestRegistry::new().with_function("Emit", &["X"], &["Y"]);
     expect_parse_error(src, &registry, "contains a cycle");
 }
+
+#[test]
+fn duplicate_set_in_multiset_input_is_rejected() {
+    let src = r#"
+        function Foo(A) => (B);
+        composition Test(X) => (Y) {
+            Foo(A = all {X, X}) => (Y = B);
+        }
+    "#;
+    let registry = TestRegistry::new().with_function("Foo", &["A"], &["B"]);
+    expect_parse_error(src, &registry, "used more than once");
+}
+
+#[test]
+fn undefined_set_in_multiset_input_is_rejected() {
+    let src = r#"
+        function Foo(A) => (B);
+        composition Test(X) => (Y) {
+            Foo(A = all {X, Z}) => (Y = B);
+        }
+    "#;
+    let registry = TestRegistry::new().with_function("Foo", &["A"], &["B"]);
+    expect_parse_error(src, &registry, "Could not find data set Z");
+}
