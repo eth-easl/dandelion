@@ -399,4 +399,6 @@ pub async fn service_loop(
             tokio::task::yield_now().await;
         }
     }
+
+    info!("Frontend service loop terminated");
 }

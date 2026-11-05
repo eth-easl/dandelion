@@ -1,5 +1,5 @@
 use composition::{AnyShardingMode, AnyShardingParams};
-use dandelion_server::config::{self, FuncMetadata, PreloadFunc};
+use dandelion_server::config::{self, FuncMetadata, PreloadFunc, RamMode};
 use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
 use log::{debug, error, info, warn};
 use machine_interface::{
@@ -221,7 +221,7 @@ fn main() {
     // get RAM size
     // TODO: open question on how to split between engines or if we unify somehow and have one
     // underlying pool.
-    let max_ram = read_to_string("/proc/meminfo")
+    let physical_kib = read_to_string("/proc/meminfo")
         .unwrap()
         .lines()
         .find_map(|line| {
@@ -230,9 +230,19 @@ fn main() {
                 .map(|line| line.trim().parse::<usize>())
         })
         .unwrap()
-        .unwrap()
-        * 1024
-        * config.virtual_max_ram_multiplier;
+        .unwrap();
+
+    println!(
+        "ram mode: {}, physical: {}",
+        config.max_ram_multiplier, physical_kib
+    );
+    let max_ram = match config.max_ram_multiplier {
+        RamMode::Absolute(abs) => 1024 * abs,
+        RamMode::Relative(factor) => {
+            // take fraction and round to 2 MiB boundry
+            (((physical_kib * 1024) as f64 * factor) as usize).next_multiple_of(2 * 1024 * 1024)
+        }
+    };
 
     let memory_pool = match config.test_mode {
         Some(dandelion_server::config::TestMode::NoEngine) => BTreeMap::new(),

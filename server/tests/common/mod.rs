@@ -1,7 +1,7 @@
 //! Helpers shared between the server integration tests.
 
 use std::{
-    io::{pipe, BufRead, BufReader, PipeReader, PipeWriter, Read, Write},
+    io::{pipe, BufRead, BufReader, PipeReader, PipeWriter, Write},
     process::{Child, Command, Stdio},
     thread::spawn,
 };
@@ -83,6 +83,7 @@ impl ServerKiller {
 
 impl Drop for ServerKiller {
     fn drop(&mut self) {
+        println!("Starting to kill {}", self.name);
         let mut kill = Command::new("kill")
             .stdout(Stdio::piped())
             .args(["-s", "TERM", &self.server.id().to_string()])
@@ -90,26 +91,27 @@ impl Drop for ServerKiller {
             .unwrap();
         kill.wait().unwrap();
 
-        let mut outbuf = Vec::new();
-        let _ = self
-            .stdout
-            .read_to_end(&mut outbuf)
-            .expect("should be able to read child output after killing it");
-        print!(
-            "{} output:\n{}",
-            self.name,
-            String::from_utf8(outbuf).expect("Should be able to convert child stdout to string")
-        );
+        // try to read lines from stderr until we finish
+        loop {
+            let mut line_buffer = String::new();
+            let chars = self.stderr.read_line(&mut line_buffer).unwrap();
+            if chars == 0 {
+                break;
+            }
+            print!("{} err: {}", self.name, line_buffer);
+            std::io::stdout().flush().unwrap();
+        }
 
-        let mut errbuf = Vec::new();
-        let _ = self
-            .stderr
-            .read_to_end(&mut errbuf)
-            .expect("Should be able to read child stderr");
-        print!(
-            "{} stderr:\n{}",
-            self.name,
-            String::from_utf8(errbuf).expect("Server stderr should be string")
-        )
+        loop {
+            let mut line_buffer = String::new();
+            let chars = self.stdout.read_line(&mut line_buffer).unwrap();
+            if chars == 0 {
+                break;
+            }
+            print!("{} out: {}", self.name, line_buffer);
+            std::io::stdout().flush().unwrap();
+        }
+
+        println!("{} shut down", self.name);
     }
 }

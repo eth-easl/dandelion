@@ -227,9 +227,8 @@ fn engine_matmul_size_sweep<Dom: MemoryDomain>(
 ) {
     const LOWER_SIZE_BOUND: usize = 2;
     const UPPER_SIZE_BOUND: usize = 16;
+    let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init.clone());
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-        let (domain, queue) =
-            prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init.clone());
         // add inputs
         let mut mat_vec = Vec::<i64>::new();
         mat_vec.push(mat_size as i64);
@@ -262,7 +261,7 @@ fn engine_matmul_size_sweep<Dom: MemoryDomain>(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
             filename.to_string(),
-            domain,
+            domain.clone(),
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             function_id: Arc::new(String::new()),

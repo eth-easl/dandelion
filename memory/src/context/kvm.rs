@@ -12,43 +12,196 @@ pub fn round_down_to_page(address: usize) -> usize {
 }
 
 use super::MemoryResource;
-use dandelion_commons::{
-    dandelion_err, err_dandelion, range_pool::RangePool, DandelionError, DandelionResult,
-};
-use log::{debug, trace};
-use nix::{
-    sys::{
-        memfd::{memfd_create, MFdFlags},
-        mman::{MapFlags, ProtFlags},
-    },
-    unistd::ftruncate,
-};
+use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
+use log::{debug, trace, warn};
+use nix::sys::mman::{MapFlags, ProtFlags};
 use std::{
-    cmp::min,
-    collections::BTreeMap,
-    ffi::c_void,
+    collections::{
+        btree_map::Entry::{Occupied, Vacant},
+        BTreeMap,
+    },
     fmt::Debug,
     num::NonZeroUsize,
-    os::fd::OwnedFd,
-    ptr::{self, NonNull},
-    sync::{Arc, Mutex},
+    ops::Deref,
+    ptr::{self},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
-#[derive(Clone)]
-pub struct OverlayItem {
-    pub context: Arc<Context>,
-    pub offset: usize,
+#[derive(Clone, Debug)]
+pub enum PageType {
+    CoW,
+    Page,
 }
 
-impl Debug for OverlayItem {
+struct PageInner {
+    physical_addr: u64,
+    backing_memory: Arc<Memory>,
+}
+
+impl Drop for PageInner {
+    fn drop(&mut self) {
+        self.backing_memory.insert_page(self.physical_addr);
+    }
+}
+
+impl Debug for PageInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OverlayItem")
-            .field("offset", &self.offset)
-            .field("context", &self.context.context)
+        f.debug_struct("Page")
+            .field("physical", &self.physical_addr)
             .finish()
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Page {
+    inner: Arc<PageInner>,
+}
+
+// TODO implement as_slice or something to directly get the mutable slice of the backing page
+impl Page {
+    pub fn new(physical_addr: u64, backing_memory: Arc<Memory>) -> Self {
+        Self {
+            inner: Arc::new(PageInner {
+                physical_addr,
+                backing_memory,
+            }),
+        }
+    }
+
+    pub fn get_slice<'this>(&'this self) -> &'this mut [u64] {
+        let page_start = **self as usize;
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                self.inner.backing_memory.slice.as_ptr().add(page_start) as *mut u64,
+                PAGE_SIZE / size_of::<u64>(),
+            )
+        }
+    }
+}
+
+impl Deref for Page {
+    type Target = u64;
+    fn deref(&self) -> &Self::Target {
+        &self.inner.physical_addr
+    }
+}
+
+pub struct Memory {
+    slice: &'static mut [u8],
+}
+
+impl Memory {
+    fn get_mut_u8<'this>(&'this self) -> &'this mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.slice.as_ptr() as *mut _, self.slice.len()) }
+    }
+
+    pub fn get_mut_u64<'this>(&'this self) -> &'this mut [u64] {
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                self.slice.as_ptr() as *mut u64,
+                self.slice.len() / size_of::<u64>(),
+            )
+        }
+    }
+
+    /// At the mapping at the 0 address, keep the root pointer for the free page list.
+    /// This function takes a page from that list and makes it into a Page.
+    fn get_page(self: &Arc<Self>) -> DandelionResult<Page> {
+        let u64_reference = unsafe {
+            std::slice::from_raw_parts_mut(
+                self.slice.as_ptr() as *mut u64,
+                self.slice.len() / size_of::<u64>(),
+            )
+        };
+        let atomic_slice = AtomicU64::from_mut_slice(u64_reference);
+
+        // load where the current root is pointing
+        let mut next_free = atomic_slice[0].load(Ordering::SeqCst);
+        loop {
+            // make sure we are not trying to take the current root
+            if next_free == 0 {
+                trace!("Dandelion error: Reached Capacity");
+                return err_dandelion!(DandelionError::DomainError(
+                    dandelion_commons::DomainError::ReachedCapacity
+                ));
+            }
+            // load where the next free page is after the current root page
+            let potential_root =
+                atomic_slice[next_free as usize / size_of::<u64>()].load(Ordering::SeqCst);
+            next_free = match atomic_slice[0].compare_exchange(
+                next_free,
+                potential_root,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(root) => {
+                    return Ok(Page::new(root, self.clone()));
+                }
+                Err(root) => root,
+            };
+        }
+    }
+
+    fn insert_page(self: &Arc<Self>, physical: u64) {
+        let u64_reference = unsafe {
+            std::slice::from_raw_parts_mut(
+                self.slice.as_ptr() as *mut u64,
+                self.slice.len() / size_of::<u64>(),
+            )
+        };
+        let atomic_slice = AtomicU64::from_mut_slice(u64_reference);
+
+        // load where the current root is pointing
+        let mut next_free = atomic_slice[0].load(Ordering::SeqCst);
+        let physical_index = physical as usize / size_of::<u64>();
+        loop {
+            // write to the current physical where the next page is
+            atomic_slice[physical_index].store(next_free, Ordering::SeqCst);
+
+            next_free = match atomic_slice[0].compare_exchange(
+                next_free,
+                physical,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    return;
+                }
+                Err(root) => root,
+            };
+        }
+    }
+}
+
+// impl Deref for Memory {
+//     type Target = [u8];
+//     fn deref(&self) -> &Self::Target {
+//         self.slice
+//     }
+// }
+
+impl Debug for Memory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Memory")
+            .field("base", &self.slice.as_ptr())
+            .field("length", &self.slice.len())
+            .finish()
+    }
+}
+
+impl Drop for Memory {
+    fn drop(&mut self) {
+        unsafe {
+            let base_pointer = core::ptr::NonNull::new_unchecked(self.slice.as_mut_ptr() as *mut _);
+            nix::sys::mman::munmap(base_pointer, self.slice.len()).unwrap();
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct KvmContext {
     /// The overlay stores information about valid data to read in the context.
     /// the data structure records where overlay items END and how big they are.
@@ -65,103 +218,36 @@ pub struct KvmContext {
     /// The overlay item can contain a context, which is supposed to be mapped into the
     /// current context, or if it does not, it indicates that the item has been written to
     /// the location the overlay covers.
-    pub overlay: BTreeMap<usize, (usize, Option<OverlayItem>)>,
-    pub storage: &'static mut [u8],
-    pub fd: Arc<OwnedFd>,
-    domain: Arc<Mutex<RangePool<u32>>>,
-    pub rangepool_start: u32,
+    pub overlay: BTreeMap<usize, (PageType, Page)>,
+    // TODO: document lifetime dependencies somewhere, to make sure it is clear that unmapping the memory can cause issues.
+    pub backing_memory: Arc<Memory>,
+    pub context_size: usize,
 }
+
+unsafe impl Sync for KvmContext {}
+unsafe impl Send for KvmContext {}
 
 impl KvmContext {
-    /// Function that inserts a new item into the overlay.
-    /// Expects the start to be page aligned and the end to point to 1 past the last byte in the overlay
-    /// (equal to start + size of the overlay)
-    pub fn insert_into_overlay(
-        &mut self,
-        mut new_start: usize,
-        new_end: usize,
-        new_item: Option<OverlayItem>,
-    ) {
-        let mut to_remove = Vec::new();
-        let mut new_insert_opt = Some((new_end - 1, (new_start, new_item.clone())));
-        let mut insert_before_opt = None;
-        // TODO replace with cursor for easy removal / insert, as soon as it stabilizes,
-        // so we can keep one cursor accross iterations
-        // TODO when replaced with cursor, could think about handling first page differently,
-        // since it is the only one that can hang off the front
-        // also think about writing interface to overlays to centralize overlay manupulation, since it happens in multiple places
-        for (&overlay_end, (overlay_start, item_option)) in
-            self.overlay.range_mut(new_start.saturating_sub(1)..)
-        {
-            // if the overlay starts after the write ends, either there is nothing left to do for this range or we can simply append to the front of the range
-            if *overlay_start >= new_end {
-                if new_item.is_none() && item_option.is_none() && *overlay_start == new_end {
-                    *overlay_start = new_start;
-                    new_insert_opt = None
-                }
-                break;
-            }
-
-            // check if we need to keep part of the overlay before the write, that is at least one page
-            if *overlay_start < new_start {
-                if item_option.is_some() || new_item.is_some() {
-                    let new_front = (new_start - 1, (*overlay_start, item_option.clone()));
-                    assert!(insert_before_opt.replace(new_front).is_none(), "Should never find a second overlay item, that overlays past the start of the write");
-                } else {
-                    // if the item is none, can just merge it with current one
-                    new_start = *overlay_start;
-                }
-            }
-            // check if we need to shorten or remove the current part of the overlay
-            if new_end - 1 <= overlay_end {
-                // shorten the current overlay if it is a separate item, otherwise just append the new space to the old
-                if item_option.is_none() && new_item.is_none() {
-                    *overlay_start = new_start;
-                    new_insert_opt = None;
-                } else {
-                    if let Some(item) = item_option {
-                        item.offset += new_end - *overlay_start;
-                    };
-                    *overlay_start = new_end;
-                }
-                // if it ends before this overlay end, then this was the last one that was relevant
-                break;
-            } else {
-                // remove the current overlay
-                to_remove.push(overlay_end);
-                // update the new insert opt to the new start and end in case they changed
-                new_insert_opt.as_mut().unwrap().0 = new_end - 1;
-                new_insert_opt.as_mut().unwrap().1 .0 = new_start;
-                // new_insert_opt = Some((new_end - 1, (new_start, new_item)));
-            }
-        }
-        for remove_key in to_remove {
-            self.overlay.remove(&remove_key);
-        }
-        if let Some((key, value)) = insert_before_opt {
-            self.overlay.insert(key, value);
-        }
-        if let Some((key, value)) = new_insert_opt {
-            self.overlay.insert(key, value);
-        }
+    /// At the mapping at the 0 address, keep the root pointer for the free page list.
+    /// This function takes pages from that list and makes them into a PageRange.
+    pub fn get_page(&self) -> DandelionResult<Page> {
+        self.backing_memory.get_page()
     }
-}
 
-impl Debug for KvmContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KvmContext")
-            .field("overlay", &self.overlay)
-            .field(
-                "storage",
-                &format_args!(
-                    "addr: {:?}, len: {}",
-                    self.storage.as_ptr(),
-                    self.storage.len()
-                ),
-            )
-            .field("fd", &self.fd)
-            .field("rangepool_start", &self.rangepool_start)
-            .finish()
+    pub fn add_page(&mut self, offset: usize) -> DandelionResult<(u64, &mut [u8])> {
+        debug_assert_ne!(0, offset);
+        match self.overlay.entry(offset) {
+            Occupied(_) => err_dandelion!(DandelionError::InvalidWrite),
+            Vacant(vacant) => {
+                let page = self.backing_memory.get_page()?;
+                let page_start = *page as usize;
+                vacant.insert_entry((PageType::Page, page));
+                Ok((
+                    page_start as u64,
+                    &mut self.backing_memory.get_mut_u8()[page_start..page_start + PAGE_SIZE],
+                ))
+            }
+        }
     }
 }
 
@@ -176,12 +262,10 @@ impl ContextTrait for KvmContext {
         // check if the write is within bounds
         let bytes_to_write = size_of_val(data);
         let write_end = offset + bytes_to_write;
-        if write_end > self.storage.len() {
+        if write_end > self.context_size {
             debug!(
                 "Write out of bounds at offset {} with size: {} for context size: {}",
-                offset,
-                bytes_to_write,
-                self.storage.len()
+                offset, bytes_to_write, self.context_size
             );
             return err_dandelion!(DandelionError::InvalidWrite);
         }
@@ -191,117 +275,179 @@ impl ContextTrait for KvmContext {
             bytes_to_write
         );
 
-        // need to round to the pages that get touched
-        let mut rounded_start = round_down_to_page(offset);
-        let rounded_end = write_end.next_multiple_of(PAGE_SIZE);
-        // find all overlays that end after the offset starts
-        // if there is overlap, need remove all the overlapping pages, and copy the parts that are not overwritten
-        let mut to_remove = Vec::new();
-        let mut new_insert_opt = Some((rounded_end - 1, (rounded_start, None)));
-        let mut insert_before_opt = None;
-        let mut zero_header = rounded_start;
-        let mut zero_trailer = rounded_end;
-        // TODO replace with cursor for easy removal / insert, as soon as it stabilizes
-        // TODO when replaced with cursor, could think about handling first page differently,
-        // since it is the only one that can hang off the front
-        // look for rounded start - 1, to catch merging opporunities where one ends exactly at the new overlay start
-        for (&overlay_end, (overlay_start, item_option)) in
-            self.overlay.range_mut(rounded_start.saturating_sub(1)..)
-        {
-            // check if the we found one that end right as this one starts and that also has no item
-            if overlay_end == rounded_start.saturating_sub(1) {
-                if item_option.is_none() {
-                    // remove old item
-                    to_remove.push(overlay_end);
-                    // extend new one
-                    new_insert_opt = Some((rounded_end - 1, (*overlay_start, None)));
-                    rounded_start = *overlay_start;
-                    // do not set zero header to offset, since the old overlay did not pre initialize the page
-                    // we are writing to (it ended just before)
-                }
-                continue;
-            }
-            // if the overlay starts after the write ends, either there is nothing left to do for this range or we can simply append to the front of the range
-            if *overlay_start >= rounded_end {
-                if item_option.is_none() && *overlay_start == rounded_end {
-                    *overlay_start = rounded_start;
-                    new_insert_opt = None;
-                }
-                break;
-            }
-
-            // check if we need to copy parts of a page for a partially overwritten page at the start of the write
-            // can be the first page in the overlay, need to compare to offset, because rounded_start may have moved,
-            // to absorb overlay before the new write (can only happen once, when we are processing the one overlay,
-            // that overlaps with the start of the write)
-            if rounded_start < offset && *overlay_start <= offset {
-                if let Some(item) = item_option {
-                    let offset_page_base = round_down_to_page(offset);
-                    let read_offset = item.offset + (offset_page_base - *overlay_start);
-                    item.context
-                        .read(read_offset, &mut self.storage[offset_page_base..offset])?;
-                }
-                zero_header = offset;
-            }
-            // check if we need to keep part of the overlay before the write, that is at least one page
-            if *overlay_start < rounded_start {
-                if item_option.is_some() {
-                    let new_front = (rounded_start - 1, (*overlay_start, item_option.clone()));
-                    assert!(insert_before_opt.replace(new_front).is_none(), "Should never find a second overlay item, that overlays past the start of the write");
-                } else {
-                    // if the item is none, can just merge it with current one
-                    rounded_start = *overlay_start;
-                }
-            }
-
-            // check if we need to shorten copy parts of the page for partially overwritten page at the end of the write
-            if rounded_end - 1 <= overlay_end && write_end < rounded_end {
-                if let Some(item) = item_option {
-                    let read_offset = item.offset + (write_end - *overlay_start);
-                    item.context
-                        .read(read_offset, &mut self.storage[write_end..rounded_end])?;
-                }
-                zero_trailer = write_end;
-            }
-            // check if we need to shorten or remove the current part of the overlay
-            if rounded_end - 1 <= overlay_end {
-                // shorten the current overlay if it is a separate item, otherwise just append the new space to the old
-                if let Some(item) = item_option {
-                    item.offset += rounded_end - *overlay_start;
-                    *overlay_start = rounded_end;
-                    // if rounded_end -1 == overlay_end, the current one is replace with this one, when it is inserted
-                    new_insert_opt = Some((rounded_end - 1, (rounded_start, None)));
-                } else {
-                    *overlay_start = rounded_start;
-                    // want to keep using the old one, so no insert
-                    new_insert_opt = None;
-                }
-                // if it ends before this overlay end, then this was the last one that was relevant
-                break;
-            } else {
-                // remove the current overlay
-                to_remove.push(overlay_end);
-                // update the new insert opt, in case this is the last iteration
-                new_insert_opt = Some((rounded_end - 1, (rounded_start, None)));
-            }
-        }
-        for remove_key in to_remove {
-            self.overlay.remove(&remove_key);
-        }
-        if let Some((key, value)) = insert_before_opt {
-            self.overlay.insert(key, value);
-        }
-        if let Some((key, value)) = new_insert_opt {
-            self.overlay.insert(key, value);
-        }
-        trace!("Overlay after write: {:?}", self.overlay);
-
-        let write_memory =
+        // convert data into u8 slice
+        let mut write_memory =
             unsafe { core::slice::from_raw_parts(data.as_ptr() as *const u8, bytes_to_write) };
-        // if necessary, insert zeros before the write on the first touched paged and after the write on the last one
-        self.storage[zero_header..offset].fill(0);
-        self.storage[offset..write_end].copy_from_slice(write_memory);
-        self.storage[write_end..zero_trailer].fill(0);
+
+        // handle first page with possible partial write or write smaller than 1 page
+        let write_offset = offset % PAGE_SIZE;
+        if write_offset != 0 || bytes_to_write <= PAGE_SIZE {
+            let page_write_size = if write_offset + bytes_to_write > PAGE_SIZE {
+                PAGE_SIZE - write_offset
+            } else {
+                bytes_to_write
+            };
+            match self.overlay.entry(round_down_to_page(offset)) {
+                Vacant(vacant) => {
+                    let new_page = self.backing_memory.get_page()?;
+                    let page_start = *new_page as usize;
+                    let page =
+                        &mut self.backing_memory.get_mut_u8()[page_start..page_start + PAGE_SIZE];
+                    page[0..write_offset].fill(0);
+                    page[write_offset..write_offset + page_write_size]
+                        .copy_from_slice(&write_memory[..page_write_size]);
+                    page[write_offset + page_write_size..].fill(0);
+                    vacant.insert((PageType::Page, new_page));
+                }
+                Occupied(mut occupied) => {
+                    let (page_type, page) = occupied.get_mut();
+                    match page_type {
+                        PageType::CoW => {
+                            let new_page = self.backing_memory.get_page()?;
+                            trace!(
+                                "root after get_page: {}",
+                                self.backing_memory.get_mut_u64()[0]
+                            );
+                            let new_page_start = *new_page as usize;
+                            let old_page_start = **page as usize;
+                            self.backing_memory.get_mut_u8().copy_within(
+                                old_page_start..old_page_start + write_offset,
+                                new_page_start,
+                            );
+                            self.backing_memory.get_mut_u8()[new_page_start + write_offset
+                                ..new_page_start + write_offset + page_write_size]
+                                .copy_from_slice(&write_memory[..page_write_size]);
+                            self.backing_memory.get_mut_u8().copy_within(
+                                old_page_start + write_offset + page_write_size
+                                    ..old_page_start + PAGE_SIZE,
+                                new_page_start + write_offset + page_write_size,
+                            );
+                            trace!(
+                                "root after cow overwrite: {}",
+                                self.backing_memory.get_mut_u64()[0]
+                            );
+                            occupied.insert((PageType::Page, new_page));
+                        }
+                        PageType::Page => {
+                            let page_start = **page as usize;
+                            let page = &mut self.backing_memory.get_mut_u8()
+                                [page_start..page_start + PAGE_SIZE];
+                            page[write_offset..write_offset + page_write_size]
+                                .copy_from_slice(&write_memory[..page_write_size]);
+                        }
+                    };
+                }
+            }
+            // advance the write memory
+            write_memory = &write_memory[page_write_size..];
+            // if we are done writing return
+            if write_memory.is_empty() {
+                return Ok(());
+            }
+        }
+
+        // handle all pages with full copy
+        // need to round to the pages that get touched
+        let mut rounded_start = offset.next_multiple_of(PAGE_SIZE);
+        let rounded_end = round_down_to_page(write_end);
+        // find all pages that end after the offset starts
+        // if there is overlap, need remove all the overlapping pages, and copy the parts that are not overwritten
+        let mut to_insert = Vec::new();
+
+        // TODO replace with cursor for easy removal / insert, as soon as it stabilizes
+        // using rounded start, should get the first page that overlaps with the current write, and care about all of them up to
+        // rounded end, which should be correctly exlucded using this range operation.
+        for (&virtual_page_address, (page_type, page)) in
+            self.overlay.range_mut(rounded_start..rounded_end)
+        {
+            // check if the current page is already after the next write address, if so insert pages between write start and current page
+            // Don't need to check that rounded_start < write_end, since rounded_end is < write_end, and thus the virtual address also is < write_end.
+            while rounded_start < virtual_page_address {
+                // get new page
+                let new_page = self.backing_memory.get_page()?;
+                // fill page
+                let start = *new_page as usize;
+                let page = &mut self.backing_memory.get_mut_u8()[start..start + PAGE_SIZE];
+                page.copy_from_slice(&write_memory[..PAGE_SIZE]);
+                write_memory = &write_memory[PAGE_SIZE..];
+                to_insert.push((rounded_start, (PageType::Page, new_page)));
+                rounded_start += PAGE_SIZE;
+            }
+            // check the current page
+            let page_start = match page_type {
+                PageType::Page => **page as usize,
+                PageType::CoW => {
+                    let new_page = self.backing_memory.get_page()?;
+                    let page_start = *new_page as usize;
+                    to_insert.push((rounded_start, (PageType::Page, new_page)));
+                    page_start
+                }
+            };
+            let page = &mut self.backing_memory.get_mut_u8()[page_start..page_start + PAGE_SIZE];
+            page.copy_from_slice(&write_memory[..PAGE_SIZE]);
+            write_memory = &write_memory[PAGE_SIZE..];
+            rounded_start += PAGE_SIZE;
+        }
+
+        // Need to fill in pages in case the last page in the overlay was before the rounded_end.
+        while rounded_start < rounded_end {
+            // get new page
+            let new_page = self.backing_memory.get_page()?;
+            // fill page
+            let start = *new_page as usize;
+            let page = &mut self.backing_memory.get_mut_u8()[start..start + PAGE_SIZE];
+            page.copy_from_slice(&write_memory[..PAGE_SIZE]);
+            write_memory = &write_memory[PAGE_SIZE..];
+            to_insert.push((rounded_start, (PageType::Page, new_page)));
+            rounded_start += PAGE_SIZE;
+        }
+        // Bulk add all new pages
+        self.overlay.extend(to_insert);
+
+        // handle last page with possible partial write
+        if !write_memory.is_empty() {
+            trace!(
+                "writing left over at {} for {}",
+                rounded_start,
+                write_memory.len()
+            );
+            debug_assert!(write_memory.len() < PAGE_SIZE);
+            match self.overlay.entry(rounded_start) {
+                Vacant(vacant) => {
+                    let new_page = self.backing_memory.get_page()?;
+                    let page_start = *new_page as usize;
+                    let page =
+                        &mut self.backing_memory.get_mut_u8()[page_start..page_start + PAGE_SIZE];
+                    page[0..write_memory.len()].copy_from_slice(write_memory);
+                    page[write_memory.len()..].fill(0);
+                    vacant.insert((PageType::Page, new_page));
+                }
+                Occupied(mut occupied) => {
+                    let (page_type, page) = occupied.get_mut();
+                    match page_type {
+                        PageType::CoW => {
+                            let old_page_start = **page as usize;
+                            let new_page = self.backing_memory.get_page()?;
+                            let new_page_start = *new_page as usize;
+                            self.backing_memory.get_mut_u8()
+                                [new_page_start..new_page_start + write_memory.len()]
+                                .copy_from_slice(write_memory);
+                            self.backing_memory.get_mut_u8().copy_within(
+                                old_page_start + write_memory.len()..old_page_start + PAGE_SIZE,
+                                new_page_start + write_memory.len(),
+                            );
+                            occupied.insert((PageType::Page, new_page));
+                        }
+                        PageType::Page => {
+                            let page_start = **page as usize;
+                            let page = &mut self.backing_memory.get_mut_u8()
+                                [page_start..page_start + write_memory.len()];
+                            page.copy_from_slice(write_memory);
+                        }
+                    };
+                }
+            }
+        }
         Ok(())
     }
 
@@ -313,7 +459,7 @@ impl ContextTrait for KvmContext {
         }
 
         let read_size = core::mem::size_of_val(read_buffer);
-        if offset + read_size > self.storage.len() {
+        if offset + read_size > self.context_size {
             log::debug!("Read out of bounds at offset {}", offset);
             return err_dandelion!(DandelionError::InvalidRead);
         }
@@ -322,108 +468,57 @@ impl ContextTrait for KvmContext {
         };
 
         trace!(
-            "Read from kvm context at offset: {}, size: {}, with overlay: {:?}",
+            "Read from kvm context at offset: {}, size: {}",
             offset,
             read_size,
-            self.overlay
         );
 
         if read_size == 0 {
             return Ok(());
         }
 
-        let overlay_range = self.overlay.range(offset..);
-        for (overlay_end, (overlay_start, overlay_option)) in overlay_range {
-            if *overlay_start > offset {
-                return err_dandelion!(DandelionError::InvalidRead);
-            }
-
-            // check how much to read from the overlay, know that offset >= overlay start or that read buffer is empty
-            if !read_memory.is_empty() {
-                // get offset into the overlay
-                let overlay_offset = offset - overlay_start;
-                let additional_bytes = min(*overlay_end - offset + 1, read_memory.len());
-                if let Some(overlay_context) = overlay_option {
-                    overlay_context.context.read(
-                        overlay_context.offset + overlay_offset,
-                        &mut read_memory[..additional_bytes],
-                    )?;
-                } else {
-                    read_memory[..additional_bytes]
-                        .copy_from_slice(&self.storage[offset..offset + additional_bytes]);
-                }
-                read_memory = &mut read_memory[additional_bytes..];
-                offset += additional_bytes;
-                if read_memory.is_empty() {
-                    return Ok(());
-                }
-            } else {
-                return Ok(());
-            }
+        while !read_memory.is_empty() {
+            let new_chunck = self.get_chunk_ref(offset, read_memory.len())?;
+            let chunck_size = new_chunck.len();
+            trace!("chunck size: {}", chunck_size);
+            read_memory[..chunck_size].copy_from_slice(new_chunck);
+            offset += chunck_size;
+            read_memory = &mut read_memory[chunck_size..];
         }
-        err_dandelion!(DandelionError::InvalidRead)
+        Ok(())
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
-        if offset + length > self.storage.len() {
+        if offset + length > self.context_size {
             return err_dandelion!(DandelionError::InvalidRead);
         }
 
         // check if the offset is into an overlayed object
         trace!(
-            "Trying to get chunk at offset: {} with length {} from overlay: {:?}",
+            "Trying to get chunk at offset: {} with length {}",
             offset,
             length,
-            self.overlay
         );
-        if let Some((&overlay_end, (overlay_start, overlay_option))) =
-            self.overlay.range(offset..).next()
-        {
-            // overlay object ends after offset, so if overlay start is smaller than offset,
-            // it reads from inside the overlay, otherise it is from in front of the overlay
-            if *overlay_start <= offset {
-                if let Some(overlay_context) = overlay_option {
-                    let overlay_offset = offset - overlay_start;
-                    let chunk_size = min(overlay_end + 1 - offset, length);
-                    overlay_context
-                        .context
-                        .get_chunk_ref(overlay_context.offset + overlay_offset, chunk_size)
-                } else {
-                    // offset is before overlay start, so can read at most up to overlay start
-                    let chunk_end = min(offset + length, overlay_end + 1);
-                    Ok(&self.storage[offset..chunk_end])
-                }
-            } else {
-                err_dandelion!(DandelionError::InvalidRead)
-            }
-        } else {
-            err_dandelion!(DandelionError::InvalidRead)
-        }
+        let page_start = round_down_to_page(offset);
+        let (_, page_arc) = self
+            .overlay
+            .get(&page_start)
+            .ok_or(dandelion_err!(DandelionError::InvalidRead))?;
+        let page = **page_arc as usize;
+        let page_offset = offset % PAGE_SIZE;
+        let read_end = usize::min(page_offset + length, PAGE_SIZE);
+
+        Ok(&self.backing_memory.slice[page + page_offset..page + read_end])
     }
 }
 
-impl Drop for KvmContext {
-    fn drop(&mut self) {
-        unsafe {
-            nix::sys::mman::munmap(
-                NonNull::new_unchecked(self.storage.as_mut_ptr() as *mut c_void),
-                self.storage.len(),
-            )
-            .unwrap();
-        };
-        let size = u32::try_from(self.storage.len() / PAGE_SIZE).unwrap();
-        self.domain
-            .lock()
-            .unwrap()
-            .insert(self.rangepool_start, self.rangepool_start + size);
-    }
-}
-
+// TODO: consider counting physical pages available (or approximation thereof) to delay scheduling when there are no pages
 #[derive(Debug)]
 pub struct KvmMemoryDomain {
-    occupation: Arc<Mutex<RangePool<u32>>>,
-    fd: Arc<OwnedFd>,
+    domain_memory: Arc<Memory>,
 }
+unsafe impl Send for KvmMemoryDomain {}
+unsafe impl Sync for KvmMemoryDomain {}
 
 impl MemoryDomain for KvmMemoryDomain {
     fn init(config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
@@ -436,62 +531,64 @@ impl MemoryDomain for KvmMemoryDomain {
             }
         };
 
-        // create memfd for anonymous memory file
-        let upper_end = u32::try_from(size / PAGE_SIZE)
-            .expect("Total memory pool should be smaller for current u32 setup");
-        let occupation = Arc::new(Mutex::new(RangePool::new(0..upper_end)));
-        let fd = memfd_create("KvmMemoryDomain", MFdFlags::empty()).unwrap();
-        ftruncate(&fd, i64::try_from(size).unwrap()).unwrap();
-        Ok(Box::new(KvmMemoryDomain {
-            fd: Arc::new(fd),
-            occupation,
-        }))
-    }
+        let domain_size = if size == 0 {
+            warn!("Tried to create empty kvm domain, creating single page size instead");
+            // creating a single page domain, can be used for tests, but useless otherwise
+            PAGE_SIZE
+        } else {
+            size.next_multiple_of(PAGE_SIZE)
+        };
+        trace!("Creating KVM domain with size: {}", domain_size);
 
-    fn acquire_context(&self, mut size: usize) -> DandelionResult<Context> {
-        // round up to next page size
-        if size > (u32::MAX as usize) * PAGE_SIZE {
-            return err_dandelion!(DandelionError::DomainError(
-                dandelion_commons::DomainError::InvalidMemorySize,
-            ));
-        }
-
-        let number_of_pages = u32::try_from(size.div_ceil(PAGE_SIZE)).unwrap();
-        size = (number_of_pages as usize) * PAGE_SIZE;
-        let page = self
-            .occupation
-            .lock()
-            .unwrap()
-            .get(number_of_pages, u32::MIN)
-            .ok_or(dandelion_err!(DandelionError::DomainError(
-                dandelion_commons::DomainError::ReachedCapacity,
-            )))?;
-        let file_offset = (page as usize) * PAGE_SIZE;
-        // TODO replace casting with NonNull::as_mut_ptr() when it stabilizes
-        let mapping_pointer = unsafe {
+        let domain_start = unsafe {
             ptr::from_mut(
-                nix::sys::mman::mmap(
+                nix::sys::mman::mmap_anonymous(
                     None,
-                    NonZeroUsize::new(size).unwrap(),
+                    NonZeroUsize::new(domain_size).expect("KVM domain should not have 0 size"),
                     ProtFlags::all(),
                     MapFlags::MAP_SHARED,
-                    &self.fd,
-                    i64::try_from(file_offset).unwrap(),
                 )
                 .or(err_dandelion!(DandelionError::DomainError(
                     dandelion_commons::DomainError::Mapping,
                 )))?
                 .as_mut(),
+            ) as *mut u8
+        };
+
+        // to initialize the free page pointer list, need to cast it as u64 slice
+        let page_size = PAGE_SIZE / size_of::<u64>();
+        let memory = unsafe {
+            core::slice::from_raw_parts_mut(
+                domain_start as *mut u64,
+                domain_size / size_of::<u64>(),
             )
-        } as *mut u8;
-        let storage = unsafe { core::slice::from_raw_parts_mut(mapping_pointer, size) };
+        };
+        // step through in page / sizeof(u64) steps and set pointers
+        for (page_index, page_start) in memory.iter_mut().step_by(page_size).enumerate() {
+            *page_start = ((page_index + 1) * PAGE_SIZE) as u64;
+        }
+        // set last page to NULL pointer
+        memory[(domain_size - PAGE_SIZE) / size_of::<u64>()] = 0;
+
+        Ok(Box::new(KvmMemoryDomain {
+            domain_memory: Arc::new(Memory {
+                slice: unsafe { core::slice::from_raw_parts_mut(domain_start, domain_size) },
+            }),
+        }))
+    }
+
+    fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
+        // round up to next page size
+        if size > self.domain_memory.slice.len() {
+            return err_dandelion!(DandelionError::DomainError(
+                dandelion_commons::DomainError::InvalidMemorySize,
+            ));
+        }
 
         let new_context = Box::new(KvmContext {
             overlay: BTreeMap::new(),
-            storage,
-            fd: self.fd.clone(),
-            domain: self.occupation.clone(),
-            rangepool_start: page,
+            context_size: size,
+            backing_memory: self.domain_memory.clone(),
         });
         Ok(Context::new(ContextType::Kvm(new_context), size))
     }
@@ -554,12 +651,10 @@ pub fn transfer_into(
     if source_offset + size > source.size {
         return err_dandelion!(DandelionError::InvalidRead);
     }
-    if destination_offset + size > destination.storage.len() {
+    if destination_offset + size > destination.context_size {
         debug!(
             "Trying to transfer into KVM context with destination {} + size {} > context size {}",
-            destination_offset,
-            size,
-            destination.storage.len()
+            destination_offset, size, destination.context_size
         );
         return err_dandelion!(DandelionError::InvalidWrite);
     }
@@ -568,29 +663,8 @@ pub fn transfer_into(
     // because of page rounding)
 
     if let ContextType::Kvm(kvm_source_context) = &source.context {
-        if size < PAGE_SIZE {
-            let mut bytes_written = 0;
-            while bytes_written < size {
-                let chunk =
-                    source.get_chunk_ref(source_offset + bytes_written, size - bytes_written)?;
-                debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
-                destination.write(destination_offset + bytes_written, chunk)?;
-                bytes_written += chunk.len();
-            }
-        } else if source_offset % PAGE_SIZE != destination_offset % PAGE_SIZE {
-            trace!("starting to transfer large item with non equal offset");
-            // check if not both have the same distance to the next page, if so, need to copy regularly
-            // TODO remove interface for exact control on transfer item, so location can be controlled by transfer function
-            // if that is true, can force destination_offset to be same allignment
-            let mut bytes_written = 0;
-            while bytes_written < size {
-                let chunk =
-                    source.get_chunk_ref(source_offset + bytes_written, size - bytes_written)?;
-                debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
-                destination.write(destination_offset + bytes_written, chunk)?;
-                bytes_written += chunk.len();
-            }
-        } else {
+        // check additional conditions for mapping to be possible
+        if size >= PAGE_SIZE && source_offset % PAGE_SIZE == destination_offset % PAGE_SIZE {
             // insert the parts that can be remapped and copy the rest
             let rounded_start = destination_offset.next_multiple_of(PAGE_SIZE);
             let rounded_end = round_down_to_page(destination_offset + size);
@@ -621,65 +695,33 @@ pub fn transfer_into(
                 trailer_bytes += chunk.len();
             }
 
-            // TODO: may want to keep track on range level with a single file, then we simplify the overlay handling
-            if rounded_size != 0 {
-                let mut overlayed_bytes = 0;
-                // in case the original context has multiple overlays in the transferred range
-                for (source_overlay_end, (source_overlay_start, source_item_option)) in
-                    kvm_source_context.overlay.range(source_rounded_start..)
-                {
-                    if overlayed_bytes >= rounded_size
-                        || *source_overlay_start >= source_rounded_end
-                    {
-                        break;
-                    }
-                    assert!(
-                        *source_overlay_start <= source_rounded_start + overlayed_bytes,
-                        "Expect to always find an overlay that starts before the start of the transfer,\
-                        source overlay: {:?}, source_rounded_start: {}, overlayed_bytes {}",
-                        kvm_source_context.overlay, source_rounded_start, overlayed_bytes
-                    );
-
-                    let new_end = min(*source_overlay_end + 1, source_rounded_end);
-                    let new_bytes = new_end - source_rounded_start + overlayed_bytes;
-                    // if this already has been zero copied from another context, use the reference to that context, to avoid dependency chains
-                    let new_item = if let Some(OverlayItem {
-                        offset,
-                        context: nested_context,
-                    }) = source_item_option
-                    {
-                        let new_offset = offset + source_rounded_start - *source_overlay_start;
-                        OverlayItem {
-                            context: nested_context.clone(),
-                            offset: new_offset,
-                        }
-                    } else {
-                        OverlayItem {
-                            context: source.clone(),
-                            offset: source_rounded_start + overlayed_bytes,
-                        }
-                    };
-                    destination.insert_into_overlay(
-                        rounded_start + overlayed_bytes,
-                        rounded_start + overlayed_bytes + new_bytes,
-                        Some(new_item),
-                    );
-                    overlayed_bytes += new_bytes;
-                }
-                debug_assert_eq!(overlayed_bytes, rounded_size);
-            }
-        }
-    } else {
-        trace!("Transfer into KVM context from other type of context");
-        let mut bytes_written = 0;
-        while bytes_written < size {
-            let chunk =
-                source.get_chunk_ref(source_offset + bytes_written, size - bytes_written)?;
-            debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
-            destination.write(destination_offset + bytes_written, chunk)?;
-            bytes_written += chunk.len();
+            let mut remapped_bytes = 0;
+            destination.overlay.extend(
+                kvm_source_context
+                    .overlay
+                    .range(source_rounded_start..source_rounded_end)
+                    .map(|(_, (_, page))| {
+                        let result = (
+                            rounded_start + remapped_bytes,
+                            (PageType::CoW, page.clone()),
+                        );
+                        remapped_bytes += PAGE_SIZE;
+                        result
+                    }),
+            );
+            trace!("overlay: {:?}", destination.overlay);
+            debug_assert_eq!(rounded_size, remapped_bytes);
+            return Ok(());
         }
     }
-    trace!("Overlay after transfer {:?}", destination.overlay);
+    trace!("Transfer into KVM context from other type of context");
+    let mut bytes_written = 0;
+    while bytes_written < size {
+        let chunk = source.get_chunk_ref(source_offset + bytes_written, size - bytes_written)?;
+        debug_assert_ne!(0, chunk.len(), "Chunks should never be zero");
+        destination.write(destination_offset + bytes_written, chunk)?;
+        bytes_written += chunk.len();
+    }
+
     Ok(())
 }

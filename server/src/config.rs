@@ -9,7 +9,7 @@ const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_MIN_SYS_CORES: usize = 1;
-const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
+const DEFAULT_MAX_RAM_MULTIPLIER: f64 = 0.75;
 const DEFAULT_MULTINODE_RECONNECT_INTERVAL: u64 = 1000;
 use composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
 use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
@@ -65,6 +65,69 @@ pub enum TestMode {
     SingleCore,
     NoCompute,
     NoEngine,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum RamMode {
+    Absolute(usize),
+    Relative(f64),
+}
+
+impl Default for RamMode {
+    fn default() -> Self {
+        Self::Relative(DEFAULT_MAX_RAM_MULTIPLIER)
+    }
+}
+
+impl FromStr for RamMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lower_case = s.to_lowercase();
+        let parts: Vec<&str> = s.split(':').collect();
+        if lower_case.starts_with("abs:") {
+            let num = parts
+                .get(1)
+                .and_then(|val| val.parse::<usize>().ok())
+                .ok_or_else(|| {
+                    "Invalid number for absolute RAM scaling (e.g., 'abs:4')".to_string()
+                })?;
+            Ok(Self::Absolute(num))
+        } else if lower_case.starts_with("rel:") {
+            let num = parts
+                .get(1)
+                .and_then(|val| val.parse::<f64>().ok())
+                .ok_or_else(|| {
+                    "Invalid number for relative RAM scaling (e.g., 'rel:0.75')".to_string()
+                })?;
+            Ok(Self::Relative(num))
+        } else {
+            Err(format!("Unknown RAM scaling mode {}", s))
+        }
+    }
+}
+
+impl fmt::Display for RamMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absolute(n) => write!(f, "abs:{}", n),
+            Self::Relative(n) => write!(f, "rel:{}", n),
+        }
+    }
+}
+
+impl TryFrom<String> for RamMode {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::from_str(&s)
+    }
+}
+
+impl From<RamMode> for String {
+    fn from(mode: RamMode) -> Self {
+        mode.to_string()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -166,9 +229,14 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
-    #[arg(long, env, default_value_t = DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER)]
+    /// Scaling the amount of memory the system can use.
+    /// Has two modes, absolute and relative.
+    /// Absolute sets a fixed amount of KiBs. To specify absolute values use "abs:1024" (1 MiB).
+    /// Relative uses a fraction relative to the amount of available RAM, for example "rel:0.75" to use 75% of available physical RAM.
+    /// Either can be subject to rounding for compatibility with pages sizes or other constraints.
+    #[arg(long, env, default_value_t = RamMode::Relative(DEFAULT_MAX_RAM_MULTIPLIER))]
     #[serde(default)]
-    pub virtual_max_ram_multiplier: usize,
+    pub max_ram_multiplier: RamMode,
     #[arg(long, env, default_value_t = AnyShardingMode::AutoSharding(DEFAULT_AUTOSHARDING_OFFLOAD_CONST))]
     #[serde(default)]
     pub any_sharding_mode: AnyShardingMode,
@@ -246,8 +314,8 @@ impl DandelionConfig {
         merge_option!(data_concurrency);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge!(
-            virtual_max_ram_multiplier,
-            DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER
+            max_ram_multiplier,
+            RamMode::Relative(DEFAULT_MAX_RAM_MULTIPLIER)
         );
         merge!(
             any_sharding_mode,

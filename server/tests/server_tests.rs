@@ -276,6 +276,8 @@ mod server_tests {
             .env("RUST_LOG", "debug,multinode=trace")
             .arg("--bin-preload-path")
             .arg(&preload_path)
+            .arg("--max-ram-multiplier")
+            .arg("abs:300000")
             .arg("--total-cores")
             .arg("1")
             .arg("--test-mode")
@@ -303,6 +305,8 @@ mod server_tests {
             .env("RUST_LOG", "debug,multinode=trace")
             .arg("--bin-preload-path")
             .arg(&preload_path)
+            .arg("--max-ram-multiplier")
+            .arg("abs:300000")
             .arg("--port")
             .arg(remote_port.to_string())
             .arg("--node-id")
@@ -337,6 +341,8 @@ mod server_tests {
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .arg("--max-ram-multiplier")
+            .arg("abs:300000")
             .spawn()
             .unwrap();
         let mut server_killer = ServerKiller::new("Server", server);
@@ -358,6 +364,8 @@ mod server_tests {
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .arg("--max-ram-multiplier")
+            .arg("abs:300000")
             .spawn()
             .unwrap();
         let mut server_killer = ServerKiller::new("Server", server);
@@ -379,6 +387,8 @@ mod server_tests {
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .arg("--max-ram-multiplier")
+            .arg("abs:300000")
             .spawn()
             .unwrap();
         let mut server_killer = ServerKiller::new("Server", server);
