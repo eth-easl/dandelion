@@ -607,6 +607,8 @@ impl MemoryDomain for KvmMemoryDomain {
             }
         };
 
+        log::info!("Starting to initialize state for KVM domain");
+
         let mut handles = Vec::with_capacity(num_threads);
         for thread_num in 0..num_threads {
             handles.push(std::thread::spawn(move || init_func(thread_num)));
@@ -619,6 +621,8 @@ impl MemoryDomain for KvmMemoryDomain {
         for tail_index in 1..=TABLE_SIZE {
             memory[(domain_size - tail_index * PAGE_SIZE) / size_of::<u64>()] = 0;
         }
+
+        log::info!("Finished initializing state for KVM domain");
 
         Ok(Box::new(KvmMemoryDomain {
             domain_memory: Arc::new(Memory {

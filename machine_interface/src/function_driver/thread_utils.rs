@@ -259,12 +259,19 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                     &metadata.output_sets,
                 );
 
-                if let Ok((exit_code, items)) = &result {
-                    log::debug!("content: {}, state: {:?}", *exit_code, items);
-                }
-
                 recorder.record(RecordPoint::EngineEnd);
                 drop(recorder);
+
+                // TODO return error from engine.
+                if let Ok((exit_code, items)) = &result {
+                    log::debug!("content: {}, state: {:?}", *exit_code, items);
+                    if *exit_code != 0 {
+                        debt.fulfill(err_dandelion!(DandelionError::UserError(
+                            dandelion_commons::UserError::FunctionError(*exit_code),
+                        )));
+                        continue 'engine;
+                    }
+                }
 
                 let results = result.map(|(_, items)| WorkDone::DataItems(items));
                 debt.fulfill(results);

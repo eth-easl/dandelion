@@ -10,7 +10,11 @@ use crate::{
     DataRequirement, DataRequirementList, Position,
 };
 use core_affinity;
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, UserError};
+use dandelion_commons::{
+    dandelion_err, err_dandelion,
+    DandelionError::{self, EngineError},
+    DandelionResult, UserError,
+};
 use kvm_bindings::{kvm_clock_data, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::{debug, info};
@@ -216,7 +220,6 @@ impl EngineLoop for KvmLoop {
         #[cfg(target_arch = "x86_64")]
         self.vm.set_clock(&kvm_clock_data::default()).unwrap();
 
-        info!("Elf entry: {}", elf_config.entry_point);
         // initialize vCPU
         let pages = self.state.init_vcpu(
             &self.vcpu,
@@ -259,12 +262,17 @@ impl EngineLoop for KvmLoop {
                     dump_regs(&self.vcpu);
                     break;
                 }
+                #[cfg(not(feature = "backend_debug"))]
+                VcpuExit::IoOut(14, _) => {
+                    return err_dandelion!(DandelionError::OutOfMemory);
+                }
+                #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(1, _) => {
                     debug!("Exit at end of asm");
                     dump_regs(&self.vcpu);
                     break;
                 }
-                // #[cfg(feature = "backend_debug")]
+                #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(point, value) => {
                     let val = value[0];
                     debug!("Exit from handler at point {:?}", point);
@@ -275,7 +283,7 @@ impl EngineLoop for KvmLoop {
                 }
                 VcpuExit::SystemEvent(_type, _data) => {
                     debug!("System Event, type: {}", _type);
-                    break;
+                    return err_dandelion!(DandelionError::EngineError);
                 }
                 VcpuExit::Debug(info) => {
                     debug!("Debug stop: {:?}", info);
@@ -284,7 +292,7 @@ impl EngineLoop for KvmLoop {
                 r => {
                     debug!("unexpected exit reason: {:?}", r);
                     dump_regs(&self.vcpu);
-                    break;
+                    return err_dandelion!(DandelionError::EngineError);
                 }
             }
         }
