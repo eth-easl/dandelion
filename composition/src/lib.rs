@@ -41,9 +41,9 @@ pub trait Executor {
     );
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct InputSetTemplate {
-    set_idx: usize,
+    set_idcs: Vec<usize>,
     sharding: Sharding,
     optional: bool,
 }
@@ -131,7 +131,11 @@ impl Composition {
             let mut inputs = Vec::with_capacity(f.params.len());
             for in_opt in f.params.iter() {
                 if let Some(in_templ) = in_opt {
-                    inputs.push(Some((in_templ.sharding, in_templ.optional)));
+                    inputs.push(Some((
+                        in_templ.sharding,
+                        in_templ.optional,
+                        in_templ.set_idcs.len(),
+                    )));
                 } else {
                     inputs.push(None);
                 }
@@ -154,15 +158,16 @@ impl Composition {
 
             for (in_idx, in_opt) in f.params.iter().enumerate() {
                 if let Some(in_templ) = in_opt {
-                    if in_templ.sharding.is_blocking() {
-                        sets[in_templ.set_idx].add_blocking_consumer(
-                            function_arc.clone(),
-                            in_idx,
-                            in_templ.sharding.requires_sorting(),
-                        );
-                    } else {
-                        sets[in_templ.set_idx]
-                            .add_non_blocking_consumer(function_arc.clone(), in_idx);
+                    for set_idx in in_templ.set_idcs.iter() {
+                        if in_templ.sharding.is_blocking() {
+                            sets[*set_idx].add_blocking_consumer(
+                                function_arc.clone(),
+                                in_idx,
+                                in_templ.sharding.requires_sorting(),
+                            );
+                        } else {
+                            sets[*set_idx].add_non_blocking_consumer(function_arc.clone(), in_idx);
+                        }
                     }
                 }
             }
