@@ -174,17 +174,17 @@ impl Function {
                     acc.push_set(data_set);
                     InputSet::BlockingPending(acc)
                 }
-                (InputSet::BlockingPending(mut acc), complete) => {
+                (InputSet::BlockingPending(mut acc), false) => {
                     acc.push_set(data_set);
-                    if complete {
-                        InputSet::Complete(if sharding.requires_sorting() {
-                            acc.collect()
-                        } else {
-                            acc.collect_unsorted()
-                        })
+                    InputSet::BlockingPending(acc)
+                }
+                (InputSet::BlockingPending(mut acc), true) => {
+                    acc.push_set(data_set);
+                    InputSet::Complete(if sharding.requires_sorting() {
+                        acc.collect()
                     } else {
-                        InputSet::BlockingPending(acc)
-                    }
+                        acc.collect_unsorted()
+                    })
                 }
                 _ => panic!("Blocking input set is already complete."),
             };
