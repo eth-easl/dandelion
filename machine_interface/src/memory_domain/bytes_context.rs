@@ -93,16 +93,13 @@ pub struct FrameBuf<'data> {
 }
 
 impl<'data> FrameBuf<'data> {
-    pub fn try_new(byte_iter: &'data Vec<Bytes>) -> Option<Self> {
-        let remaining = byte_iter
-            .iter()
-            .try_fold(0usize, |size, frame| size.checked_add(frame.len()))?;
-        Some(Self {
+    pub fn new(byte_iter: &'data Vec<Bytes>) -> Self {
+        Self {
             byte_iter,
-            remaining,
+            remaining: byte_iter.iter().map(Bytes::len).sum(),
             current_frame: 0,
             current_buf_offset: 0,
-        })
+        }
     }
 
     pub fn position(&self) -> (usize, usize) {
@@ -196,7 +193,7 @@ fn frame_buf_handles_empty_frames_and_eof() {
             Bytes::new(),
         ],
     ] {
-        let mut buf = FrameBuf::try_new(&frames).unwrap();
+        let mut buf = FrameBuf::new(&frames);
         if buf.has_remaining() {
             assert_eq!(buf.chunk(), &[1u8, 2u8]);
             buf.advance(1);

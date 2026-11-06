@@ -70,7 +70,7 @@ impl DandelionRequest {
                 InvocationTarget::Composition(source)
             }
         };
-        let total = payload.iter().map(Bytes::len).sum(); // Already checked by envelope decoding.
+        let total = payload.iter().map(Bytes::len).sum();
         let mut offset = 0;
         let mut sets = Vec::with_capacity(metadata.sets.len());
         for set in metadata.sets {
