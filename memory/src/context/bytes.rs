@@ -304,32 +304,55 @@ fn read_data_set(
     let _doc_name = read_cstring(buf)?;
     let _doc_lenght = read_length(buf)?;
 
-    let next_type = read_type_byte(buf)?;
-    if next_type != 4 {
-        debug!("Got type {}, expected 4 (array)", next_type);
-        let next_id = read_cstring(buf)?;
-        debug!("Next identifier is {}", next_id);
+    // allow for arbitrary ordering of data set fields
+    let mut items = Vec::new();
+    let mut total_size = 0;
+    let mut check: u8 = 0;
+    for _ in 0..2 {
+        let next_type = read_type_byte(buf)?;
+        match next_type {
+            2 => {
+                // -> expect the identifier part
+                read_and_check_cstring(buf, "identifier\0")?;
+                _ = read_string(buf)?;
+                check |= 1;
+            }
+            4 => {
+                // -> expect the items part
+                read_and_check_cstring(buf, "items\0")?;
+                let array_end = buf.remaining() - read_length(buf)?;
+
+                // reads all items
+                while buf.remaining() > array_end {
+                    if let Some(item) = read_data_item(buf, total_length)? {
+                        total_size += item.data.size;
+                        items.push(item);
+                    } else {
+                        break;
+                    }
+                }
+
+                check |= 2;
+            }
+            x => {
+                debug!("Got type {}, expected either 2 (string), 4 (array)", x);
+                let next_id = read_cstring(buf)?;
+                debug!("Next identifier is {}", next_id);
+                return err_dandelion!(DandelionError::RequestError(
+                    FrontendError::MalformedMessage,
+                ));
+            }
+        };
+    }
+    read_and_check_termination(buf)?;
+
+    // check that both fields have been read
+    if check != 3 {
+        log::info!("Some set field is missing.");
         return err_dandelion!(DandelionError::RequestError(
             FrontendError::MalformedMessage,
         ));
     }
-
-    // expect the items part
-    read_and_check_cstring(buf, "items\0")?;
-    let array_end = buf.remaining() - read_length(buf)?;
-
-    // reads all items
-    let mut items = Vec::new();
-    let mut total_size = 0;
-    while buf.remaining() > array_end {
-        if let Some(item) = read_data_item(buf, total_length)? {
-            total_size += item.data.size;
-            items.push(item);
-        } else {
-            break;
-        }
-    }
-    read_and_check_termination(buf)?;
 
     Ok(Some(ContextDataSet { items, total_size }))
 }
