@@ -10,14 +10,10 @@ use crate::{
     DataRequirement, DataRequirementList, Position,
 };
 use core_affinity;
-use dandelion_commons::{
-    dandelion_err, err_dandelion,
-    DandelionError::{self, EngineError},
-    DandelionResult, UserError,
-};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, UserError};
 use kvm_bindings::{kvm_clock_data, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use log::{debug, info};
+use log::debug;
 use memory::{
     context::{
         kvm::{Page, PageType},
@@ -221,7 +217,7 @@ impl EngineLoop for KvmLoop {
         self.vm.set_clock(&kvm_clock_data::default()).unwrap();
 
         // initialize vCPU
-        let pages = self.state.init_vcpu(
+        let (page_table_root, pages) = self.state.init_vcpu(
             &self.vcpu,
             elf_config.entry_point as u64,
             kvm_context,
@@ -243,34 +239,32 @@ impl EngineLoop for KvmLoop {
 
         // start running the function
         // TODO: on unexpected break, mark function as failure
-        loop {
+        let engine_result = loop {
             let reason = self.vcpu.run().unwrap();
             match reason {
                 // the expected way to exit a function with the new interface
                 VcpuExit::IoOut(32, _) => {
-                    break;
+                    break Ok(());
                 }
-                #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(14, _) => {
-                    // ATTENTION: uncomment out 14 in x86_64 page handler so it exits to here
-                    // check_page_fault_handling(
-                    //     &self.vcpu,
-                    //     &page_fault_metadata,
-                    //     kvm_context.storage,
-                    // );
-                    debug!("Exit from page fault handler");
-                    dump_regs(&self.vcpu);
-                    break;
-                }
-                #[cfg(not(feature = "backend_debug"))]
-                VcpuExit::IoOut(14, _) => {
-                    return err_dandelion!(DandelionError::OutOfMemory);
+                    #[cfg(feature = "backend_debug")]
+                    {
+                        // ATTENTION: uncomment out 14 in x86_64 page handler so it exits to here
+                        // check_page_fault_handling(
+                        //     &self.vcpu,
+                        //     &page_fault_metadata,
+                        //     kvm_context.storage,
+                        // );
+                        debug!("Exit from page fault handler");
+                        dump_regs(&self.vcpu);
+                    }
+                    break err_dandelion!(DandelionError::OutOfMemory);
                 }
                 #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(1, _) => {
                     debug!("Exit at end of asm");
                     dump_regs(&self.vcpu);
-                    break;
+                    break Ok(());
                 }
                 #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(point, value) => {
@@ -278,12 +272,12 @@ impl EngineLoop for KvmLoop {
                     debug!("Exit from handler at point {:?}", point);
                     dump_regs(&self.vcpu);
                     if point == 35 && val == 5 {
-                        break;
+                        break Ok(());
                     }
                 }
                 VcpuExit::SystemEvent(_type, _data) => {
                     debug!("System Event, type: {}", _type);
-                    return err_dandelion!(DandelionError::EngineError);
+                    break err_dandelion!(DandelionError::EngineError);
                 }
                 VcpuExit::Debug(info) => {
                     debug!("Debug stop: {:?}", info);
@@ -292,13 +286,14 @@ impl EngineLoop for KvmLoop {
                 r => {
                     debug!("unexpected exit reason: {:?}", r);
                     dump_regs(&self.vcpu);
-                    return err_dandelion!(DandelionError::EngineError);
+                    break err_dandelion!(DandelionError::EngineError);
                 }
             }
-        }
+        };
 
         // get iterator over the page table after the function ran
-        let page_iter = PageMapeIterator::new(kvm_context.backing_memory.get_mut_u64(), &self.vcpu);
+        let page_iter =
+            PageMapeIterator::new(kvm_context.backing_memory.get_mut_u64(), page_table_root);
         for (virtual_address, owned, physical) in page_iter {
             // look up if the overlay already has an entry
             match kvm_context.overlay.entry(virtual_address) {
@@ -329,6 +324,8 @@ impl EngineLoop for KvmLoop {
 
         // need to hold on to the page table pages until after we have extracted the pages we still need
         drop(pages);
+        // after making sure we took ownership of all pages allocated during function, can check for engine errors.
+        engine_result?;
 
         let (exit_code, items) =
             read_output_structs::<u64, u64>(kvm_context.as_mut(), elf_config.system_data_offset)?;

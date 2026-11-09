@@ -9,13 +9,18 @@ pub const PAGE_SHIFT: usize = 12;
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 
 // TODO: check if this needs to be an architecture dependent variable.
-const TABLE_SIZE: usize = 512;
+/// Size of a page table
+const TABLE_SIZE: usize = PAGE_SIZE / size_of::<u64>();
 
 const _: () = assert!(PAGE_SIZE.is_power_of_two());
 
 pub fn round_down_to_page(address: usize) -> usize {
     address & !(PAGE_SIZE - 1)
 }
+
+pub const NUM_PAGE_QUEUES: usize = 64;
+const _: () = assert!(NUM_PAGE_QUEUES.is_power_of_two());
+const _: () = assert!(NUM_PAGE_QUEUES <= PAGE_SIZE / size_of::<u64>());
 
 use super::MemoryResource;
 use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
@@ -123,33 +128,34 @@ impl Memory {
             )
         };
         let atomic_slice = AtomicU64::from_mut_slice(u64_reference);
-        let base_index = (address / PAGE_SIZE) % TABLE_SIZE;
+        let base_base = address / PAGE_SIZE;
+        for base_address in base_base..base_base + NUM_PAGE_QUEUES {
+            let base_index = base_address % NUM_PAGE_QUEUES;
 
-        // load where the current root is pointing
-        let mut next_free = atomic_slice[base_index].load(Ordering::SeqCst);
-        loop {
+            // load where the current root is pointing
+            let mut next_free = atomic_slice[base_index].load(Ordering::SeqCst);
             // make sure we are not trying to take the current root
-            if next_free == 0 {
-                trace!("Dandelion error: Reached Capacity");
-                return err_dandelion!(DandelionError::DomainError(
-                    dandelion_commons::DomainError::ReachedCapacity
-                ));
+            while next_free != 0 {
+                // load where the next free page is after the current root page
+                let potential_root =
+                    atomic_slice[next_free as usize / size_of::<u64>()].load(Ordering::SeqCst);
+                next_free = match atomic_slice[base_index].compare_exchange(
+                    next_free,
+                    potential_root,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(root) => {
+                        return Ok(Page::new(root, self.clone()));
+                    }
+                    Err(root) => root,
+                };
             }
-            // load where the next free page is after the current root page
-            let potential_root =
-                atomic_slice[next_free as usize / size_of::<u64>()].load(Ordering::SeqCst);
-            next_free = match atomic_slice[base_index].compare_exchange(
-                next_free,
-                potential_root,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(root) => {
-                    return Ok(Page::new(root, self.clone()));
-                }
-                Err(root) => root,
-            };
         }
+        trace!("Dandelion error: Reached Capacity");
+        return err_dandelion!(DandelionError::DomainError(
+            dandelion_commons::DomainError::ReachedCapacity
+        ));
     }
 
     fn insert_page(self: &Arc<Self>, physical: u64) {
@@ -160,7 +166,7 @@ impl Memory {
             )
         };
         let atomic_slice = AtomicU64::from_mut_slice(u64_reference);
-        let base_index = (physical as usize / PAGE_SIZE) % TABLE_SIZE;
+        let base_index = (physical as usize / PAGE_SIZE) % NUM_PAGE_QUEUES;
 
         // load where the current root is pointing
         let mut next_free = atomic_slice[base_index].load(Ordering::SeqCst);
@@ -538,11 +544,13 @@ impl MemoryDomain for KvmMemoryDomain {
             }
         };
 
-        let domain_size = if size < TABLE_SIZE * 2 * PAGE_SIZE {
+        // make sure there is at least 1 pages in each page queue
+        let domain_size = if size < (NUM_PAGE_QUEUES + 1) * PAGE_SIZE {
             warn!("Tried to create empty kvm domain, creating smallest possible size instead");
             // creating a single page domain, can be used for tests, but useless otherwise
-            TABLE_SIZE * 2 * PAGE_SIZE
+            (NUM_PAGE_QUEUES + 1) * PAGE_SIZE
         } else {
+            // Round up to 2 MB boundry
             size.next_multiple_of(PAGE_SIZE * TABLE_SIZE)
         };
         trace!("Creating KVM domain with size: {}", domain_size);
@@ -563,7 +571,6 @@ impl MemoryDomain for KvmMemoryDomain {
         };
 
         // to initialize the free page pointer list, need to cast it as u64 slice
-        let page_size = PAGE_SIZE / size_of::<u64>();
         let memory = unsafe {
             core::slice::from_raw_parts_mut(
                 domain_start as *mut u64,
@@ -583,24 +590,25 @@ impl MemoryDomain for KvmMemoryDomain {
                 )
             };
             // find out which part of the lists this thread checks
-            for list_offset in (thread_id..TABLE_SIZE).step_by(num_threads) {
+            for list_offset in (thread_id..NUM_PAGE_QUEUES).step_by(num_threads) {
                 // the first address of the first page in the list
                 let initial_skip = if list_offset == 0 {
-                    TABLE_SIZE
+                    NUM_PAGE_QUEUES
                 } else {
                     list_offset
                 };
-                // step by page size, skip to first page of this list, then skip by 512, to get to next one with same
-                // 2MB alignment
+                // step by number of u64 pointers that fit into single page
+                // skip to first page of this list, then skip by number of page queues, to get to next one in the same queue
                 for (page_index, page_start) in memory
                     .iter_mut()
-                    .step_by(page_size)
+                    .step_by(PAGE_SIZE / size_of::<u64>())
                     .enumerate()
                     .skip(initial_skip)
-                    .step_by(TABLE_SIZE)
+                    .step_by(NUM_PAGE_QUEUES)
                 {
-                    // adding page_size to skip 2 MB ahead
-                    *page_start = ((page_index + TABLE_SIZE) * PAGE_SIZE) as u64
+                    // compute base address of the page pointed to
+                    let page_address = ((page_index + NUM_PAGE_QUEUES) * PAGE_SIZE) as u64;
+                    *page_start = page_address
                 }
                 // set the first one in the root list
                 memory[list_offset] = (initial_skip * PAGE_SIZE) as u64;
@@ -618,8 +626,12 @@ impl MemoryDomain for KvmMemoryDomain {
         }
 
         // set last pages of each list to NULL pointer
-        for tail_index in 1..=TABLE_SIZE {
-            memory[(domain_size - tail_index * PAGE_SIZE) / size_of::<u64>()] = 0;
+        for address in memory
+            .iter_mut()
+            .step_by(PAGE_SIZE / size_of::<u64>())
+            .skip(domain_size / PAGE_SIZE - NUM_PAGE_QUEUES)
+        {
+            *address = 0;
         }
 
         log::info!("Finished initializing state for KVM domain");

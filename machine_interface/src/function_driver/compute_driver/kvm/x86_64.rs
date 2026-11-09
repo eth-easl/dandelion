@@ -193,14 +193,14 @@ impl ResetState {
     /// The two usize parameters are start and end (start + size, so 1 past end) addresses
     /// of the present pages, if the Option is None, it is already at the correct place,
     /// if the option is Some(address) that address points to the start address of a copy
-    /// on write space that should be mapped between start and end of the same size
+    /// on write space that should be mapped between start and end of the same size.
     pub fn init_vcpu(
         &self,
         vcpu: &VcpuFd,
         entry_point: u64,
         kvm_context: &mut Box<KvmContext>,
         stack_pointer: usize,
-    ) -> DandelionResult<Vec<Page>> {
+    ) -> DandelionResult<(u64, Vec<Page>)> {
         // code to set up assembly to debug
         // let code_start = (entry_point as usize).next_multiple_of(PAGE_SIZE) - PAGE_SIZE;
         // debug!("Entry point: {}, code start {}", entry_point, code_start);
@@ -264,11 +264,12 @@ pub struct PageMapeIterator<'memory> {
 }
 
 impl<'memory> PageMapeIterator<'memory> {
-    pub fn new(memory: &'memory [u64], vcpu: &VcpuFd) -> Self {
-        let p4_physical = (vcpu.get_sregs().unwrap().cr3 & !PAGE_MASK) as usize;
+    pub fn new(memory: &'memory [u64], page_table_root: u64) -> Self {
+        let p4_physical = (page_table_root & !PAGE_MASK) as usize;
         let p4_base = p4_physical / size_of::<u64>();
         // read entry at index 0, since we expect only one p4 entry
         let p3_base = (memory[p4_base] & !PAGE_MASK) as usize / size_of::<u64>();
+        trace!("going through page table starting with p4_physical: {}, p4_base: {}, p3_base: {}", p4_physical, p4_base, p3_base);
         PageMapeIterator {
             p3_base,
             p3_index: 0,
@@ -564,7 +565,7 @@ fn set_page_table(
     sregs: &mut kvm_sregs,
     kvm_context: &mut Box<KvmContext>,
     stack_start: usize,
-) -> DandelionResult<Vec<Page>> {
+) -> DandelionResult<(u64,Vec<Page>)> {
     // allocate top level table containing 512 entries for 512 GB ranges, total of 256 TB
     // naming:
     // - p4 is the top level page table overseeing 256TB, each entry being a p3 table which each oversees 512GB
@@ -701,10 +702,11 @@ fn set_page_table(
     trace!("CR3: {}, (0x{:x})", cr3, cr3);
     sregs.cr3 = cr3;
     
+    let p4_address = *p4_physical;
     page_table_pages.push(p4_physical);
     page_table_pages.push(p3_physical);
     
-    Ok(page_table_pages)
+    Ok((p4_address, page_table_pages))
 }
 
 fn setup_long_mode(sregs: &mut kvm_sregs, xregs: &mut kvm_xcrs) {
