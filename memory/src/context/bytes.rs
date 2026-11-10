@@ -93,7 +93,9 @@ pub struct FrameBuf<'data> {
 }
 
 impl<'data> FrameBuf<'data> {
+    /// The frames must not be empty, as `chunk` returns the current frame without looking further.
     pub fn new(byte_iter: &'data Vec<Bytes>) -> Self {
+        debug_assert!(byte_iter.iter().all(|frame| !frame.is_empty()));
         Self {
             byte_iter,
             remaining: byte_iter.iter().map(Bytes::len).sum(),
@@ -131,9 +133,9 @@ impl<'data> bytes::Buf for FrameBuf<'data> {
     }
 
     fn chunk(&self) -> &[u8] {
-        self.byte_iter[self.current_frame..]
-            .iter()
-            .find(|frame| !frame.is_empty())
+        // The buffer may be exhausted, in which case there is no current frame.
+        self.byte_iter
+            .get(self.current_frame)
             .map_or(&[], |frame| &frame[self.current_buf_offset..])
     }
 }
@@ -178,20 +180,12 @@ fn zero_length_reads_accept_eof_without_allowing_out_of_bounds() {
 }
 
 #[test]
-fn frame_buf_handles_empty_frames_and_eof() {
+fn frame_buf_handles_eof() {
     use bytes::Buf;
 
     for frames in [
         vec![],
-        vec![Bytes::new()],
         vec![Bytes::from(vec![1u8, 2u8]), Bytes::from(vec![3u8, 4u8])],
-        vec![
-            Bytes::new(),
-            Bytes::from(vec![1u8, 2u8]),
-            Bytes::new(),
-            Bytes::from(vec![3u8, 4u8]),
-            Bytes::new(),
-        ],
     ] {
         let mut buf = FrameBuf::new(&frames);
         if buf.has_remaining() {
