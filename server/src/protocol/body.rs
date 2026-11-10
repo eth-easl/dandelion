@@ -133,7 +133,7 @@ impl DandelionBody {
         sets: Vec<Option<LocalCompositionSet>>,
         _timing: &Recorder,
     ) -> DandelionResult<Self> {
-        let mut metadata_sets = Vec::new();
+        let mut metadata_sets = Vec::with_capacity(sets.len());
         let mut payloads = Vec::new();
         for set in sets.into_iter().flatten() {
             let identifier = set.get_name().to_string();
