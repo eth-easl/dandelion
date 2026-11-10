@@ -1,6 +1,6 @@
 use bytes::{Buf, Bytes};
 use dandelion_commons::{dandelion_err, DandelionError, DandelionResult, FrontendError};
-use machine_interface::memory_domain::bytes_context::FrameBuf;
+use memory::context::bytes::FrameBuf;
 use prost::{
     encoding::{decode_varint, encode_varint},
     Message,

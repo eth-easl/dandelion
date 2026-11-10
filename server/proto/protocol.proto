@@ -16,8 +16,7 @@ message DandelionDeserializeResponse {
 }
 
 message InputSet {
-    string identifier = 1;
-    repeated InputItem items = 2;
+    repeated InputItem items = 1;
 }
 
 message InputItem {

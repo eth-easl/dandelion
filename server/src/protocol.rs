@@ -8,9 +8,9 @@ pub use body::{DandelionBody, DandelionBuf};
 use bytes::Bytes;
 use dandelion_commons::{dandelion_err, DandelionError, DandelionResult, FrontendError};
 pub use envelope::PROTOCOL_VERSION;
-use machine_interface::{
-    memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
-    DataItem, DataSet, Position,
+use memory::{
+    context::{bytes::BytesContext, ContextDataItem, ContextDataSet, ContextTrait, ContextType},
+    Context, Position,
 };
 
 #[derive(Debug)]
@@ -74,19 +74,20 @@ impl DandelionRequest {
         let mut offset = 0;
         let mut sets = Vec::with_capacity(metadata.sets.len());
         for set in metadata.sets {
-            let mut buffers = Vec::with_capacity(set.items.len());
+            let start = offset;
+            let mut items = Vec::with_capacity(set.items.len());
             for item in set.items {
                 let size = payload_size(item.payload_length, total - offset)?;
-                buffers.push(DataItem {
+                items.push(ContextDataItem {
                     ident: item.identifier,
                     key: item.key,
                     data: Position { offset, size },
                 });
                 offset += size;
             }
-            sets.push(Some(DataSet {
-                ident: set.identifier,
-                buffers,
+            sets.push(Some(ContextDataSet {
+                items,
+                total_size: offset - start,
             }));
         }
         if offset != total {

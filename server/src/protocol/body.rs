@@ -2,11 +2,7 @@ use super::envelope;
 use crate::proto;
 use bytes::{Buf, Bytes};
 use dandelion_commons::{dandelion_err, records::Recorder, DandelionError, DandelionResult};
-use machine_interface::{
-    composition::LocalCompositionSet,
-    memory_domain::{Context, ContextTrait},
-    Position,
-};
+use memory::{context::ContextTrait, Context, DataItem, Position};
 use prost::Message;
 use std::{collections::VecDeque, io::IoSlice, sync::Arc};
 
@@ -129,25 +125,22 @@ pub struct DandelionBody {
     buffer: Option<DandelionBuf>,
 }
 impl DandelionBody {
-    pub fn new(
-        sets: Vec<Option<LocalCompositionSet>>,
-        _timing: &Recorder,
-    ) -> DandelionResult<Self> {
+    pub fn new(sets: Vec<Arc<Vec<DataItem>>>, _timing: &Recorder) -> DandelionResult<Self> {
         let mut metadata_sets = Vec::with_capacity(sets.len());
         let mut payloads = Vec::new();
-        for set in sets.into_iter().flatten() {
-            let identifier = set.get_name().to_string();
-            let mut items = Vec::new();
-            for (item, context) in set {
-                let position = item.data;
+        for set in sets {
+            let mut items = Vec::with_capacity(set.len());
+            for item in set.iter() {
+                // Response items need to be local to be sent.
+                let local = item.local_ref()?;
                 items.push(proto::InputItem {
-                    identifier: item.ident,
+                    identifier: item.ident.clone(),
                     key: item.key,
-                    payload_length: position.size as u64,
+                    payload_length: local.pos.size as u64,
                 });
-                payloads.push((position, context));
+                payloads.push((local.pos, local.ctx.clone()));
             }
-            metadata_sets.push(proto::InputSet { identifier, items });
+            metadata_sets.push(proto::InputSet { items });
         }
         let metadata = proto::DandelionDeserializeResponse {
             sets: metadata_sets,

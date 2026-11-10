@@ -2,7 +2,7 @@ use super::*;
 use bytes::Buf;
 use dandelion_commons::records::Recorder;
 use http_body_util::BodyExt;
-use machine_interface::{composition::CompositionSet, memory_domain::ContextTrait};
+use memory::DataSet;
 use prost::{
     encoding::{decode_varint, encode_varint, encoded_len_varint},
     Message,
@@ -52,7 +52,6 @@ async fn test_happy_path() {
         target: target(&name),
         sets: vec![
             proto::InputSet {
-                identifier: "input".into(),
                 items: [0, 3, 2]
                     .into_iter()
                     .map(|payload_length| proto::InputItem {
@@ -62,12 +61,8 @@ async fn test_happy_path() {
                     })
                     .collect(),
             },
+            proto::InputSet { items: vec![] },
             proto::InputSet {
-                identifier: "empty".into(),
-                items: vec![],
-            },
-            proto::InputSet {
-                identifier: "second".into(),
                 items: vec![proto::InputItem {
                     identifier: "other".into(),
                     key: 9,
@@ -92,15 +87,15 @@ async fn test_happy_path() {
     assert!(invocation.context.content[1]
         .as_ref()
         .unwrap()
-        .buffers
+        .items
         .is_empty());
-    let second = &invocation.context.content[2].as_ref().unwrap().buffers[0].data;
+    let second = &invocation.context.content[2].as_ref().unwrap().items[0].data;
     assert_eq!((second.offset, second.size), (5, 2));
 
     // Invocation response, built from the decoded request without copying its payload.
-    let outputs = CompositionSet::from_context(invocation.context)
+    let outputs = DataSet::from_context(invocation.context)
         .into_iter()
-        .map(|set| set.map(|set| set.into_local()))
+        .map(|set| set.items)
         .collect();
     let recorder = Recorder::new(Arc::new("f".into()), Instant::now());
     let mut body = DandelionBody::new(outputs, &recorder).unwrap();
@@ -120,10 +115,8 @@ async fn test_happy_path() {
     assert!(body.frame().await.is_none());
     let (response, response_payload) =
         decode_response::<proto::DandelionDeserializeResponse>(&actual);
-    assert_eq!(
-        response.sets,
-        [metadata.sets[0].clone(), metadata.sets[2].clone()]
-    );
+    // Empty sets are kept, so every set stays at its index.
+    assert_eq!(response.sets, metadata.sets);
     assert_eq!(response_payload, payload);
 
     // Invocation by inline composition.
@@ -266,7 +259,6 @@ fn test_invalid_invocation() {
                 payload_length: 3,
                 ..Default::default()
             }],
-            ..Default::default()
         }],
     };
     assert_eq!(decode(&encode(&metadata, b"ab")), FrontendError::StreamEnd);
@@ -318,17 +310,17 @@ fn test_invalid_registration() {
 #[test]
 fn test_invalid_output() {
     let mut context = Context::new(ContextType::Bytes(Box::new(BytesContext::new(vec![]))), 0);
-    context.content = vec![Some(DataSet {
-        ident: "output".into(),
-        buffers: vec![DataItem {
+    context.content = vec![Some(ContextDataSet {
+        total_size: 1,
+        items: vec![ContextDataItem {
             ident: "item".into(),
             key: 0,
             data: Position { offset: 0, size: 1 },
         }],
     })];
-    let outputs = CompositionSet::from_context(context)
+    let outputs = DataSet::from_context(context)
         .into_iter()
-        .map(|set| set.map(|set| set.into_local()))
+        .map(|set| set.items)
         .collect();
     let recorder = Recorder::new(Arc::new("f".into()), Instant::now());
     let error = DandelionBody::new(outputs, &recorder).err().unwrap();

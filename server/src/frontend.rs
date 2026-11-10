@@ -10,10 +10,9 @@ use dispatcher::dispatcher::Dispatcher;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, service::service_fn, Request, Response, StatusCode};
 use log::{debug, error, info, trace, warn};
-use machine_interface::{
-    composition::{CompositionSet, LocalCompositionSet},
-    function_driver::Metadata,
-    machine_config::EngineType,
+use machine_interface::machine_config::EngineType;
+use memory::{
+    context::read_only::ReadOnlyContext, data::Metadata, DataItem, DataSet, LocalData, Position,
 };
 use std::{
     convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, println, sync::Arc,
@@ -73,7 +72,7 @@ async fn handle_function_registration(
     let input_sets = request_map
         .input_sets
         .into_iter()
-        .map(|(name, data)| (name, data.map(LocalCompositionSet::from_byte_items)))
+        .map(|(name, data)| (name, data.map(static_data_set)))
         .collect();
 
     let metadata = Metadata {
@@ -91,6 +90,27 @@ async fn handle_function_registration(
         )
         .expect("Should be able to insert function");
     Ok(DandelionBody::status("Function registered"))
+}
+
+/// Builds a set out of static items given at function registration, each backed by its own context.
+fn static_data_set(items: Vec<(String, Vec<u8>)>) -> DataSet {
+    let items = items
+        .into_iter()
+        .map(|(name, data)| {
+            let size = data.len();
+            let ctx = ReadOnlyContext::from_boxed(data.into_boxed_slice())
+                .expect("Should be able to create read only context for static data");
+            DataItem::new_local(
+                name,
+                0,
+                LocalData {
+                    ctx: Arc::new(ctx),
+                    pos: Position { offset: 0, size },
+                },
+            )
+        })
+        .collect();
+    DataSet::from_items(Arc::new(items))
 }
 
 async fn handle_composition_registration(
@@ -136,9 +156,7 @@ async fn handle_request(
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
     debug!("Request number of request_context: {}", request_number);
-    let inputs = CompositionSet::from_context(request_context)
-        .into_iter()
-        .collect::<Vec<_>>();
+    let inputs = DataSet::from_context(request_context);
 
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
@@ -253,7 +271,7 @@ async fn service(
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             Ok(http_response(
-                DandelionBody::status(format!("Failed to serve request: {}", err)),
+                DandelionBody::status(format!("Failed to serve request: {}", err.message())),
                 status,
             ))
         }

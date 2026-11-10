@@ -1,5 +1,6 @@
 use dandelion_commons::records::RecordPoint;
-use machine_interface::{composition::ItemData, function_driver::WorkToDo, promise::Debt};
+use machine_interface::{function_driver::WorkToDo, promise::Debt};
+use memory::data::ItemData;
 use std::collections::{btree_map::Entry, BTreeMap, LinkedList};
 use tokio::sync::mpsc;
 
@@ -26,18 +27,15 @@ pub fn prepare_io_element(
         if let WorkToDo::FunctionArguments { ref input_sets, .. } = work {
             let mut ref_map = BTreeMap::new();
             let mut total_input_size = 0usize;
-            for (item, data) in input_sets
-                .iter()
-                .filter_map(|s| s.as_ref().map(|s| s.into_iter()))
-                .flatten()
-            {
-                total_input_size += item.data.size;
-                if let ItemData::RemoteData(remote_data) = data {
-                    if item.data.size > 0 {
+            for item in input_sets.iter().flat_map(|set| set.into_iter()) {
+                let item_size = item.size();
+                total_input_size += item_size;
+                if let ItemData::Remote(remote_data) = &item.data {
+                    if item_size > 0 {
                         match ref_map.entry(remote_data.node_id) {
-                            Entry::Occupied(mut value) => *value.get_mut() += item.data.size,
+                            Entry::Occupied(mut value) => *value.get_mut() += item_size,
                             Entry::Vacant(value) => {
-                                value.insert(item.data.size);
+                                value.insert(item_size);
                             }
                         }
                     }

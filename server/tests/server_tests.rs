@@ -1,6 +1,9 @@
 #[cfg(any(feature = "mmu", feature = "kvm", feature = "cheri"))]
-mod server_tests {
+mod common;
 
+#[cfg(any(feature = "mmu", feature = "kvm", feature = "cheri"))]
+mod server_tests {
+    use crate::common::ServerKiller;
     use byteorder::{LittleEndian, ReadBytesExt};
     use dandelion_server::protocol::PROTOCOL_VERSION;
     use prost::Message;
@@ -8,121 +11,13 @@ mod server_tests {
     use reqwest::blocking::Client;
     use serial_test::serial;
     use std::{
-        io::{pipe, BufRead, BufReader, Cursor, PipeReader, PipeWriter, Read, Write},
-        process::{Child, Command, Stdio},
-        thread::spawn,
+        io::Cursor,
+        process::{Command, Stdio},
     };
 
     #[allow(dead_code)]
     mod proto {
         include!(concat!(env!("OUT_DIR"), "/dandelion_frontend.rs"));
-    }
-
-    struct ServerKiller {
-        name: &'static str,
-        server: Child,
-        stderr: BufReader<PipeReader>,
-        stdout: BufReader<PipeReader>,
-    }
-
-    fn tee(name: &'static str, mut reader: impl BufRead, mut writer: PipeWriter) {
-        loop {
-            let mut buf = String::new();
-            match reader.read_line(&mut buf) {
-                Err(err) => panic!("{}", err),
-                Ok(0) => break,
-                _ => (),
-            }
-            print!("{} out: {}", name, buf);
-            writer.write_all(buf.as_bytes()).unwrap();
-        }
-    }
-
-    impl ServerKiller {
-        fn new(name: &'static str, mut server: Child) -> Self {
-            let stdout = BufReader::new(server.stdout.take().unwrap());
-            let stderr = BufReader::new(server.stderr.take().unwrap());
-            // create two new pipes, could be channels for better performance, using pipe for convenience
-            let (out_reader, out_writer) = pipe().unwrap();
-            spawn(move || tee(name, stdout, out_writer));
-            let (err_reader, err_writer) = pipe().unwrap();
-            spawn(move || tee(name, stderr, err_writer));
-            Self {
-                name,
-                server,
-                stdout: BufReader::new(out_reader),
-                stderr: BufReader::new(err_reader),
-            }
-        }
-        fn check_for_start(&mut self) {
-            loop {
-                let mut buf = String::new();
-                let len = self.stdout.read_line(&mut buf).unwrap();
-                assert_ne!(len, 0, "Server exited unexpectedly");
-                if buf.contains("Socket ready") {
-                    break;
-                } else {
-                    print!("{} out: {}", self.name, buf);
-                }
-            }
-        }
-
-        /// Reads the server's stderr (where the logs are written) until each of `markers`
-        /// has appeared, in order, printing every line on the way. This is used both to
-        /// synchronize the test with the server's progress and to assert that the expected
-        /// log lines are produced. A single reader is kept for the whole scan so no buffered
-        /// log lines are lost between markers. Panics if the process exits before all markers
-        /// are seen.
-        fn wait_for_stderr(&mut self, markers: &[&str]) {
-            let mut next = 0;
-            while next < markers.len() {
-                let mut buf = String::new();
-                let len = self.stderr.read_line(&mut buf).unwrap();
-                assert_ne!(
-                    len, 0,
-                    "{} exited before logging {:?}",
-                    self.name, markers[next]
-                );
-                print!("{} err: {}", self.name, buf);
-                if buf.contains(markers[next]) {
-                    next += 1;
-                }
-            }
-        }
-    }
-
-    impl Drop for ServerKiller {
-        fn drop(&mut self) {
-            let mut kill = Command::new("kill")
-                .stdout(Stdio::piped())
-                .args(["-s", "TERM", &self.server.id().to_string()])
-                .spawn()
-                .unwrap();
-            kill.wait().unwrap();
-
-            let mut outbuf = Vec::new();
-            let _ = self
-                .stdout
-                .read_to_end(&mut outbuf)
-                .expect("should be able to read child output after killing it");
-            print!(
-                "{} output:\n{}",
-                self.name,
-                String::from_utf8(outbuf)
-                    .expect("Should be able to convert child stdout to string")
-            );
-
-            let mut errbuf = Vec::new();
-            let _ = self
-                .stderr
-                .read_to_end(&mut errbuf)
-                .expect("Should be able to read child stderr");
-            print!(
-                "{} stderr:\n{}",
-                self.name,
-                String::from_utf8(errbuf).expect("Server stderr should be string")
-            )
-        }
     }
 
     fn encode(metadata: &impl Message, payload: &[u8]) -> Vec<u8> {
@@ -146,11 +41,10 @@ mod server_tests {
         decode::<proto::StatusResponse>(body).0.message
     }
 
-    fn invocation_body(target: Target, set_name: &str, item_name: &str, data: &[u8]) -> Vec<u8> {
+    fn invocation_body(target: Target, item_name: &str, data: &[u8]) -> Vec<u8> {
         let metadata = proto::DandelionRequest {
             target: Some(target),
             sets: vec![proto::InputSet {
-                identifier: set_name.into(),
                 items: vec![proto::InputItem {
                     identifier: item_name.into(),
                     key: 0,
@@ -199,7 +93,7 @@ mod server_tests {
         for _ in 0..matrix_dim * matrix_dim {
             data.extend_from_slice(&u64::to_le_bytes(1));
         }
-        let mat_request = invocation_body(Target::Name(function_name), "", "", &data);
+        let mat_request = invocation_body(Target::Name(function_name), "", &data);
 
         let resp = client
             .post(endpoint)
@@ -328,7 +222,6 @@ mod server_tests {
                     .composition
                     .replace(&chain_name, &format!("inline_{version_string}")),
             ),
-            "CompInMats",
             "matrix",
             &matrix,
         );
@@ -502,10 +395,7 @@ mod server_tests {
             .unwrap();
         register_and_request(reqwest::Version::HTTP_2, client, false);
 
-        let status_result = server_killer.server.try_wait();
-        drop(server_killer);
-        let status = status_result.unwrap();
-        assert_eq!(status, None, "Server exited unexpectedly");
+        server_killer.assert_running();
     }
 
     #[test]
@@ -526,10 +416,7 @@ mod server_tests {
             .unwrap();
         register_and_request(reqwest::Version::HTTP_2, client, true);
 
-        let status_result = server_killer.server.try_wait();
-        drop(server_killer);
-        let status = status_result.unwrap();
-        assert_eq!(status, None, "Server exited unexpectedly");
+        server_killer.assert_running();
     }
 
     #[test]
@@ -547,10 +434,7 @@ mod server_tests {
         let client = reqwest::blocking::Client::new();
         register_and_request(reqwest::Version::HTTP_11, client, false);
 
-        let status_result = server_killer.server.try_wait();
-        drop(server_killer);
-        let status = status_result.unwrap();
-        assert_eq!(status, None, "Server exited unexpectedly");
+        server_killer.assert_running();
     }
 
     #[test]
