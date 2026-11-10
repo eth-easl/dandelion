@@ -8,6 +8,8 @@ workspace = true
 
 [features]
 timestamp = []
+trace-timestamps = []
+trace-data = []
 
 [dependencies]
 log = "0.4.20"

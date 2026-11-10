@@ -4,6 +4,7 @@ mod error;
 pub mod range_pool;
 pub mod records;
 mod system_info;
+pub mod trace;
 
 pub use error::*;
 pub use system_info::SystemInfo;
