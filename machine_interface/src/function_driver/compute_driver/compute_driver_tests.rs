@@ -18,7 +18,7 @@ use std::{sync::Arc, time::Instant};
 const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
 #[inline]
-fn zero_id() -> FunctionId {
+pub(super) fn zero_id() -> FunctionId {
     Arc::new(0.to_string())
 }
 
@@ -46,7 +46,7 @@ fn driver(engine_type: EngineType, init: Vec<ComputeResource>, wrong_init: Vec<C
     }
 }
 
-fn prepare_engine_and_domain<Dom: MemoryDomain>(
+pub(super) fn prepare_engine_and_domain<Dom: MemoryDomain>(
     dom_init: MemoryResource,
     engine_type: EngineType,
     drv_init: Vec<ComputeResource>,

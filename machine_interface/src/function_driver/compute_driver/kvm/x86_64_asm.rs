@@ -8,22 +8,27 @@ const _: () = assert!(NUM_PAGE_QUEUES <= PAGE_SIZE / size_of::<u64>());
 // Mask for pointer to get index into page queues
 const QUEUE_MASK: u64 = ((NUM_PAGE_QUEUES as u64) - 1) * 8;
 
-// Assembly function that uses rax and rbx, rdx to fetch a new page address into rax, uses label 1 and 2.
-// Assumes the queue index from which to try to take a page first in r14.
+/// Assembly function.
+/// Uses registers rax, rbx, rdx, r10
+/// Uses labels 1 and 2.
+/// Returns new page address into rax
+/// Assumes the queue index from which to try to take a page first in r14.
 macro_rules! FETCH_PAGE {
    () => {r#"
    mov rdx, {NUM_PAGE_QUEUES_P1}
-2: sub rdx, 1
+2: sub rdx, 8
    test rdx, rdx
    jz 0f # if rdx is zero, have tried all page queues
-   mov rax, rdx
-   add rax, r14
-   and rax, {QUEUE_MASK}
-   mov rax, [rax] # load the root of the free list
+   mov r10, rdx
+   add r10, r14
+   and r10, {QUEUE_MASK}
+   // out 36, eax 
+   mov rax, [r10] # load the root of the free list
 1: test rax, rax
+   // out 37, eax
    jz 2b # abort handling if head of free list is 0
    mov rbx, [rax] # load the next entry in the node
-   lock cmpxchg [0], rbx
+   lock cmpxchg [r10], rbx
    jnz 1b # if 0, compare and exchange did not succeed, otherwise rax now contains the new page to be used
 "#};
 }
@@ -325,7 +330,7 @@ user_exit_handler:
 fault_handlers_end:
    hlt", 
     QUEUE_MASK = const QUEUE_MASK,
-    NUM_PAGE_QUEUES_P1 = const NUM_PAGE_QUEUES + 1,
+    NUM_PAGE_QUEUES_P1 = const (NUM_PAGE_QUEUES + 1) * 8,
     PAGE_SIZE = const PAGE_SIZE,
     PDE64_PRESENT = const PDE64_PRESENT,
     PDE64_ALL_ALLOWED = const PDE64_ALL_ALLOWED,

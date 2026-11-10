@@ -28,6 +28,9 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
+#[cfg(test)]
+mod test;
+
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 #[cfg(target_arch = "x86_64")]

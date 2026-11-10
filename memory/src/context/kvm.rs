@@ -533,6 +533,25 @@ pub struct KvmMemoryDomain {
 unsafe impl Send for KvmMemoryDomain {}
 unsafe impl Sync for KvmMemoryDomain {}
 
+impl KvmMemoryDomain {
+    // TODO figure out how to make this only usable for tests
+    // Checks if domain has all pages that would be expected if expected full,
+    // otherwise, checks that no memory is available.
+    pub fn check_memory(&self) {
+        let memory = self.domain_memory.get_mut_u64();
+        // account for the root page
+        let mut memory_size = PAGE_SIZE;
+        for queue in 0..NUM_PAGE_QUEUES {
+            let mut page_address = memory[queue];
+            while page_address != 0 {
+                memory_size += PAGE_SIZE;
+                page_address = memory[page_address as usize / size_of::<u64>()];
+            }
+        }
+        assert_eq!(memory.len() * size_of::<u64>(), memory_size);
+    }
+}
+
 impl MemoryDomain for KvmMemoryDomain {
     fn init(config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         let size = match config {
@@ -790,4 +809,40 @@ pub fn transfer_into(
     }
 
     Ok(())
+}
+
+#[test]
+fn check_can_get_pages() {
+    let size = 5 * 1024 * 1024;
+    let domain = Arc::new(KvmMemoryDomain::init(MemoryResource::Anonymous { size }).unwrap());
+    unsafe {
+        std::hint::assert_unchecked(
+            std::mem::align_of_val(domain.as_ref()) == std::mem::align_of::<KvmMemoryDomain>(),
+        )
+    };
+    let ptr = Arc::into_raw(domain.clone());
+    let kvm_domain = unsafe { Arc::from_raw(ptr.cast::<Box<KvmMemoryDomain>>()) };
+    println!("kvm domain: {:?}", kvm_domain);
+
+    let context = domain.acquire_context(size).unwrap();
+    let kvm_context = match context.context {
+        ContextType::Kvm(kvm) => kvm,
+        _ => panic!("Should not get other context"),
+    };
+    let expected_number_pages = size / PAGE_SIZE - 1;
+    let mut pages = Vec::with_capacity(expected_number_pages);
+    for _ in 0..expected_number_pages {
+        pages.push(kvm_context.get_page(0).unwrap())
+    }
+    drop(pages);
+
+    kvm_domain.check_memory();
+
+    // check if we take them again it still works
+    let mut pages = Vec::with_capacity(expected_number_pages);
+    for _ in 0..expected_number_pages {
+        // use different offset to check it does not only work with the initial one
+        pages.push(kvm_context.get_page(3 * PAGE_SIZE).unwrap())
+    }
+    drop(pages);
 }
