@@ -5,10 +5,10 @@ use std::sync::Arc;
 /// Input set of a planner with one item per data input of the application, in application order.
 /// Each item is named after the set in the applying composition, has its position as key and holds
 /// the number of items in the set followed by their summed size in bytes, both as little endian u64.
-pub const INPUT_METADATA_SET: &str = "input_metadata";
+pub const INPUT_METADATA_SET: &str = "__dandelion_metadata_in";
 /// Input set of a planner with one empty item per output of the application, in application order.
 /// Each item is named after the set in the applying composition and has its position as key.
-pub const OUTPUT_METADATA_SET: &str = "output_metadata";
+pub const OUTPUT_METADATA_SET: &str = "__dandelion_metadata_out";
 /// Name of the single output set of a planner, holding one item with the source of the composition
 /// to run in place of the metafunction.
 pub const COMPOSITION_SET: &str = "composition";
