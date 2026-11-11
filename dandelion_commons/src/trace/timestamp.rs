@@ -66,6 +66,45 @@ pub enum Timestamp {
     FutureReturn = LAST_RECORD_POINT,
 }
 
+impl Timestamp {
+    /// All timestamps, ordered by their index in the trace output.
+    pub const ALL: [Timestamp; LAST_RECORD_POINT + 1] = [
+        Timestamp::DeserializationEnd,
+        Timestamp::EnterDispatcher,
+        Timestamp::DynamicParsingEnd,
+        Timestamp::ShardingStart,
+        Timestamp::IOQueueStart,
+        Timestamp::IOQueueEnd,
+        Timestamp::FetchStart,
+        Timestamp::FetchEnd,
+        Timestamp::ComputeQueueStart,
+        Timestamp::ComputeQueueEnd,
+        Timestamp::RemoteTake,
+        Timestamp::RemoteIOQueueStart,
+        Timestamp::RemoteIOQueueEnd,
+        Timestamp::RemoteFetchStart,
+        Timestamp::RemoteFetchEnd,
+        Timestamp::RemoteComputeQueueStart,
+        Timestamp::RemoteComputeQueueEnd,
+        Timestamp::BinaryParsingStart,
+        Timestamp::BinaryParsingEnd,
+        Timestamp::LoadStart,
+        Timestamp::TransferStart,
+        Timestamp::EngineStart,
+        Timestamp::EngineEnd,
+        Timestamp::FutureReturn,
+    ];
+}
+
+/// Compiler check that `Timestamp::ALL[i]` has index `i`, so it matches the trace output order.
+const _: () = {
+    let mut i = 0;
+    while i <= LAST_RECORD_POINT {
+        assert!(Timestamp::ALL[i] as usize == i);
+        i += 1;
+    }
+};
+
 #[cfg(feature = "trace-timestamps")]
 pub(crate) struct TimestampCollection {
     pub(crate) start: Instant,

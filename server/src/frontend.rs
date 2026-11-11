@@ -1,10 +1,16 @@
 use dandelion_commons::{
+<<<<<<< HEAD
     dandelion_err, err_dandelion,
     trace::{Recorder, Timestamp},
     DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::protocol::{
     DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterChain, RegisterFunction,
+=======
+    err_dandelion,
+    trace::{timestamp::Timestamp, Recorder},
+    DandelionError, DandelionResult, FrontendError,
+>>>>>>> 34d0ec5c (Added '/trace/timestamps' endpoint to get tracing timestamp ids)
 };
 use dispatcher::dispatcher::Dispatcher;
 use http_body_util::BodyExt;
@@ -156,6 +162,11 @@ async fn handle_request(
     // TODO match set names to assign sets to composition sets
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
+<<<<<<< HEAD
+=======
+    let recorder = Recorder::new(function_id.clone(), request_number, start_time);
+    recorder.set_timestamp_now(Timestamp::DeserializationEnd);
+>>>>>>> 34d0ec5c (Added '/trace/timestamps' endpoint to get tracing timestamp ids)
     debug!("Request number of request_context: {}", request_number);
     let inputs = DataSet::from_context(request_context);
 
@@ -214,6 +225,18 @@ fn http_response(body: DandelionBody, status: StatusCode) -> Response<DandelionB
     response
 }
 
+//----------------
+// trace metadata
+
+fn handle_trace_timestamps() -> DandelionResult<DandelionBody> {
+    let names: Vec<String> = Timestamp::ALL
+        .iter()
+        .map(|ts| format!("{:?}", ts))
+        .collect();
+    let json = serde_json::to_vec(&names).expect("Serializing timestamp names should not fail");
+    Ok(DandelionBody::from_vec(json))
+}
+
 //-----------------------
 // main service function
 
@@ -237,6 +260,7 @@ async fn service(
     let res = match req.uri().path() {
         "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
         "/register/composition" => handle_composition_registration(req, dispatcher).await,
+        "/trace/timestamps" => handle_trace_timestamps(),
         // TODO: rename to cold func and hot func, remove matmul, compute, io
         "/cold/matmul"
         | "/cold/matmulstore"
