@@ -1,10 +1,12 @@
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, FunctionRegistryError};
-use memory::{context::ContextTrait, DataItem, DataSet};
+use memory::{context::ContextTrait, DataItem, DataSet, ItemData};
 use std::sync::Arc;
 
 /// Input set of a planner with one item per data input of the application, in application order.
 /// Each item is named after the set in the applying composition, has its position as key and holds
-/// the number of items in the set followed by their summed size in bytes, both as little endian u64.
+/// three little endian u64: the number of items in the set, the summed size in bytes of the items
+/// whose size is known, and the number of items whose size is not yet known (IO items that have
+/// not been fetched, which do not contribute to the summed size).
 pub const INPUT_METADATA_SET: &str = "__dandelion_metadata_in";
 /// Input set of a planner with one empty item per output of the application, in application order.
 /// Each item is named after the set in the applying composition and has its position as key.
@@ -22,8 +24,14 @@ pub fn input_metadata_set(names: &[String], sets: &[DataSet]) -> DandelionResult
             .zip(sets)
             .enumerate()
             .map(|(key, (name, set))| {
+                let unknown_size_count = set
+                    .items
+                    .iter()
+                    .filter(|item| matches!(item.data, ItemData::Io(_)))
+                    .count();
                 let mut data = (set.len() as u64).to_le_bytes().to_vec();
                 data.extend_from_slice(&(set.total_size as u64).to_le_bytes());
+                data.extend_from_slice(&(unknown_size_count as u64).to_le_bytes());
                 (name.clone(), key as u32, data)
             }),
     )
