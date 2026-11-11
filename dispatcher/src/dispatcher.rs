@@ -6,7 +6,7 @@ use crate::{
 use composition::{AnyShardingMode, Composition, CompositionTemplate, Executor};
 use dandelion_commons::{
     err_dandelion,
-    records::{RecordPoint, Recorder},
+    trace::{Recorder, Timestamp},
     DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
 use futures::{
@@ -51,9 +51,14 @@ struct CompositionExecutor<'a> {
 
 impl<'a> CompositionExecutor<'a> {
     /// Creates the recorder for a new invocation and keeps track of it as child of the composition.
-    fn new_child_recorder(&mut self, function_id: &FunctionId, composition_idx: usize) -> Recorder {
-        let mut recorder = Recorder::new_from_parent(function_id.clone(), &self.recorder);
-        recorder.record(RecordPoint::ShardingStart);
+    fn new_child_recorder(
+        &mut self,
+        function_id: &FunctionId,
+        composition_idx: usize,
+        num_sets: usize,
+    ) -> Recorder {
+        let recorder = Recorder::new_from_parent(function_id.clone(), num_sets, &self.recorder);
+        recorder.set_timestamp_now(Timestamp::ShardingStart);
         self.children[composition_idx]
             .get_or_insert_with(Vec::new)
             .push(recorder.clone());
@@ -79,7 +84,8 @@ impl<'a> Executor for CompositionExecutor<'a> {
         {
             FunctionType::Composition(comp) => {
                 for input in inv_input_iter {
-                    let recorder = self.new_child_recorder(&function_id, composition_idx);
+                    let recorder =
+                        self.new_child_recorder(&function_id, composition_idx, input.len());
                     let composition = Composition::from_template(
                         &comp.composition,
                         dispatcher.any_sharding_mode.clone(),
@@ -101,16 +107,17 @@ impl<'a> Executor for CompositionExecutor<'a> {
             }
             FunctionType::SystemFunction(sys_function) => {
                 for input in inv_input_iter {
-                    let mut recorder = self.new_child_recorder(&function_id, composition_idx);
+                    let recorder =
+                        self.new_child_recorder(&function_id, composition_idx, input.len());
                     let handle = tokio::spawn(async move {
-                        recorder.record(RecordPoint::EngineStart);
+                        recorder.set_timestamp_now(Timestamp::EngineStart);
                         let result =
                             machine_interface::function_driver::system_driver::convert_to_references(
                                 sys_function,
                                 input,
                             );
-                        recorder.record(RecordPoint::EngineEnd);
-                        recorder.record(RecordPoint::FutureReturn);
+                        recorder.set_timestamp_now(Timestamp::EngineEnd);
+                        recorder.set_timestamp_now(Timestamp::FutureReturn);
                         result
                     });
                     self.awaited.push(Box::pin(async move {
@@ -123,7 +130,8 @@ impl<'a> Executor for CompositionExecutor<'a> {
                 // the recorders are needed again once the results arrive
                 let mut recorders = Vec::new();
                 let work_iter = inv_input_iter.into_iter().map(|input| {
-                    let recorder = self.new_child_recorder(&function_id, composition_idx);
+                    let recorder =
+                        self.new_child_recorder(&function_id, composition_idx, input.len());
                     recorders.push(recorder.clone());
                     WorkToDo::FunctionArguments {
                         function_id: function_id.clone(),
@@ -141,10 +149,10 @@ impl<'a> Executor for CompositionExecutor<'a> {
                     .enqueue_many(work_iter, composition_id)
                 {
                     Ok(promises) => {
-                        for (promise, mut recorder) in promises.into_iter().zip(recorders) {
+                        for (promise, recorder) in promises.into_iter().zip(recorders) {
                             self.awaited.push(Box::pin(async move {
                                 let result = promise.await;
-                                recorder.record(RecordPoint::FutureReturn);
+                                recorder.set_timestamp_now(Timestamp::FutureReturn);
                                 result.map(|work| (composition_idx, work.get_data_items()))
                             }));
                         }
@@ -264,10 +272,10 @@ impl Dispatcher {
         function_id: Arc<String>,
         inputs: Vec<DataSet>,
         caching: bool,
-        mut recorder: Recorder,
+        recorder: Recorder,
     ) -> DandelionResult<(ExecutionOutput, Recorder)> {
         debug!("Queuing function {}", function_id);
-        recorder.record(RecordPoint::EnterDispatcher);
+        recorder.set_timestamp_now(Timestamp::EnterDispatcher);
 
         let composition_id = self.get_composition_id();
         let results = self
@@ -289,10 +297,10 @@ impl Dispatcher {
         composition_desc: String,
         inputs: Vec<DataSet>,
         caching: bool,
-        mut recorder: Recorder,
+        recorder: Recorder,
     ) -> DandelionResult<(ExecutionOutput, Recorder)> {
         debug!("Parsing single use composition");
-        recorder.record(RecordPoint::EnterDispatcher);
+        recorder.set_timestamp_now(Timestamp::EnterDispatcher);
 
         let mut templates = CompositionTemplate::parse(&composition_desc, &self.function_registry)?;
         let (composition_name, template, _metadata) = match templates.pop() {
@@ -307,7 +315,7 @@ impl Dispatcher {
                 ));
             }
         };
-        recorder.record(RecordPoint::DynamicParsingEnd);
+        recorder.set_timestamp_now(Timestamp::DynamicParsingEnd);
 
         let composition_id = self.get_composition_id();
         debug!(
@@ -366,7 +374,7 @@ impl Dispatcher {
             ..
         } = ready_invocations;
         recorder.add_children(children);
-        recorder.record(RecordPoint::FutureReturn);
+        recorder.set_timestamp_now(Timestamp::FutureReturn);
 
         Ok(composition
             .collect()
@@ -383,7 +391,7 @@ impl Dispatcher {
         function_id: FunctionId,
         input_sets: Vec<DataSet>,
         caching: bool,
-        mut recorder: Recorder,
+        recorder: Recorder,
     ) -> DandelionResult<ExecutionOutput> {
         debug!("Queueing function with id: {}", function_id);
         // find an engine capable of running the function
@@ -391,13 +399,13 @@ impl Dispatcher {
             // Defer actual execution of system functions (i.e. fetching),
             // by calling the system function to produce a composition set containing the reference to be resolved later
             FunctionType::SystemFunction(sys_function) => {
-                recorder.record(RecordPoint::EngineStart);
+                recorder.set_timestamp_now(Timestamp::EngineStart);
                 let result =
                     machine_interface::function_driver::system_driver::convert_to_references(
                         sys_function,
                         input_sets,
                     );
-                recorder.record(RecordPoint::EngineEnd);
+                recorder.set_timestamp_now(Timestamp::EngineEnd);
                 result
             }
             FunctionType::Function(func_info) => {
@@ -436,7 +444,7 @@ impl Dispatcher {
                     .enqueue(args, composition_id)?
                     .await?
                     .get_data_items();
-                recorder.record(RecordPoint::FutureReturn);
+                recorder.set_timestamp_now(Timestamp::FutureReturn);
 
                 #[cfg(feature = "log_function_stdio")]
                 log_io_sets(&sets, stdio_index, &function_id)?;

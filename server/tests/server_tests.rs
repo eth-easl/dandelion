@@ -105,8 +105,8 @@ mod server_tests {
 
         let body = resp.bytes().unwrap();
         let (response, response_data) = decode::<proto::DandelionDeserializeResponse>(&body);
-        #[cfg(feature = "timestamp")]
-        println!("{:?}", response.timestamps);
+        #[cfg(any(feature = "trace-timestamps", feature = "trace-data"))]
+        println!("{}", response.trace);
         assert_eq!(1, response.sets.len());
         assert_eq!(1, response.sets[0].items.len());
         assert_eq!(

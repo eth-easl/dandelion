@@ -68,6 +68,11 @@ message RepeatedEngines {
     repeated Engine engines = 1;
 }
 
+message SetData {
+    uint64 items = 1;
+    uint64 size = 2;
+}
+
 message Timestamps { 
     uint64 start_epoch = 1;
     uint64 io_queue_start = 2;
@@ -82,8 +87,7 @@ message Timestamps {
     uint64 transfer_start = 11;
     uint64 engine_start = 12;
     uint64 engine_end = 13;
-    uint64 input_items = 14;
-    uint64 input_size = 15;
+    repeated SetData input_sets = 14;
 }
 
 message RepeatedMetadataSet {

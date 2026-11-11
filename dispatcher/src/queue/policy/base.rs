@@ -1,4 +1,4 @@
-use dandelion_commons::records::RecordPoint;
+use dandelion_commons::trace::Timestamp;
 use machine_interface::{function_driver::WorkToDo, promise::Debt};
 use std::collections::{BTreeMap, LinkedList};
 use tokio::sync::mpsc;
@@ -55,7 +55,7 @@ pub fn get_work_for_remote(
                     return None;
                 }
                 if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
-                    recorder.record(RecordPoint::IOQueueEnd);
+                    recorder.set_timestamp_now(Timestamp::IOQueueEnd);
                 }
                 Some((
                     queue_element.work,
@@ -79,7 +79,7 @@ pub fn get_work_for_remote(
                         return None;
                     }
                     if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
-                        recorder.record(RecordPoint::ComputeQueueEnd);
+                        recorder.set_timestamp_now(Timestamp::ComputeQueueEnd);
                     }
                     Some((
                         queue_element.work,

@@ -11,6 +11,7 @@ use std::{
 const LAST_RECORD_POINT: usize = 23;
 
 #[repr(usize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Timestamp {
     /// Frontend has finished deserializing.
     DeserializationEnd,
@@ -99,6 +100,14 @@ impl TimestampCollection {
     pub(crate) fn set(&self, ts: Timestamp, time: Instant) {
         let elapsed = time.duration_since(self.start);
         self.write(ts, elapsed);
+    }
+
+    pub(crate) fn set_micros(&self, ts: Timestamp, micros: u64) {
+        self.write(ts, Duration::from_micros(micros));
+    }
+
+    pub(crate) fn get(&self, ts: Timestamp) -> Duration {
+        unsafe { *self.timestamps[ts as usize].get() }
     }
 }
 

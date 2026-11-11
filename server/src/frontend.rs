@@ -1,6 +1,6 @@
 use dandelion_commons::{
     dandelion_err, err_dandelion,
-    records::{RecordPoint, Recorder},
+    trace::{Recorder, Timestamp},
     DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::protocol::{
@@ -145,9 +145,10 @@ async fn handle_request(
         context: request_context,
     } = DandelionRequest::decode(read_body(req).await?)?;
     let deserialization_end = Instant::now();
+    let input_set_number = request_context.content.len();
     let new_recorder = |function_id| {
-        let mut recorder = Recorder::new(function_id, start_time);
-        recorder.prerecorded(RecordPoint::DeserializationEnd, deserialization_end);
+        let recorder = Recorder::new(function_id, input_set_number, start_time);
+        recorder.set_timestamp(Timestamp::DeserializationEnd, deserialization_end);
         recorder
     };
     debug!("finished creating request context");
@@ -201,9 +202,7 @@ async fn read_body(req: Request<Incoming>) -> DandelionResult<Vec<bytes::Bytes>>
             ))
         })?;
         if let Ok(data) = frame.into_data() {
-            if !data.is_empty() {
-                frames.push(data);
-            }
+            frames.push(data);
         }
     }
     Ok(frames)

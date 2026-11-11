@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 mod error;
 pub mod range_pool;
-pub mod records;
 mod system_info;
 pub mod trace;
 

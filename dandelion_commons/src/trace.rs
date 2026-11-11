@@ -1,3 +1,7 @@
+#[cfg(feature = "trace-data")]
+mod data;
+mod timestamp;
+
 #[cfg(any(feature = "trace-data", feature = "trace-timestamps"))]
 use std::{
     cell::{OnceCell, UnsafeCell},
@@ -5,16 +9,13 @@ use std::{
 };
 use std::{fmt, time::Instant};
 
+use crate::FunctionId;
 #[cfg(feature = "trace-data")]
-use crate::trace::data::DataCollection;
+use data::DataCollection;
+// make timestamp public enum
+pub use timestamp::Timestamp;
 #[cfg(feature = "trace-timestamps")]
-use crate::trace::timestamp::TimestampCollection;
-use crate::{trace::timestamp::Timestamp, FunctionId};
-
-#[cfg(feature = "trace-data")]
-pub mod data;
-// Always compiled as `Timestamp` is part of the Recorder API even when tracing is disabled.
-pub mod timestamp;
+use timestamp::TimestampCollection;
 
 #[cfg(any(feature = "trace-data", feature = "trace-timestamps"))]
 struct Inner {
@@ -49,10 +50,6 @@ pub struct Recorder {
 
 unsafe impl Send for Recorder {}
 unsafe impl Sync for Recorder {}
-
-impl Drop for Recorder {
-    fn drop(&mut self) {}
-}
 
 impl Recorder {
     /// `_num_sets` is the number of data sets whose size is traced (with `trace-data`).
@@ -111,10 +108,34 @@ impl Recorder {
         self.inner.timestamps.set(_ts, _time);
     }
 
+    /// Assuming a timestamp is set only once.
+    pub fn set_timestamp_micros(&self, _ts: Timestamp, _micros: u64) {
+        #[cfg(feature = "trace-timestamps")]
+        self.inner.timestamps.set_micros(_ts, _micros);
+    }
+
+    /// Get the offset of a timestamp to the start of the request.
+    #[cfg(feature = "trace-timestamps")]
+    pub fn get_timestamp(&self, ts: Timestamp) -> std::time::Duration {
+        self.inner.timestamps.get(ts)
+    }
+
     /// Assuming the data of a set is recorded only once.
     pub fn set_data(&self, _set_index: usize, _items: u64, _size: u64) {
         #[cfg(feature = "trace-data")]
         self.inner.data.set(_set_index, _items, _size);
+    }
+
+    /// Get `(items, size)` of the set at `set_index`, or `None` if the recorder has no such set.
+    #[cfg(feature = "trace-data")]
+    pub fn get_data(&self, set_index: usize) -> Option<(u64, u64)> {
+        self.inner.data.get(set_index)
+    }
+
+    /// Number of sets this recorder traces the data of.
+    #[cfg(feature = "trace-data")]
+    pub fn num_sets(&self) -> usize {
+        self.inner.data.len()
     }
 }
 

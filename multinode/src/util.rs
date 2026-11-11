@@ -1,9 +1,10 @@
 // For types which have the same name for prot and machine_interface,
 // use the full ones to make sure there is no mix ups
 use crate::proto::{self, item_data};
+#[cfg(feature = "trace-timestamps")]
+use dandelion_commons::trace::timestamp::Timestamp;
 use dandelion_commons::{
-    err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
-    SystemFunction,
+    err_dandelion, trace::Recorder, DandelionError, DandelionResult, MultinodeError, SystemFunction,
 };
 use machine_interface::machine_config;
 use memory::{DataItem, DataSet, IoData, ItemData, LocalData, RemoteData};
@@ -44,47 +45,43 @@ pub(crate) fn recorder_to_proto(
     _recorder: Recorder,
     _start_epoch: Duration,
 ) -> Option<proto::Timestamps> {
-    #[cfg(feature = "timestamp")]
+    #[cfg(any(feature = "trace-timestamps", feature = "trace-data"))]
     {
-        use dandelion_commons::records::RecordPoint;
-
-        let (input_items, input_size) = _recorder.get_input();
-        Some(proto::Timestamps {
+        #[allow(unused_mut)]
+        let mut trace = proto::Timestamps {
             start_epoch: _start_epoch.as_micros() as u64,
-            input_items,
-            input_size,
-            io_queue_start: _recorder
-                .get_timestamp(RecordPoint::IOQueueStart)
-                .as_micros() as u64,
-            io_queue_end: _recorder.get_timestamp(RecordPoint::IOQueueEnd).as_micros() as u64,
-            compute_queue_start: _recorder
-                .get_timestamp(RecordPoint::ComputeQueueStart)
-                .as_micros() as u64,
-            compute_queue_end: _recorder
-                .get_timestamp(RecordPoint::ComputeQueueEnd)
-                .as_micros() as u64,
-            fetching_start: _recorder
-                .get_timestamp(RecordPoint::FetchingStart)
-                .as_micros() as u64,
-            fetching_end: _recorder
-                .get_timestamp(RecordPoint::FetchingEnd)
-                .as_micros() as u64,
-            parsing_start: _recorder
-                .get_timestamp(RecordPoint::ParsingStart)
-                .as_micros() as u64,
-            parsing_end: _recorder.get_timestamp(RecordPoint::ParsingEnd).as_micros() as u64,
-            load_start: _recorder.get_timestamp(RecordPoint::LoadStart).as_micros() as u64,
-            transfer_start: _recorder
-                .get_timestamp(RecordPoint::TransferStart)
-                .as_micros() as u64,
-            engine_start: _recorder
-                .get_timestamp(RecordPoint::EngineStart)
-                .as_micros() as u64,
-            engine_end: _recorder.get_timestamp(RecordPoint::EngineEnd).as_micros() as u64,
-        })
+            ..Default::default()
+        };
+
+        #[cfg(feature = "trace-timestamps")]
+        {
+            let micros = |ts: Timestamp| _recorder.get_timestamp(ts).as_micros() as u64;
+            trace.io_queue_start = micros(Timestamp::IOQueueStart);
+            trace.io_queue_end = micros(Timestamp::IOQueueEnd);
+            trace.compute_queue_start = micros(Timestamp::ComputeQueueStart);
+            trace.compute_queue_end = micros(Timestamp::ComputeQueueEnd);
+            trace.fetching_start = micros(Timestamp::FetchStart);
+            trace.fetching_end = micros(Timestamp::FetchEnd);
+            trace.parsing_start = micros(Timestamp::BinaryParsingStart);
+            trace.parsing_end = micros(Timestamp::BinaryParsingEnd);
+            trace.load_start = micros(Timestamp::LoadStart);
+            trace.transfer_start = micros(Timestamp::TransferStart);
+            trace.engine_start = micros(Timestamp::EngineStart);
+            trace.engine_end = micros(Timestamp::EngineEnd);
+        }
+
+        #[cfg(feature = "trace-data")]
+        {
+            trace.input_sets = (0.._recorder.num_sets())
+                .filter_map(|set_index| _recorder.get_data(set_index))
+                .map(|(items, size)| proto::SetData { items, size })
+                .collect();
+        }
+
+        Some(trace)
     }
 
-    #[cfg(not(feature = "timestamp"))]
+    #[cfg(not(any(feature = "trace-timestamps", feature = "trace-data")))]
     None
 }
 
@@ -94,9 +91,8 @@ pub(crate) fn recorder_add_timestamps(
     _local_reference: u128,
     _node_id: u64,
 ) {
-    #[cfg(feature = "timestamp")]
+    #[cfg(any(feature = "trace-timestamps", feature = "trace-data"))]
     {
-        use dandelion_commons::records::RecordPoint;
         _recorder.set_node_id(_node_id);
         if let Some(remote_time) = _timestamps {
             let proto::Timestamps {
@@ -113,42 +109,60 @@ pub(crate) fn recorder_add_timestamps(
                 transfer_start,
                 engine_start,
                 engine_end,
-                input_items,
-                input_size,
+                input_sets,
             } = remote_time;
-            _recorder.record_input(input_items, input_size);
-            // The local RemoteTake and the local_reference were taken at approximately same time.
-            // Both the local reference and the start_epoch are offsets from unix epoch start.
-            // The every remote timestamp is an offset from the start_epoch.
-            // To find the real timestamps, we need to add the remote timestamps to the RemoteTake value,
-            // and then add the time the transfer took (start_epoch - local_reference).
-            let wire_time = start_epoch - (_local_reference as u64);
-            let start_offset =
-                wire_time + _recorder.get_timestamp(RecordPoint::RemoteTake).as_micros() as u64;
-            // preserve original timestamping for fetching
-            _recorder.set_master_fetching();
-            // set all the timestamps we received from remote
-            _recorder.set_timestamp(
-                RecordPoint::RemoteIOQueueStart,
-                io_queue_start + start_offset,
+
+            #[cfg(feature = "trace-data")]
+            for (set_index, set) in input_sets.iter().enumerate() {
+                _recorder.set_data(set_index, set.items, set.size);
+            }
+            #[cfg(not(feature = "trace-data"))]
+            let _ = input_sets;
+
+            #[cfg(feature = "trace-timestamps")]
+            {
+                // The local RemoteTake and the local_reference were taken at approximately same time.
+                // Both the local reference and the start_epoch are offsets from unix epoch start.
+                // The every remote timestamp is an offset from the start_epoch.
+                // To find the real timestamps, we need to add the remote timestamps to the RemoteTake value,
+                // and then add the time the transfer took (start_epoch - local_reference).
+                let wire_time = start_epoch - (_local_reference as u64);
+                let start_offset =
+                    wire_time + _recorder.get_timestamp(Timestamp::RemoteTake).as_micros() as u64;
+                // The fetching on the local node (before offloading) keeps the FetchStart and FetchEnd
+                // timestamps, the fetching on the remote node is recorded separately.
+                let set_remote = |ts: Timestamp, remote_micros: u64| {
+                    _recorder.set_timestamp_micros(ts, remote_micros + start_offset)
+                };
+                set_remote(Timestamp::RemoteIOQueueStart, io_queue_start);
+                set_remote(Timestamp::RemoteIOQueueEnd, io_queue_end);
+                set_remote(Timestamp::RemoteComputeQueueStart, compute_queue_start);
+                set_remote(Timestamp::RemoteComputeQueueEnd, compute_queue_end);
+                set_remote(Timestamp::RemoteFetchStart, fetching_start);
+                set_remote(Timestamp::RemoteFetchEnd, fetching_end);
+                set_remote(Timestamp::BinaryParsingStart, parsing_start);
+                set_remote(Timestamp::BinaryParsingEnd, parsing_end);
+                set_remote(Timestamp::LoadStart, load_start);
+                set_remote(Timestamp::TransferStart, transfer_start);
+                set_remote(Timestamp::EngineStart, engine_start);
+                set_remote(Timestamp::EngineEnd, engine_end);
+            }
+            #[cfg(not(feature = "trace-timestamps"))]
+            let _ = (
+                start_epoch,
+                io_queue_start,
+                io_queue_end,
+                compute_queue_start,
+                compute_queue_end,
+                fetching_start,
+                fetching_end,
+                parsing_start,
+                parsing_end,
+                load_start,
+                transfer_start,
+                engine_start,
+                engine_end,
             );
-            _recorder.set_timestamp(RecordPoint::RemoteIOQueueEnd, io_queue_end + start_offset);
-            _recorder.set_timestamp(
-                RecordPoint::RemoteComputeQueueStart,
-                compute_queue_start + start_offset,
-            );
-            _recorder.set_timestamp(
-                RecordPoint::RemoteComputeQueueEnd,
-                compute_queue_end + start_offset,
-            );
-            _recorder.set_timestamp(RecordPoint::FetchingStart, fetching_start + start_offset);
-            _recorder.set_timestamp(RecordPoint::FetchingEnd, fetching_end + start_offset);
-            _recorder.set_timestamp(RecordPoint::ParsingStart, parsing_start + start_offset);
-            _recorder.set_timestamp(RecordPoint::ParsingEnd, parsing_end + start_offset);
-            _recorder.set_timestamp(RecordPoint::LoadStart, load_start + start_offset);
-            _recorder.set_timestamp(RecordPoint::TransferStart, transfer_start + start_offset);
-            _recorder.set_timestamp(RecordPoint::EngineStart, engine_start + start_offset);
-            _recorder.set_timestamp(RecordPoint::EngineEnd, engine_end + start_offset);
         }
     }
 }

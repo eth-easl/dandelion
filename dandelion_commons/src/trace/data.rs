@@ -39,6 +39,14 @@ impl DataCollection {
             ),
         }
     }
+
+    pub(crate) fn get(&self, set_index: usize) -> Option<(u64, u64)> {
+        self.sets.get(set_index).map(SetData::values)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.sets.len()
+    }
 }
 
 impl SetData {

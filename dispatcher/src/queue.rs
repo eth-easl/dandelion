@@ -2,7 +2,7 @@ mod policy;
 
 pub use policy::PREFETCH_PER_CORE;
 
-use dandelion_commons::{records::RecordPoint, DandelionResult, SystemInfo};
+use dandelion_commons::{trace::Timestamp, DandelionResult, SystemInfo};
 use log::trace;
 use machine_interface::{
     function_driver::{EngineWorkQueue, WorkToDo},
@@ -161,7 +161,7 @@ impl Future for ComputeWaitFuture<'_> {
                 recorder,
             } = &mut result_tupple.0
             {
-                recorder.record(RecordPoint::ComputeQueueEnd);
+                recorder.set_timestamp_now(Timestamp::ComputeQueueEnd);
             }
             self.work_queue.idle_notifier.notify_one();
             Poll::Ready(result_tupple)
@@ -235,7 +235,7 @@ impl Future for IoWaitFuture<'_> {
         if let Some((mut work, debt, composition_id)) = result {
             let composition_id_option =
                 if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
-                    recorder.record(RecordPoint::IOQueueEnd);
+                    recorder.set_timestamp_now(Timestamp::IOQueueEnd);
                     // If the extracted task is a prefetching task increase the counter accordingly
                     lock_guard.prefetching_in_progress += 1;
                     Some(composition_id)
@@ -276,15 +276,11 @@ fn record_compute_queue_start(work: &mut WorkToDo) {
         ..
     } = work
     {
-        #[cfg(feature = "timestamp")]
-        {
-            let (total_items, total_size) =
-                _input_sets.iter().fold((0, 0), |(number, size), set| {
-                    (number + set.len(), size + set.total_size)
-                });
-            recorder.record_input(total_items as u64, total_size as u64);
+        #[cfg(feature = "trace-data")]
+        for (set_index, set) in _input_sets.iter().enumerate() {
+            recorder.set_data(set_index, set.len() as u64, set.total_size as u64);
         }
-        recorder.record(RecordPoint::ComputeQueueStart);
+        recorder.set_timestamp_now(Timestamp::ComputeQueueStart);
     }
 }
 
@@ -403,7 +399,7 @@ impl WorkQueue {
             });
         } else {
             if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
-                recorder.record(RecordPoint::IOQueueStart);
+                recorder.set_timestamp_now(Timestamp::IOQueueStart);
             }
             if let Some((work, debt, policy_data)) = policy::prepare_io_element(
                 work,

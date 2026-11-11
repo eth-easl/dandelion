@@ -361,8 +361,10 @@ fn main() {
     print!(" mmu");
     #[cfg(feature = "kvm")]
     print!(" kvm");
-    #[cfg(feature = "timestamp")]
-    print!(" timestamp");
+    #[cfg(feature = "trace-timestamps")]
+    print!(" trace-timestamps");
+    #[cfg(feature = "trace-data")]
+    print!(" trace-data");
     println!();
 
     let client_shutdown_option = if let Some(multinode_settings) =
