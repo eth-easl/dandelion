@@ -229,3 +229,72 @@ fn undefined_set_in_multiset_input_is_rejected() {
     let registry = TestRegistry::new().with_function("Foo", &["A"], &["B"]);
     expect_parse_error(src, &registry, "Could not find data set Z");
 }
+
+#[test]
+fn meta_declaration_mismatched_with_the_registry_is_rejected() {
+    let src = r#"
+        metafunction Plan(Info);
+    "#;
+    let registry = TestRegistry::new().with_meta_function("Plan", &["Other"]);
+    expect_parse_error(
+        src,
+        &registry,
+        "registered signature for 'Plan' does not match its declaration",
+    );
+}
+
+#[test]
+fn applying_an_undeclared_meta_function_is_rejected() {
+    let src = r#"
+        composition Test(X) => (Y) {
+            Plan(Info = X) (X) => (Y);
+        }
+    "#;
+    expect_parse_error(src, &TestRegistry::new(), "Unknown metafunction 'Plan'");
+}
+
+#[test]
+fn meta_function_argument_not_in_declaration_is_rejected() {
+    let src = r#"
+        metafunction Plan(Info);
+        composition Test(X) => (Y) {
+            Plan(Other = X) (X) => (Y);
+        }
+    "#;
+    expect_parse_error(
+        src,
+        &TestRegistry::new().with_meta_function("Plan", &["Info"]),
+        "Argument Other does not match any of the declared arguments for metafunction Plan",
+    );
+}
+
+#[test]
+fn meta_function_with_undefined_input_set_is_rejected() {
+    let src = r#"
+        metafunction Plan(Info);
+        composition Test(X) => (Y) {
+            Plan(Info = X) (X, Missing) => (Y);
+        }
+    "#;
+    expect_parse_error(
+        src,
+        &TestRegistry::new().with_meta_function("Plan", &["Info"]),
+        "Could not find data set Missing used as input in metafunction Plan",
+    );
+}
+
+#[test]
+fn meta_function_output_set_produced_twice_is_rejected() {
+    let src = r#"
+        metafunction Plan(Info);
+        composition Test(X) => (Y) {
+            Plan(Info = X) (X) => (Z);
+            Plan(Info = X) (X) => (Z);
+        }
+    "#;
+    expect_parse_error(
+        src,
+        &TestRegistry::new().with_meta_function("Plan", &["Info"]),
+        "Duplicate set name 'Z'",
+    );
+}
