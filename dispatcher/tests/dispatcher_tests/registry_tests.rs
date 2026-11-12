@@ -263,6 +263,7 @@ fn test_insert_composition_with_http_func() {
         BTreeMap::new(),
         work_queue,
         AnyShardingMode::MaxSharding,
+        None,
     )
     .unwrap();
     let composition_string = r#"

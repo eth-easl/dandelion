@@ -256,6 +256,11 @@ fn main() {
 
     // define the any sharding mode
     info!("Using any sharding mode: {:?}", config.any_sharding_mode);
+    match config.max_meta_depth {
+        Some(0) => info!("Metafunctions are disabled"),
+        Some(depth) => info!("Using maximum metafunction depth: {}", depth),
+        None => info!("Metafunction depth is unlimited"),
+    }
     let any_sharding_mode = match config.any_sharding_mode {
         config::AnyShardingMode::MaxSharding => AnyShardingMode::MaxSharding,
         config::AnyShardingMode::FixedSharding(n) => AnyShardingMode::FixedSharding(n),
@@ -273,6 +278,7 @@ fn main() {
             memory_pool,
             work_queue.clone(),
             any_sharding_mode,
+            config.max_meta_depth,
         )
         .expect("Should be able to start dispatcher"),
     ));

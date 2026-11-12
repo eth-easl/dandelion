@@ -60,6 +60,7 @@ mod dispatcher_tests {
             memory_resources,
             work_queue,
             AnyShardingMode::MaxSharding,
+            None,
         )
         .expect("Should have initialized dispatcher");
         let function_id = Arc::new(String::from("test_function"));
