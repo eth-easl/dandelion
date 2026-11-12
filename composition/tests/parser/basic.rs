@@ -159,3 +159,22 @@ fn multiset_input_parses() {
     let registry = TestRegistry::new().with_function("Foo", &["A", "B"], &["C"]);
     parse_composition(src, "Test", &registry);
 }
+
+#[test]
+fn meta_function_declaration_parses() {
+    let src = r#"
+        metafunction Plan(Info);
+        metafunction NoArgs();
+        metafunction ThreeArgs(Arg1, Arg2, Arg3);
+    "#;
+    let registry = TestRegistry::new()
+        .with_meta_function("Plan", &["Info"])
+        .with_meta_function("NoArgs", &[])
+        .with_meta_function("ThreeArgs", &["Arg1", "Arg2", "Arg3"]);
+    let compositions = CompositionTemplate::parse(src, &registry)
+        .unwrap_or_else(|e| panic!("expected the module to parse:\n{e}"));
+    assert!(
+        compositions.is_empty(),
+        "the module declares no compositions"
+    );
+}
