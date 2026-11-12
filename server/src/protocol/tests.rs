@@ -44,8 +44,7 @@ fn target(name: &str) -> Option<proto::dandelion_request::Target> {
 }
 
 #[tokio::test]
-async fn test_happy_path() {
-    // Invocation by name, delivered in one-byte frames with empty frames in between.
+async fn test_invocation_by_name_round_trip() {
     let payload = b"123\0\xffab";
     let name = "f".repeat(128);
     let metadata = proto::DandelionRequest {
@@ -84,15 +83,38 @@ async fn test_happy_path() {
         invocation.context.get_chunk_ref(0, 5).unwrap().as_ptr(),
         bytes[payload_start..].as_ptr()
     );
-    assert!(invocation.context.content[1]
-        .as_ref()
-        .unwrap()
-        .items
-        .is_empty());
-    let second = &invocation.context.content[2].as_ref().unwrap().items[0].data;
-    assert_eq!((second.offset, second.size), (5, 2));
+    let sets = invocation
+        .context
+        .content
+        .iter()
+        .map(|set| {
+            set.as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .map(|item| {
+                    (
+                        item.ident.as_str(),
+                        item.key,
+                        item.data.offset,
+                        item.data.size,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sets,
+        [
+            vec![("item", 7, 0, 0), ("item", 7, 0, 3), ("item", 7, 3, 2)],
+            vec![],
+            vec![("other", 9, 5, 2)],
+        ]
+    );
+    let mut decoded_payload = [0u8; 7];
+    invocation.context.read(0, &mut decoded_payload).unwrap();
+    assert_eq!(&decoded_payload, payload);
 
-    // Invocation response, built from the decoded request without copying its payload.
     let outputs = DataSet::from_context(invocation.context)
         .into_iter()
         .map(|set| set.items)
@@ -118,8 +140,10 @@ async fn test_happy_path() {
     // Empty sets are kept, so every set stays at its index.
     assert_eq!(response.sets, metadata.sets);
     assert_eq!(response_payload, payload);
+}
 
-    // Invocation by inline composition.
+#[test]
+fn test_invocation_by_composition() {
     let metadata = proto::DandelionRequest {
         target: Some(proto::dandelion_request::Target::Composition(
             "source".into(),
@@ -130,8 +154,10 @@ async fn test_happy_path() {
     assert!(
         matches!(invocation.target, InvocationTarget::Composition(source) if source == "source")
     );
+}
 
-    // Function registration with an uploaded binary and static inputs.
+#[test]
+fn test_function_registration_with_binary() {
     let set = |identifier: &str, static_items| proto::RegistrationInputSet {
         identifier: identifier.into(),
         static_items,
@@ -175,26 +201,34 @@ async fn test_happy_path() {
     );
     assert_eq!(registration.output_sets, ["output"]);
     assert_eq!(registration.min_set_bytes, [8]);
+}
 
-    // Function registration with a local path carries no binary payload.
+#[test]
+fn test_function_registration_with_local_path() {
     let metadata = proto::RegisterFunction {
+        name: "f".into(),
+        context_size: 4096,
+        engine_type: "Process".into(),
         executable: Some(proto::register_function::Executable::LocalPath(
             "path".into(),
         )),
-        input_sets: vec![],
-        ..metadata
+        ..Default::default()
     };
     let registration = RegisterFunction::decode(frame(&encode(&metadata, &[]))).unwrap();
     assert!(matches!(&registration.executable, Executable::LocalPath(path) if path == "path"));
+}
 
-    // Composition registration.
+#[test]
+fn test_composition_registration() {
     let metadata = proto::RegisterChain {
         composition: "source".into(),
     };
     let registration = RegisterChain::decode(frame(&encode(&metadata, &[]))).unwrap();
     assert_eq!(registration.composition, "source");
+}
 
-    // Status response.
+#[tokio::test]
+async fn test_status_response() {
     let body = DandelionBody::status("done").collect().await.unwrap();
     let body = body.to_bytes();
     let (status, rest) = decode_response::<proto::StatusResponse>(&body);
