@@ -172,6 +172,11 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = AnyShardingMode::AutoSharding(DEFAULT_AUTOSHARDING_OFFLOAD_CONST))]
     #[serde(default)]
     pub any_sharding_mode: AnyShardingMode,
+    /// Maximum number of metafunction plans a metafunction application can be nested in.
+    /// Unlimited when not set, 0 disables metafunctions.
+    #[arg(long, env)]
+    #[serde(default)]
+    pub max_meta_depth: Option<usize>,
 
     // (optional) preload config
     #[arg(long, env, default_value = "")]
@@ -253,6 +258,7 @@ impl DandelionConfig {
             any_sharding_mode,
             AnyShardingMode::AutoSharding(DEFAULT_AUTOSHARDING_OFFLOAD_CONST)
         );
+        merge_option!(max_meta_depth);
         merge_clone!(bin_preload_path, String::from(""));
         merge_clone!(folder_path, String::from(DEFAULT_FOLDER_PATH));
         merge!(node_id, 0);

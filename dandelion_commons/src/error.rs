@@ -298,6 +298,8 @@ pub enum FunctionRegistryError {
     InvalidPlan(String),
     /// A metafunction was invoked other than by a metafunction application in a composition
     InvalidMetaInvocation(String),
+    /// A metafunction application is nested deeper in plans than the platform allows
+    MetaRecursionLimit(String),
 }
 
 impl FunctionRegistryError {
@@ -311,7 +313,8 @@ impl FunctionRegistryError {
             | FunctionRegistryError::UnknownFunction(msg)
             | FunctionRegistryError::InvalidMetaInsert(msg)
             | FunctionRegistryError::InvalidPlan(msg)
-            | FunctionRegistryError::InvalidMetaInvocation(msg) => msg.clone(),
+            | FunctionRegistryError::InvalidMetaInvocation(msg)
+            | FunctionRegistryError::MetaRecursionLimit(msg) => msg.clone(),
             _ => format!("{:?}", self),
         }
     }

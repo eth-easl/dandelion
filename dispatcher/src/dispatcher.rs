@@ -48,6 +48,24 @@ struct CompositionExecutor<'a> {
     children: Vec<Option<Vec<Recorder>>>,
     /// Results of all invocations that are still outstanding.
     awaited: FuturesUnordered<InvocationFuture<'a>>,
+    /// Metafunction context the composition runs in.
+    meta: MetaContext,
+}
+
+/// Tracks how a composition is nested in metafunction plans, to bound their recursion.
+#[derive(Clone, Copy, Debug, Default)]
+struct MetaContext {
+    /// Number of metafunction plans the composition is nested in, 0 for a top-level composition.
+    depth: usize,
+}
+
+impl MetaContext {
+    /// The context of the plan of a metafunction applied in this context.
+    fn nested(self) -> Self {
+        MetaContext {
+            depth: self.depth + 1,
+        }
+    }
 }
 
 impl<'a> CompositionExecutor<'a> {
@@ -72,6 +90,7 @@ impl<'a> Executor for CompositionExecutor<'a> {
         let dispatcher = self.dispatcher;
         let composition_id = self.composition_id;
         let caching = self.caching;
+        let meta = self.meta;
 
         match dispatcher
             .function_registry
@@ -86,6 +105,8 @@ impl<'a> Executor for CompositionExecutor<'a> {
                         dispatcher.any_sharding_mode.clone(),
                         &dispatcher.function_registry,
                     );
+                    // registered compositions do not add depth, but must not reset it either,
+                    // otherwise wrapping a metafunction in one would bypass the limit
                     self.awaited.push(Box::pin(async move {
                         dispatcher
                             .queue_composition(
@@ -94,6 +115,7 @@ impl<'a> Executor for CompositionExecutor<'a> {
                                 input,
                                 caching,
                                 recorder,
+                                meta,
                             )
                             .await
                             .map(|items| (composition_idx, items))
@@ -181,6 +203,18 @@ impl<'a> Executor for CompositionExecutor<'a> {
                 .push(Box::pin(future::ready(meta_invocation_error(&function_id))));
             return;
         };
+        // checked before running any planner, so no engine time is spent on a plan that could
+        // not be run anyway
+        let meta = self.meta;
+        if let Some(max_depth) = dispatcher.max_meta_depth {
+            if meta.depth >= max_depth {
+                self.awaited.push(Box::pin(future::ready(meta_depth_error(
+                    &function_id,
+                    max_depth,
+                ))));
+                return;
+            }
+        }
         for input in inv_input_iter {
             let recorder = self.new_child_recorder(&function_id, composition_idx);
             let function_id = function_id.clone();
@@ -196,12 +230,23 @@ impl<'a> Executor for CompositionExecutor<'a> {
                         input,
                         caching,
                         recorder,
+                        meta,
                     )
                     .await
                     .map(|items| (composition_idx, items))
             }));
         }
     }
+}
+
+/// The error for applying a metafunction while already nested in the maximum number of plans.
+fn meta_depth_error<T>(function_id: &FunctionId, max_depth: usize) -> DandelionResult<T> {
+    err_dandelion!(DandelionError::FunctionRegistry(
+        FunctionRegistryError::MetaRecursionLimit(format!(
+            "Cannot apply metafunction {}: metafunction plans can be nested at most {} deep",
+            function_id, max_depth
+        )),
+    ))
 }
 
 /// The error for invoking a function as metafunction that is none or vice versa.
@@ -222,6 +267,9 @@ pub struct Dispatcher {
     work_queue: WorkQueue,
     domains: Vec<Arc<Box<dyn MemoryDomain>>>,
     any_sharding_mode: AnyShardingMode,
+    /// Maximum number of metafunction plans a metafunction application can be nested in.
+    /// None means unlimited, Some(0) disables metafunctions.
+    max_meta_depth: Option<usize>,
     // TODO: The composition ids currently just go up from 0, there is no overflow handling.
     //       We are not expecting to overflow, but this should be handled for proper deployments.
     composition_id: AtomicUsize,
@@ -235,6 +283,7 @@ impl Dispatcher {
         memory_resources: BTreeMap<DomainType, MemoryResource>,
         work_queue: WorkQueue,
         any_sharding_mode: AnyShardingMode,
+        max_meta_depth: Option<usize>,
     ) -> DandelionResult<Self> {
         // get machine specific configurations
         let domains = get_available_domains(memory_resources);
@@ -259,6 +308,7 @@ impl Dispatcher {
             work_queue,
             domains,
             any_sharding_mode,
+            max_meta_depth,
             composition_id: AtomicUsize::new(0),
         })
     }
@@ -403,6 +453,7 @@ impl Dispatcher {
                 inputs,
                 caching,
                 recorder.clone(),
+                MetaContext::default(),
             )
             .await?;
 
@@ -418,6 +469,7 @@ impl Dispatcher {
         inputs: Vec<DataSet>,
         caching: bool,
         recorder: Recorder,
+        meta: MetaContext,
     ) -> DandelionResult<ExecutionOutput> {
         // build up ready sets
         trace!("queue composition");
@@ -429,6 +481,7 @@ impl Dispatcher {
             recorder,
             children: vec![None; composition.num_functions()],
             awaited: FuturesUnordered::new(),
+            meta,
         };
 
         composition.start_execution(inputs, &mut ready_invocations);
@@ -517,6 +570,7 @@ impl Dispatcher {
         mut input_sets: Vec<DataSet>,
         caching: bool,
         mut recorder: Recorder,
+        meta: MetaContext,
     ) -> DandelionResult<ExecutionOutput> {
         let data_inputs = input_sets.split_off(application.num_planner_inputs);
         let mut planner_inputs = input_sets;
@@ -559,6 +613,7 @@ impl Dispatcher {
                 data_inputs,
                 caching,
                 plan_recorder.clone(),
+                meta.nested(),
             )
             .await;
         recorder.add_children(vec![
@@ -663,6 +718,8 @@ impl Dispatcher {
                     input_sets,
                     caching,
                     recorder,
+                    // invoked directly, not from within a composition
+                    MetaContext::default(),
                 )
                 .await
             }
