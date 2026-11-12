@@ -6,6 +6,5 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-mod meta_function;
 mod sharding;
 mod simple;
