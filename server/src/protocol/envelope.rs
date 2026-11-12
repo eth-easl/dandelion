@@ -40,8 +40,6 @@ fn decode_metadata<M: Message + Default>(buf: &mut impl Buf) -> DandelionResult<
 pub(super) fn decode_frames<M: Message + Default>(
     mut frames: Vec<Bytes>,
 ) -> DandelionResult<(M, Vec<Bytes>)> {
-    // HTTP/2 clients can send empty DATA frames, drop them once here.
-    frames.retain(|frame| !frame.is_empty());
     let mut frame_buf = FrameBuf::new(&frames);
     let metadata = decode_metadata(&mut frame_buf)?;
     let (current_frame, current_buf_offset) = frame_buf.position();

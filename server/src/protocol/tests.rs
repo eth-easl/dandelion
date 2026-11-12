@@ -23,7 +23,11 @@ fn versioned(version: u64, rest: &[u8]) -> Vec<u8> {
 }
 
 fn frame(bytes: &[u8]) -> Vec<Bytes> {
-    vec![Bytes::copy_from_slice(bytes)]
+    if bytes.is_empty() {
+        vec![]
+    } else {
+        vec![Bytes::copy_from_slice(bytes)]
+    }
 }
 
 fn decode_response<M: Message + Default>(mut body: &[u8]) -> (M, &[u8]) {
@@ -72,11 +76,7 @@ async fn test_invocation_by_name_round_trip() {
     };
     let bytes = Bytes::from(encode(&metadata, payload));
     let payload_start = bytes.len() - payload.len();
-    let mut frames = vec![Bytes::new()];
-    for i in 0..bytes.len() {
-        frames.push(bytes.slice(i..i + 1));
-        frames.push(Bytes::new());
-    }
+    let frames = (0..bytes.len()).map(|i| bytes.slice(i..i + 1)).collect();
     let invocation = DandelionRequest::decode(frames).unwrap();
     assert!(matches!(invocation.target, InvocationTarget::Name(ref decoded) if decoded == &name));
     assert_eq!(

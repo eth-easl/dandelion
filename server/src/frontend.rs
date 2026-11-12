@@ -201,7 +201,9 @@ async fn read_body(req: Request<Incoming>) -> DandelionResult<Vec<bytes::Bytes>>
             ))
         })?;
         if let Ok(data) = frame.into_data() {
-            frames.push(data);
+            if !data.is_empty() {
+                frames.push(data);
+            }
         }
     }
     Ok(frames)
