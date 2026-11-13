@@ -12,9 +12,10 @@ mod common;
 
 #[cfg(any(feature = "mmu", feature = "kvm", feature = "cheri"))]
 mod composition_stress {
-    use dandelion_server::{DandelionDeserializeResponse, DandelionRequest, InputItem, InputSet};
+    use dandelion_server::protocol::PROTOCOL_VERSION;
+    use prost::Message;
+    use proto::{dandelion_request::Target, register_function::Executable};
     use reqwest::blocking::Client;
-    use serde::Serialize;
     use std::{
         process::{Command, Stdio},
         time::{Duration, Instant},
@@ -36,20 +37,26 @@ mod composition_stress {
     /// 8MiB is about the minimum for KVM, which reserves ~2MiB of page tables below the stack.
     const CONTEXT_SIZE: u64 = 0x80_0000;
 
-    #[derive(Serialize)]
-    struct RegisterFunctionLocal {
-        name: String,
-        context_size: u64,
-        engine_type: String,
-        local_path: String,
-        binary: Vec<u8>,
-        input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
-        output_sets: Vec<String>,
+    #[allow(dead_code)]
+    mod proto {
+        include!(concat!(env!("OUT_DIR"), "/dandelion_frontend.rs"));
     }
 
-    #[derive(Serialize)]
-    struct RegisterChain {
-        composition: String,
+    fn encode(metadata: &impl Message, payload: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        prost::encoding::encode_varint(PROTOCOL_VERSION, &mut body);
+        metadata.encode_length_delimited(&mut body).unwrap();
+        body.extend_from_slice(payload);
+        body
+    }
+
+    fn decode<M: Message + Default>(mut body: &[u8]) -> (M, &[u8]) {
+        assert_eq!(
+            prost::encoding::decode_varint(&mut body).unwrap(),
+            PROTOCOL_VERSION
+        );
+        let metadata = M::decode_length_delimited(&mut body).unwrap();
+        (metadata, body)
     }
 
     /// Starts the server with only error logs, so the log output does not distort timings.
@@ -96,18 +103,21 @@ mod composition_stress {
             env!("CARGO_MANIFEST_DIR"),
             version,
         );
-        let register_request = RegisterFunctionLocal {
+        let register_request = proto::RegisterFunction {
             name: String::from(FUNCTION_NAME),
             context_size: CONTEXT_SIZE,
             engine_type,
-            local_path: basic_path,
-            binary: Vec::new(),
-            input_sets: vec![(String::from("A"), None)],
+            executable: Some(Executable::LocalPath(basic_path)),
+            input_sets: vec![proto::RegistrationInputSet {
+                identifier: String::from("A"),
+                static_items: None,
+            }],
             output_sets: vec![String::from("Out")],
+            min_set_bytes: vec![],
         };
         let resp = client
             .post("http://localhost:8080/register/function")
-            .body(bson::to_vec(&register_request).unwrap())
+            .body(encode(&register_request, &[]))
             .send()
             .unwrap();
         assert!(resp.status().is_success());
@@ -116,7 +126,7 @@ mod composition_stress {
     fn register_composition(client: &Client, composition: String) {
         let resp = client
             .post("http://localhost:8080/register/composition")
-            .body(bson::to_vec(&RegisterChain { composition }).unwrap())
+            .body(encode(&proto::RegisterChain { composition }, &[]))
             .send()
             .unwrap();
         let status = resp.status();
@@ -133,24 +143,20 @@ mod composition_stress {
         num_items: usize,
         expected_outputs: usize,
     ) -> Duration {
-        let data: Vec<Vec<u8>> = (0..num_items as u64)
-            .map(|i| i.to_le_bytes().to_vec())
-            .collect();
-        let request = DandelionRequest {
-            name: String::from(composition),
-            sets: vec![InputSet {
-                items: data
-                    .iter()
-                    .enumerate()
-                    .map(|(key, data)| InputItem {
+        let data: Vec<u8> = (0..num_items as u64).flat_map(u64::to_le_bytes).collect();
+        let request = proto::DandelionRequest {
+            target: Some(Target::Name(String::from(composition))),
+            sets: vec![proto::InputSet {
+                items: (0..num_items as u32)
+                    .map(|key| proto::InputItem {
                         identifier: String::from(""),
-                        key: key as u32,
-                        data,
+                        key,
+                        payload_length: size_of::<u64>() as u64,
                     })
                     .collect(),
             }],
         };
-        let body = bson::to_vec(&request).unwrap();
+        let body = encode(&request, &data);
 
         let start = Instant::now();
         let resp = client.post(ENDPOINT).body(body).send().unwrap();
@@ -164,7 +170,7 @@ mod composition_stress {
             composition,
             String::from_utf8_lossy(&resp_body)
         );
-        let response: DandelionDeserializeResponse = bson::from_slice(&resp_body).unwrap();
+        let response = decode::<proto::DandelionDeserializeResponse>(&resp_body).0;
         // every basic invocation emits one item, so this checks that all invocations ran
         assert_eq!(1, response.sets.len());
         assert_eq!(expected_outputs, response.sets[0].items.len());
