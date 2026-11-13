@@ -1,5 +1,5 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
-use dandelion_commons::records::Recorder;
+use dandelion_commons::trace::Recorder;
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
@@ -105,12 +105,13 @@ pub fn single_input_fixed(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs[i] = mat_fault_composition_set.clone();
 
-        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
+        let mut recorder =
+            Recorder::new(function_id.clone(), overwrite_inputs.len(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_function(0, function_id.clone(), inputs, false, recorder));
-        recorder = Recorder::new(function_id.clone(), Instant::now());
+        recorder = Recorder::new(function_id.clone(), overwrite_inputs.len(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -213,12 +214,13 @@ pub fn multiple_input_fixed(
         overwrite_inputs[fixed_sets[0]] = mat_fault_composition_set.clone();
         overwrite_inputs[fixed_sets[1]] = mat_fault_composition_set.clone();
 
-        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
+        let mut recorder =
+            Recorder::new(function_id.clone(), overwrite_inputs.len(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_function(0, function_id.clone(), inputs, false, recorder));
-        recorder = Recorder::new(function_id.clone(), Instant::now());
+        recorder = Recorder::new(function_id.clone(), overwrite_inputs.len(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

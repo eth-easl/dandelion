@@ -3,4 +3,7 @@ fn main() {
         Ok(_) => (),
         Err(err) => panic!("Failed to build protobufs: {:?}", err),
     }
+
+    let features = std::env::var("CARGO_CFG_FEATURE").unwrap();
+    println!("cargo::rustc-env=ENABLED_FEATURES={}", features);
 }

@@ -1,6 +1,6 @@
 use dandelion_commons::{
     dandelion_err, err_dandelion,
-    records::{RecordPoint, Recorder},
+    trace::{Recorder, Timestamp},
     DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::protocol::{
@@ -145,9 +145,10 @@ async fn handle_request(
         context: request_context,
     } = DandelionRequest::decode(read_body(req).await?)?;
     let deserialization_end = Instant::now();
+    let input_set_number = request_context.content.len();
     let new_recorder = |function_id| {
-        let mut recorder = Recorder::new(function_id, start_time);
-        recorder.prerecorded(RecordPoint::DeserializationEnd, deserialization_end);
+        let recorder = Recorder::new(function_id, input_set_number, start_time);
+        recorder.set_timestamp(Timestamp::DeserializationEnd, deserialization_end);
         recorder
     };
     debug!("finished creating request context");
@@ -155,6 +156,8 @@ async fn handle_request(
     // TODO match set names to assign sets to composition sets
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
+    let recorder = Recorder::new(function_id.clone(), request_number, start_time);
+    recorder.set_timestamp_now(Timestamp::DeserializationEnd);
     debug!("Request number of request_context: {}", request_number);
     let inputs = DataSet::from_context(request_context);
 
@@ -201,9 +204,7 @@ async fn read_body(req: Request<Incoming>) -> DandelionResult<Vec<bytes::Bytes>>
             ))
         })?;
         if let Ok(data) = frame.into_data() {
-            if !data.is_empty() {
-                frames.push(data);
-            }
+            frames.push(data);
         }
     }
     Ok(frames)
@@ -213,6 +214,18 @@ fn http_response(body: DandelionBody, status: StatusCode) -> Response<DandelionB
     let mut response = Response::new(body);
     *response.status_mut() = status;
     response
+}
+
+//----------------
+// trace metadata
+
+fn handle_trace_timestamps() -> DandelionResult<DandelionBody> {
+    let names: Vec<String> = Timestamp::ALL
+        .iter()
+        .map(|ts| format!("{:?}", ts))
+        .collect();
+    let json = serde_json::to_vec(&names).expect("Serializing timestamp names should not fail");
+    Ok(DandelionBody::from_vec(json))
 }
 
 //-----------------------
@@ -238,6 +251,7 @@ async fn service(
     let res = match req.uri().path() {
         "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
         "/register/composition" => handle_composition_registration(req, dispatcher).await,
+        "/trace/timestamps" => handle_trace_timestamps(),
         // TODO: rename to cold func and hot func, remove matmul, compute, io
         "/cold/matmul"
         | "/cold/matmulstore"
@@ -289,7 +303,7 @@ pub async fn service_loop(
     // socket to listen to
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
-    println!("Socket ready");
+    info!("Socket ready");
     let running_requests = Arc::new(());
 
     // signal handlers for gracefull shutdown

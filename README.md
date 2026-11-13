@@ -43,9 +43,11 @@ Feature flags for computation engines:
 - `kvm` for enabling kvm backed isolation, requires KVM module installed and user to have permissions to access `/dev/kvm`, this backend is currently brocken for aarch64, if you need it, please let us know so we can prioritize it.
 - `mmu` for enabling process based isolation
 
-Other features:
+Tracing features (disabled by default, may introduce small performance cost):
+- `trace-timestamps` enables recording timestamps at fixed points of each function invocation (queueing, fetching, parsing, loading, execution, ...). The timestamps are added to the response of a request.
+- `trace-data` enables recording the number of items and the total size per input set of each function invocation. The data is added to the response of a request.
 
-`timestamp` enables timestamping, this also enables http requests to `/stat` on the running server to get timestamps information. The timestamps are preallocated at the start and thus have a limited number. Currently running out of preallocated timestamps causes errors on requests. When the stat interface is accessed the used timestamps are cleared and put back into the pool of available ones.
+Other features:
 
 `blocking_queue` sets the compute engines block when they are waiting for work. By default they do local spinning to work around the thread scheduling of the host OS.
 

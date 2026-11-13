@@ -6,7 +6,7 @@ use crate::{
 };
 use core::marker::Send;
 use dandelion_commons::{
-    err_dandelion, records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
+    err_dandelion, trace::Timestamp, DandelionError, DandelionResult, FunctionRegistryError,
 };
 use memory::{
     context::{self, Context},
@@ -187,7 +187,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                     }
                 };
 
-                recorder.record(RecordPoint::LoadStart);
+                recorder.set_timestamp_now(Timestamp::LoadStart);
                 let mut function_context =
                     match function.load(&**alternative.domain, alternative.context_size) {
                         Ok(con) => con,
@@ -198,7 +198,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                         }
                     };
 
-                recorder.record(RecordPoint::TransferStart);
+                recorder.set_timestamp_now(Timestamp::TransferStart);
 
                 function_context.content.reserve(metadata.input_sets.len());
 
@@ -250,7 +250,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                     continue 'engine;
                 }
 
-                recorder.record(RecordPoint::EngineStart);
+                recorder.set_timestamp_now(Timestamp::EngineStart);
 
                 let result = engine_state.run(
                     function.config.clone(),
@@ -263,7 +263,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                     log::debug!("content: {}, state: {:?}", *exit_code, items);
                 }
 
-                recorder.record(RecordPoint::EngineEnd);
+                recorder.set_timestamp_now(Timestamp::EngineEnd);
                 drop(recorder);
 
                 let results = result.map(|(_, items)| WorkDone::DataItems(items));

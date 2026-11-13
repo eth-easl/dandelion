@@ -1,6 +1,6 @@
 use super::*;
 use bytes::Buf;
-use dandelion_commons::records::Recorder;
+use dandelion_commons::trace::Recorder;
 use http_body_util::BodyExt;
 use memory::DataSet;
 use prost::{
@@ -51,28 +51,30 @@ fn target(name: &str) -> Option<proto::dandelion_request::Target> {
 async fn test_invocation_by_name_round_trip() {
     let payload = b"123\0\xffab";
     let name = "f".repeat(128);
+    let input_sets = vec![
+        proto::InputSet {
+            items: [0, 3, 2]
+                .into_iter()
+                .map(|payload_length| proto::InputItem {
+                    identifier: "item".into(),
+                    key: 7,
+                    payload_length,
+                })
+                .collect(),
+        },
+        proto::InputSet { items: vec![] },
+        proto::InputSet {
+            items: vec![proto::InputItem {
+                identifier: "other".into(),
+                key: 9,
+                payload_length: 2,
+            }],
+        },
+    ];
+    let input_set_number = input_sets.len();
     let metadata = proto::DandelionRequest {
         target: target(&name),
-        sets: vec![
-            proto::InputSet {
-                items: [0, 3, 2]
-                    .into_iter()
-                    .map(|payload_length| proto::InputItem {
-                        identifier: "item".into(),
-                        key: 7,
-                        payload_length,
-                    })
-                    .collect(),
-            },
-            proto::InputSet { items: vec![] },
-            proto::InputSet {
-                items: vec![proto::InputItem {
-                    identifier: "other".into(),
-                    key: 9,
-                    payload_length: 2,
-                }],
-            },
-        ],
+        sets: input_sets,
     };
     let bytes = Bytes::from(encode(&metadata, payload));
     let payload_start = bytes.len() - payload.len();
@@ -119,7 +121,7 @@ async fn test_invocation_by_name_round_trip() {
         .into_iter()
         .map(|set| set.items)
         .collect();
-    let recorder = Recorder::new(Arc::new("f".into()), Instant::now());
+    let recorder = Recorder::new(Arc::new("f".into()), input_set_number, Instant::now());
     let mut body = DandelionBody::new(outputs, &recorder).unwrap();
     let mut buffer = body.frame().await.unwrap().unwrap().into_data().unwrap();
     let mut slices = [IoSlice::new(&[]); 16];
@@ -356,7 +358,7 @@ fn test_invalid_output() {
         .into_iter()
         .map(|set| set.items)
         .collect();
-    let recorder = Recorder::new(Arc::new("f".into()), Instant::now());
+    let recorder = Recorder::new(Arc::new("f".into()), 0, Instant::now());
     let error = DandelionBody::new(outputs, &recorder).err().unwrap();
     assert_eq!(error.error, DandelionError::InvalidRead);
 }

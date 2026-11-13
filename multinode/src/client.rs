@@ -14,7 +14,7 @@ use crate::{
     },
 };
 use dandelion_commons::{
-    err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
+    err_dandelion, trace::Recorder, DandelionError, DandelionResult, MultinodeError,
 };
 use dispatcher::{
     dispatcher::Dispatcher,
@@ -355,9 +355,9 @@ async fn remote_queue_server_logic(
                                         panic!("Should only get function arguments when polling for remote queue")
                                     }
                                 };
-                                let mut new_recorder = recorder.clone();
+                                let new_recorder = recorder.clone();
                                 new_recorder
-                                    .record(dandelion_commons::records::RecordPoint::RemoteTake);
+                                    .set_timestamp_now(dandelion_commons::trace::Timestamp::RemoteTake);
                                 let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_micros();
@@ -570,8 +570,8 @@ async fn remote_queue_server_logic(
                         panic!("Should only get function arguments when polling for remote queue")
                     }
                 };
-                let mut new_recorder = recorder.clone();
-                new_recorder.record(dandelion_commons::records::RecordPoint::RemoteTake);
+                let new_recorder = recorder.clone();
+                new_recorder.set_timestamp_now(dandelion_commons::trace::Timestamp::RemoteTake);
                 let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_micros();
@@ -1085,7 +1085,11 @@ async fn remote_queue_client_logic(
                         }
                         work_from_remote += 1;
                         let function_arc = Arc::new(function_id);
-                        let recorder = Recorder::new(function_arc.clone(), start_instance);
+                        let recorder = Recorder::new(
+                            function_arc.clone(),
+                            metadata_sets.len(),
+                            start_instance,
+                        );
                         let inputs =
                             proto_data_sets_to_composition_sets(metadata_sets, data_option);
                         dispatcher_sender(
@@ -1131,7 +1135,11 @@ async fn remote_queue_client_logic(
                             }
                             work_from_remote += 1;
                             let function_arc = Arc::new(function_id);
-                            let recorder = Recorder::new(function_arc.clone(), start_instance);
+                            let recorder = Recorder::new(
+                                function_arc.clone(),
+                                metadata_sets.len(),
+                                start_instance,
+                            );
                             let inputs = proto_data_sets_to_composition_sets(
                                 metadata_sets,
                                 data_option.clone(),

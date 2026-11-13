@@ -207,10 +207,10 @@ fn main() {
         .map(resource_conversion)
         .collect();
 
-    println!("core allocation:");
-    println!("minimum system cores {}", min_sys_cores);
-    println!("maximum system cores {}", max_sys_cores);
-    println!("compute cores: {:?}", compute_cores);
+    info!("core allocation:");
+    info!("minimum system cores {}", min_sys_cores);
+    info!("maximum system cores {}", max_sys_cores);
+    info!("compute cores: {:?}", compute_cores);
 
     // set up dispatcher configuration basics
     let pool_map = create_engine_resource_map(compute_cores, communication_cores);
@@ -353,17 +353,8 @@ fn main() {
             });
     }
 
-    // TODO would be nice to just print server ready with all enabled features if that would be possible
-    print!("Server start with features:");
-    #[cfg(feature = "cheri")]
-    print!(" cheri");
-    #[cfg(feature = "mmu")]
-    print!(" mmu");
-    #[cfg(feature = "kvm")]
-    print!(" kvm");
-    #[cfg(feature = "timestamp")]
-    print!(" timestamp");
-    println!();
+    let features = env!("ENABLED_FEATURES");
+    info!("Server started with features: {}", features);
 
     let client_shutdown_option = if let Some(multinode_settings) =
         multinode::config::MultinodeConfig::load(config.multinode_config.as_deref())

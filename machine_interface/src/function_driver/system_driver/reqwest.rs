@@ -9,7 +9,7 @@ use crate::{
 };
 use bytes::Bytes;
 use dandelion_commons::{
-    dandelion_err, err_dandelion, records::RecordPoint, DandelionError, DandelionResult,
+    dandelion_err, err_dandelion, trace::Timestamp, DandelionError, DandelionResult,
 };
 use futures::{stream::FuturesUnordered, StreamExt};
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
@@ -590,12 +590,12 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                 input_sets,
                 metadata,
                 caching, // ignoreing caching for system functions
-                mut recorder,
+                recorder,
             } => {
                 let client_clone = http_client.clone();
                 let queue_clone = queue.clone();
                 debug!("Resolving references for call to {}", function_id);
-                recorder.record(RecordPoint::FetchingStart);
+                recorder.set_timestamp_now(Timestamp::FetchStart);
                 let composition_id = id_option.unwrap();
 
                 resolve_all_sets(
@@ -604,7 +604,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                     semaphore.clone(),
                     ticket,
                     move |sets_result| {
-                        recorder.record(RecordPoint::FetchingEnd);
+                        recorder.set_timestamp_now(Timestamp::FetchEnd);
                         match sets_result {
                             // FIXME: this leaks the queue's `fetching_in_progress` count, since
                             // that is only decremented in `requeu_engine_args`. Repeated fetch

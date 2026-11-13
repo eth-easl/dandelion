@@ -2,7 +2,7 @@ use crate::machine_config::EngineType;
 use memory::{context::MemoryDomain, DataItem};
 extern crate alloc;
 use alloc::sync::Arc;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{trace::Recorder, DandelionResult};
 use memory::data::{DataSet, Metadata};
 
 pub mod compute_driver;

@@ -31,4 +31,5 @@ test-log = "0.2.16"
 cheri = ["dispatcher/cheri", "machine_interface/cheri"]
 mmu = ["dispatcher/mmu", "machine_interface/mmu"]
 kvm = ["dispatcher/kvm", "machine_interface/kvm"]
-timestamp = ["dandelion_commons/timestamp"]
+trace-timestamps = ["dandelion_commons/trace-timestamps"]
+trace-data = ["dandelion_commons/trace-data"]

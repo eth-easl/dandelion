@@ -1,7 +1,7 @@
 use super::envelope;
 use crate::proto;
 use bytes::{Buf, Bytes};
-use dandelion_commons::{dandelion_err, records::Recorder, DandelionError, DandelionResult};
+use dandelion_commons::{dandelion_err, trace::Recorder, DandelionError, DandelionResult};
 use memory::{context::ContextTrait, Context, DataItem, Position};
 use prost::Message;
 use std::{collections::VecDeque, io::IoSlice, sync::Arc};
@@ -145,11 +145,11 @@ impl DandelionBody {
         let metadata = proto::DandelionDeserializeResponse {
             sets: metadata_sets,
             timestamps: {
-                #[cfg(feature = "timestamp")]
+                #[cfg(any(feature = "trace-timestamps", feature = "trace-data"))]
                 {
                     Some(format!("{}", _timing))
                 }
-                #[cfg(not(feature = "timestamp"))]
+                #[cfg(not(any(feature = "trace-timestamps", feature = "trace-data")))]
                 {
                     None
                 }
