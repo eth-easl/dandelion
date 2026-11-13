@@ -1,16 +1,10 @@
 use dandelion_commons::{
-<<<<<<< HEAD
     dandelion_err, err_dandelion,
     trace::{Recorder, Timestamp},
     DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::protocol::{
     DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterChain, RegisterFunction,
-=======
-    err_dandelion,
-    trace::{timestamp::Timestamp, Recorder},
-    DandelionError, DandelionResult, FrontendError,
->>>>>>> 34d0ec5c (Added '/trace/timestamps' endpoint to get tracing timestamp ids)
 };
 use dispatcher::dispatcher::Dispatcher;
 use http_body_util::BodyExt;
@@ -162,11 +156,8 @@ async fn handle_request(
     // TODO match set names to assign sets to composition sets
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
-<<<<<<< HEAD
-=======
     let recorder = Recorder::new(function_id.clone(), request_number, start_time);
     recorder.set_timestamp_now(Timestamp::DeserializationEnd);
->>>>>>> 34d0ec5c (Added '/trace/timestamps' endpoint to get tracing timestamp ids)
     debug!("Request number of request_context: {}", request_number);
     let inputs = DataSet::from_context(request_context);
 
@@ -312,7 +303,7 @@ pub async fn service_loop(
     // socket to listen to
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
-    println!("Socket ready");
+    info!("Socket ready");
     let running_requests = Arc::new(());
 
     // signal handlers for gracefull shutdown
