@@ -2,7 +2,7 @@
 // use the full ones to make sure there is no mix ups
 use crate::proto::{self, item_data};
 #[cfg(feature = "trace-timestamps")]
-use dandelion_commons::trace::timestamp::Timestamp;
+use dandelion_commons::trace::Timestamp;
 use dandelion_commons::{
     err_dandelion, trace::Recorder, DandelionError, DandelionResult, MultinodeError, SystemFunction,
 };

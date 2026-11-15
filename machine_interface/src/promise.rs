@@ -250,7 +250,9 @@ impl Drop for Debt {
         let previous_flags = data.flags.fetch_and(!DEBT_ALIVE, Ordering::SeqCst);
 
         // call waker, if the promise has been dropped the waker should be able to deal with a delayed signal
-        waker.map(|w| w.wake());
+        if let Some(w) = waker {
+            w.wake()
+        }
 
         // release the reference to the slot, after this the debt must not touch the data anymore
         if previous_flags & PROMISE_ALIVE == 0 {

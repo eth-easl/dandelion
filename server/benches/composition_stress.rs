@@ -108,9 +108,9 @@ mod composition_stress {
             context_size: CONTEXT_SIZE,
             engine_type,
             executable: Some(Executable::LocalPath(basic_path)),
-            input_sets: vec![proto::RegistrationInputSet {
+            input_sets: vec![proto::RegistrationSet {
                 identifier: String::from("A"),
-                static_items: None,
+                set: None,
             }],
             output_sets: vec![String::from("Out")],
             min_set_bytes: vec![],
@@ -126,7 +126,13 @@ mod composition_stress {
     fn register_composition(client: &Client, composition: String) {
         let resp = client
             .post("http://localhost:8080/register/composition")
-            .body(encode(&proto::RegisterChain { composition }, &[]))
+            .body(encode(
+                &proto::RegisterComposition {
+                    composition,
+                    input_sets: vec![],
+                },
+                &[],
+            ))
             .send()
             .unwrap();
         let status = resp.status();
@@ -146,9 +152,9 @@ mod composition_stress {
         let data: Vec<u8> = (0..num_items as u64).flat_map(u64::to_le_bytes).collect();
         let request = proto::DandelionRequest {
             target: Some(Target::Name(String::from(composition))),
-            sets: vec![proto::InputSet {
+            sets: vec![proto::DataSet {
                 items: (0..num_items as u32)
-                    .map(|key| proto::InputItem {
+                    .map(|key| proto::DataItem {
                         identifier: String::from(""),
                         key,
                         payload_length: size_of::<u64>() as u64,
@@ -170,7 +176,7 @@ mod composition_stress {
             composition,
             String::from_utf8_lossy(&resp_body)
         );
-        let response = decode::<proto::DandelionDeserializeResponse>(&resp_body).0;
+        let response = decode::<proto::DandelionResponse>(&resp_body).0;
         // every basic invocation emits one item, so this checks that all invocations ran
         assert_eq!(1, response.sets.len());
         assert_eq!(expected_outputs, response.sets[0].items.len());

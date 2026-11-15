@@ -76,7 +76,7 @@ async fn test_invocation_by_name_round_trip() {
     ];
     let input_set_number = input_sets.len();
     let metadata = proto::DandelionRequest {
-        target: target(&name),
+        target: target(name),
         sets: input_sets,
     };
     let bytes = Bytes::from(encode(&metadata, &payload));
@@ -208,7 +208,7 @@ fn test_function_registration_with_binary() {
             (Some(_), None) => panic!("Set option absent when None expected"),
             (Some(expected_items), Some(set)) => {
                 assert_eq!(expected_items.len(), set.items.len());
-                for (expected, actual) in expected_items.into_iter().zip(set.items.iter()) {
+                for (expected, actual) in expected_items.iter().zip(set.items.iter()) {
                     assert_eq!(expected.0, actual.ident);
                     let local_data = actual.local_ref().unwrap();
                     let Position { offset, size } = local_data.pos;
