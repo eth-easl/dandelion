@@ -1,4 +1,4 @@
-use crate::context::ContextTrait;
+use crate::{context::ContextTrait, Context};
 use bytes::Bytes;
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use log::error;
@@ -8,8 +8,11 @@ pub struct BytesContext {
 }
 
 impl BytesContext {
-    pub fn new(frames: Vec<Bytes>) -> Self {
-        BytesContext { frames }
+    pub fn create_context(frames: Vec<Bytes>, size: usize) -> Context {
+        Context::new(
+            super::ContextType::Bytes(Box::new(BytesContext { frames })),
+            size,
+        )
     }
 }
 
@@ -167,8 +170,11 @@ fn read_test() {
 #[test]
 fn zero_length_reads_accept_eof_without_allowing_out_of_bounds() {
     for (context, size) in [
-        (BytesContext::new(vec![]), 0),
-        (BytesContext::new(vec![Bytes::from(vec![1u8, 2u8, 3u8])]), 3),
+        (BytesContext::create_context(vec![], 0), 0),
+        (
+            BytesContext::create_context(vec![Bytes::from(vec![1u8, 2u8, 3u8])], 3),
+            3,
+        ),
     ] {
         context.read::<u8>(size, &mut []).unwrap();
         assert!(context.get_chunk_ref(size, 0).unwrap().is_empty());

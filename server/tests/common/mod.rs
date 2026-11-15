@@ -56,8 +56,6 @@ impl ServerKiller {
             assert_ne!(len, 0, "Server exited unexpectedly");
             if buf.contains("Socket ready") {
                 break;
-            } else {
-                print!("{} out: {}", self.name, buf);
             }
         }
     }

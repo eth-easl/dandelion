@@ -133,16 +133,16 @@ impl DandelionBody {
             for item in set.iter() {
                 // Response items need to be local to be sent.
                 let local = item.local_ref()?;
-                items.push(proto::InputItem {
+                items.push(proto::DataItem {
                     identifier: item.ident.clone(),
                     key: item.key,
                     payload_length: local.pos.size as u64,
                 });
                 payloads.push((local.pos, local.ctx.clone()));
             }
-            metadata_sets.push(proto::InputSet { items });
+            metadata_sets.push(proto::DataSet { items });
         }
-        let metadata = proto::DandelionDeserializeResponse {
+        let metadata = proto::DandelionResponse {
             sets: metadata_sets,
             timestamps: {
                 #[cfg(any(feature = "trace-timestamps", feature = "trace-data"))]
@@ -159,6 +159,7 @@ impl DandelionBody {
             buffer: Some(DandelionBuf::new(&metadata, payloads)?),
         })
     }
+
     pub fn status(message: impl Into<String>) -> Self {
         let bytes = envelope::encode_header(&proto::StatusResponse {
             message: message.into(),

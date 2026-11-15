@@ -9,7 +9,7 @@ use hyper::{
 use log::{debug, error, trace, warn};
 use machine_interface::function_driver::system_driver::RemoteDataClient;
 use memory::{
-    context::{bytes::BytesContext, read_only::ReadOnlyContext, ContextTrait, ContextType},
+    context::{bytes::BytesContext, read_only::ReadOnlyContext, ContextTrait},
     Context, DataItem, ItemData, LocalData, Position, RemoteData,
 };
 use prost::bytes;
@@ -343,10 +343,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             // make sure data is only dropped once we have resolved it
             drop(data);
             Ok((
-                Arc::new(Context::new(
-                    ContextType::Bytes(Box::new(BytesContext::new(body))),
-                    size,
-                )),
+                Arc::new(BytesContext::create_context(body, size)),
                 Position { offset: 0, size },
             ))
         })
@@ -410,10 +407,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             // data has been resolved
             drop(remote_items);
 
-            let context = Arc::new(Context::new(
-                ContextType::Bytes(Box::new(BytesContext::new(body))),
-                size,
-            ));
+            let context = Arc::new(BytesContext::create_context(body, size));
 
             // assumes the remote items sizes are correct
             // also assumes that returned items have the same ordering as they were requested in

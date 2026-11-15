@@ -44,8 +44,8 @@ mod server_tests {
     fn invocation_body(target: Target, item_name: &str, data: &[u8]) -> Vec<u8> {
         let metadata = proto::DandelionRequest {
             target: Some(target),
-            sets: vec![proto::InputSet {
-                items: vec![proto::InputItem {
+            sets: vec![proto::DataSet {
+                items: vec![proto::DataItem {
                     identifier: item_name.into(),
                     key: 0,
                     payload_length: data.len() as u64,
@@ -104,7 +104,7 @@ mod server_tests {
         assert!(resp.status().is_success());
 
         let body = resp.bytes().unwrap();
-        let (response, response_data) = decode::<proto::DandelionDeserializeResponse>(&body);
+        let (response, response_data) = decode::<proto::DandelionResponse>(&body);
         #[cfg(any(feature = "trace-timestamps", feature = "trace-data"))]
         println!("{}", response.trace);
         assert_eq!(1, response.sets.len());
@@ -168,9 +168,9 @@ mod server_tests {
                 min_set_bytes: vec![],
                 executable: Some(executable),
                 engine_type,
-                input_sets: vec![proto::RegistrationInputSet {
+                input_sets: vec![proto::RegistrationSet {
                     identifier: String::from("InMats"),
-                    static_items: None,
+                    set: None,
                 }],
                 output_sets: vec![String::from("OutMats")],
             },
@@ -189,7 +189,7 @@ mod server_tests {
         );
 
         let chain_name = format!("chain_{}", version_string);
-        let chain_request = proto::RegisterChain {
+        let chain_request = proto::RegisterComposition {
             composition: format!(
                 r#"
                 function {function} (InMats) => (OutMats);
@@ -201,6 +201,7 @@ mod server_tests {
                 function = function_name,
                 chain = chain_name,
             ),
+            input_sets: vec![],
         };
 
         let chain_resp = client
@@ -234,7 +235,7 @@ mod server_tests {
         assert!(response.status().is_success());
         let body = response.bytes().unwrap();
         assert_eq!(
-            decode::<proto::DandelionDeserializeResponse>(&body).1,
+            decode::<proto::DandelionResponse>(&body).1,
             matrix.as_slice()
         );
 
@@ -460,7 +461,7 @@ mod server_tests {
         let servers = start_multinode_servers();
         let client = multinode_client();
 
-        let composition_request = proto::RegisterChain {
+        let composition_request = proto::RegisterComposition {
             composition: String::from(
                 r#"
                 function matmul(matrix_in) => (matrix_out);
@@ -472,6 +473,7 @@ mod server_tests {
                 }
             "#,
             ),
+            input_sets: vec![],
         };
         let composition_resp = client
             .post("http://localhost:8080/register/composition")

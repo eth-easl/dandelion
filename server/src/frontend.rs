@@ -4,19 +4,17 @@ use dandelion_commons::{
     DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::protocol::{
-    DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterChain, RegisterFunction,
+    DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterComposition,
+    RegisterFunction,
 };
 use dispatcher::dispatcher::Dispatcher;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, service::service_fn, Request, Response, StatusCode};
 use log::{debug, error, info, trace, warn};
 use machine_interface::machine_config::EngineType;
-use memory::{
-    context::read_only::ReadOnlyContext, data::Metadata, DataItem, DataSet, LocalData, Position,
-};
+use memory::data::Metadata;
 use std::{
-    convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, println, sync::Arc,
-    time::Instant,
+    convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant,
 };
 use tokio::{
     net::TcpListener,
@@ -51,9 +49,11 @@ async fn handle_function_registration(
             path_buff.push(request_map.name.clone());
             let mut function_file = std::fs::File::create(path_buff.clone())
                 .expect("Failed to create file for registering function");
-            function_file
-                .write_all(&binary)
-                .expect("Failed to write file with content for registering");
+            for frame in binary {
+                function_file
+                    .write_all(&frame)
+                    .expect("Failed to write file with content for registering");
+            }
             path_buff.to_str().unwrap().to_string()
         }
     };
@@ -69,14 +69,8 @@ async fn handle_function_registration(
         unknown => panic!("Unkown engine type string {}", unknown),
     };
 
-    let input_sets = request_map
-        .input_sets
-        .into_iter()
-        .map(|(name, data)| (name, data.map(static_data_set)))
-        .collect();
-
     let metadata = Metadata {
-        input_sets,
+        input_sets: request_map.input_sets,
         output_sets: request_map.output_sets,
         min_set_bytes: request_map.min_set_bytes,
     };
@@ -92,32 +86,12 @@ async fn handle_function_registration(
     Ok(DandelionBody::status("Function registered"))
 }
 
-/// Builds a set out of static items given at function registration, each backed by its own context.
-fn static_data_set(items: Vec<(String, Vec<u8>)>) -> DataSet {
-    let items = items
-        .into_iter()
-        .map(|(name, data)| {
-            let size = data.len();
-            let ctx = ReadOnlyContext::from_boxed(data.into_boxed_slice())
-                .expect("Should be able to create read only context for static data");
-            DataItem::new_local(
-                name,
-                0,
-                LocalData {
-                    ctx: Arc::new(ctx),
-                    pos: Position { offset: 0, size },
-                },
-            )
-        })
-        .collect();
-    DataSet::from_items(Arc::new(items))
-}
-
 async fn handle_composition_registration(
     req: Request<Incoming>,
     dispatcher: &'static Dispatcher,
 ) -> DandelionResult<DandelionBody> {
-    let request_map = RegisterChain::decode(read_body(req).await?)?;
+    let request_map = RegisterComposition::decode(read_body(req).await?)?;
+    // TODO: use static sets for composition
     match dispatcher.insert_compositions(request_map.composition) {
         Ok(()) => Ok(DandelionBody::status("Function registered")),
         Err(insertion_err) => err_dandelion!(DandelionError::RequestError(
@@ -142,24 +116,17 @@ async fn handle_request(
     let start_time = Instant::now();
     let DandelionRequest {
         target,
-        context: request_context,
+        sets: inputs,
     } = DandelionRequest::decode(read_body(req).await?)?;
     let deserialization_end = Instant::now();
-    let input_set_number = request_context.content.len();
+
+    let input_set_number = inputs.len();
     let new_recorder = |function_id| {
         let recorder = Recorder::new(function_id, input_set_number, start_time);
         recorder.set_timestamp(Timestamp::DeserializationEnd, deserialization_end);
         recorder
     };
-    debug!("finished creating request context");
-
-    // TODO match set names to assign sets to composition sets
-    // map sets in the order they are in the request
-    let request_number = request_context.content.len();
-    let recorder = Recorder::new(function_id.clone(), request_number, start_time);
-    recorder.set_timestamp_now(Timestamp::DeserializationEnd);
-    debug!("Request number of request_context: {}", request_number);
-    let inputs = DataSet::from_context(request_context);
+    debug!("Input set number: {}", input_set_number);
 
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
@@ -224,8 +191,8 @@ fn handle_trace_timestamps() -> DandelionResult<DandelionBody> {
         .iter()
         .map(|ts| format!("{:?}", ts))
         .collect();
-    let json = serde_json::to_vec(&names).expect("Serializing timestamp names should not fail");
-    Ok(DandelionBody::from_vec(json))
+    let json = serde_json::to_string(&names).expect("Serializing timestamp names should not fail");
+    Ok(DandelionBody::status(json))
 }
 
 //-----------------------
@@ -303,7 +270,7 @@ pub async fn service_loop(
     // socket to listen to
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
-    info!("Socket ready");
+    println!("Socket ready");
     let running_requests = Arc::new(());
 
     // signal handlers for gracefull shutdown
