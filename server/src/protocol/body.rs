@@ -144,7 +144,7 @@ impl DandelionBody {
         }
         let metadata = proto::DandelionResponse {
             sets: metadata_sets,
-            timestamps: {
+            trace: {
                 #[cfg(any(feature = "trace-timestamps", feature = "trace-data"))]
                 {
                     Some(format!("{}", _timing))
