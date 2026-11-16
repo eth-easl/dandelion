@@ -34,7 +34,7 @@ message DandelionRequest {
 
 message DandelionResponse {
     repeated DataSet sets = 1;
-    optional string timestamps = 2;
+    optional string trace = 2;
 }
 
 // Need to distinguish InputSets used for registration from DataSets used for requests,
