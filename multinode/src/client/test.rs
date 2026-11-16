@@ -15,7 +15,7 @@ use crate::{
         RepeatedInvocations, Response,
     },
 };
-use dandelion_commons::{records::Recorder, DandelionError};
+use dandelion_commons::{trace::Recorder, DandelionError};
 use dispatcher::queue::WorkQueue;
 use futures::{
     task::{Context, Waker},
@@ -50,7 +50,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
                     min_set_bytes: vec![],
                 }),
                 caching: false,
-                recorder: Recorder::new(function_id, Instant::now()),
+                recorder: Recorder::new(function_id, 0, Instant::now()),
             },
             0,
         )

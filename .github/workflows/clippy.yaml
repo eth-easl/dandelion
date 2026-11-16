@@ -14,7 +14,7 @@ jobs:
       # test different available compute engines with different system engines
       matrix:
         compute_driver: [ mmu, kvm ]
-        additional_features: ["timestamp", "log_function_stdio", "blocking_queue", "data_locality"]
+        additional_features: ["trace-timestamps", "trace-data", "log_function_stdio", "blocking_queue", "data_locality"]
 
     name: ${{matrix.compute_driver}} - ${{ matrix.additional_features }}
     runs-on: ubuntu-latest

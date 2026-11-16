@@ -3,4 +3,8 @@ fn main() {
         Ok(_) => (),
         Err(err) => panic!("Failed to build protobufs: {:?}", err),
     }
+    println!("cargo::rerun-if-changed=proto/protocol.proto");
+
+    let features = std::env::var("CARGO_CFG_FEATURE").unwrap();
+    println!("cargo::rustc-env=ENABLED_FEATURES={}", features);
 }

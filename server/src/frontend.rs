@@ -1,22 +1,20 @@
 use dandelion_commons::{
     dandelion_err, err_dandelion,
-    records::{RecordPoint, Recorder},
+    trace::{Recorder, Timestamp},
     DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::protocol::{
-    DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterChain, RegisterFunction,
+    DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterComposition,
+    RegisterFunction,
 };
 use dispatcher::dispatcher::Dispatcher;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, service::service_fn, Request, Response, StatusCode};
 use log::{debug, error, info, trace, warn};
 use machine_interface::machine_config::EngineType;
-use memory::{
-    context::read_only::ReadOnlyContext, data::Metadata, DataItem, DataSet, LocalData, Position,
-};
+use memory::data::Metadata;
 use std::{
-    convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, println, sync::Arc,
-    time::Instant,
+    convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant,
 };
 use tokio::{
     net::TcpListener,
@@ -51,9 +49,11 @@ async fn handle_function_registration(
             path_buff.push(request_map.name.clone());
             let mut function_file = std::fs::File::create(path_buff.clone())
                 .expect("Failed to create file for registering function");
-            function_file
-                .write_all(&binary)
-                .expect("Failed to write file with content for registering");
+            for frame in binary {
+                function_file
+                    .write_all(&frame)
+                    .expect("Failed to write file with content for registering");
+            }
             path_buff.to_str().unwrap().to_string()
         }
     };
@@ -69,14 +69,8 @@ async fn handle_function_registration(
         unknown => panic!("Unkown engine type string {}", unknown),
     };
 
-    let input_sets = request_map
-        .input_sets
-        .into_iter()
-        .map(|(name, data)| (name, data.map(static_data_set)))
-        .collect();
-
     let metadata = Metadata {
-        input_sets,
+        input_sets: request_map.input_sets,
         output_sets: request_map.output_sets,
         min_set_bytes: request_map.min_set_bytes,
     };
@@ -92,32 +86,12 @@ async fn handle_function_registration(
     Ok(DandelionBody::status("Function registered"))
 }
 
-/// Builds a set out of static items given at function registration, each backed by its own context.
-fn static_data_set(items: Vec<(String, Vec<u8>)>) -> DataSet {
-    let items = items
-        .into_iter()
-        .map(|(name, data)| {
-            let size = data.len();
-            let ctx = ReadOnlyContext::from_boxed(data.into_boxed_slice())
-                .expect("Should be able to create read only context for static data");
-            DataItem::new_local(
-                name,
-                0,
-                LocalData {
-                    ctx: Arc::new(ctx),
-                    pos: Position { offset: 0, size },
-                },
-            )
-        })
-        .collect();
-    DataSet::from_items(Arc::new(items))
-}
-
 async fn handle_composition_registration(
     req: Request<Incoming>,
     dispatcher: &'static Dispatcher,
 ) -> DandelionResult<DandelionBody> {
-    let request_map = RegisterChain::decode(read_body(req).await?)?;
+    let request_map = RegisterComposition::decode(read_body(req).await?)?;
+    // TODO: use static sets for composition
     match dispatcher.insert_compositions(request_map.composition) {
         Ok(()) => Ok(DandelionBody::status("Function registered")),
         Err(insertion_err) => err_dandelion!(DandelionError::RequestError(
@@ -142,21 +116,17 @@ async fn handle_request(
     let start_time = Instant::now();
     let DandelionRequest {
         target,
-        context: request_context,
+        sets: inputs,
     } = DandelionRequest::decode(read_body(req).await?)?;
     let deserialization_end = Instant::now();
+
+    let input_set_number = inputs.len();
     let new_recorder = |function_id| {
-        let mut recorder = Recorder::new(function_id, start_time);
-        recorder.prerecorded(RecordPoint::DeserializationEnd, deserialization_end);
+        let recorder = Recorder::new(function_id, input_set_number, start_time);
+        recorder.set_timestamp(Timestamp::DeserializationEnd, deserialization_end);
         recorder
     };
-    debug!("finished creating request context");
-
-    // TODO match set names to assign sets to composition sets
-    // map sets in the order they are in the request
-    let request_number = request_context.content.len();
-    debug!("Request number of request_context: {}", request_number);
-    let inputs = DataSet::from_context(request_context);
+    debug!("Input set number: {}", input_set_number);
 
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
@@ -201,9 +171,7 @@ async fn read_body(req: Request<Incoming>) -> DandelionResult<Vec<bytes::Bytes>>
             ))
         })?;
         if let Ok(data) = frame.into_data() {
-            if !data.is_empty() {
-                frames.push(data);
-            }
+            frames.push(data);
         }
     }
     Ok(frames)
@@ -213,6 +181,18 @@ fn http_response(body: DandelionBody, status: StatusCode) -> Response<DandelionB
     let mut response = Response::new(body);
     *response.status_mut() = status;
     response
+}
+
+//----------------
+// trace metadata
+
+fn handle_trace_timestamps() -> DandelionResult<DandelionBody> {
+    let names: Vec<String> = Timestamp::ALL
+        .iter()
+        .map(|ts| format!("{:?}", ts))
+        .collect();
+    let json = serde_json::to_string(&names).expect("Serializing timestamp names should not fail");
+    Ok(DandelionBody::status(json))
 }
 
 //-----------------------
@@ -238,6 +218,7 @@ async fn service(
     let res = match req.uri().path() {
         "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
         "/register/composition" => handle_composition_registration(req, dispatcher).await,
+        "/trace/timestamps" => handle_trace_timestamps(),
         // TODO: rename to cold func and hot func, remove matmul, compute, io
         "/cold/matmul"
         | "/cold/matmulstore"

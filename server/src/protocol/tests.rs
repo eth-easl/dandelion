@@ -1,8 +1,11 @@
 use super::*;
 use bytes::Buf;
-use dandelion_commons::records::Recorder;
+use dandelion_commons::trace::Recorder;
 use http_body_util::BodyExt;
-use memory::DataSet;
+use memory::{
+    context::{read_only::ReadOnlyContext, ContextTrait},
+    DataSet,
+};
 use prost::{
     encoding::{decode_varint, encode_varint, encoded_len_varint},
     Message,
@@ -49,77 +52,70 @@ fn target(name: &str) -> Option<proto::dandelion_request::Target> {
 
 #[tokio::test]
 async fn test_invocation_by_name_round_trip() {
-    let payload = b"123\0\xffab";
-    let name = "f".repeat(128);
+    let payload = [1, 2, 3, 44, 55, 8, 9];
+    let name = "test_function_name";
+    let input_sets = vec![
+        proto::DataSet {
+            items: [0, 3, 2]
+                .into_iter()
+                .map(|payload_length| proto::DataItem {
+                    identifier: "item".into(),
+                    key: 7,
+                    payload_length,
+                })
+                .collect(),
+        },
+        proto::DataSet { items: vec![] },
+        proto::DataSet {
+            items: vec![proto::DataItem {
+                identifier: "other".into(),
+                key: 9,
+                payload_length: 2,
+            }],
+        },
+    ];
+    let input_set_number = input_sets.len();
     let metadata = proto::DandelionRequest {
-        target: target(&name),
-        sets: vec![
-            proto::InputSet {
-                items: [0, 3, 2]
-                    .into_iter()
-                    .map(|payload_length| proto::InputItem {
-                        identifier: "item".into(),
-                        key: 7,
-                        payload_length,
-                    })
-                    .collect(),
-            },
-            proto::InputSet { items: vec![] },
-            proto::InputSet {
-                items: vec![proto::InputItem {
-                    identifier: "other".into(),
-                    key: 9,
-                    payload_length: 2,
-                }],
-            },
-        ],
+        target: target(name),
+        sets: input_sets,
     };
-    let bytes = Bytes::from(encode(&metadata, payload));
+    let bytes = Bytes::from(encode(&metadata, &payload));
     let payload_start = bytes.len() - payload.len();
     let frames = (0..bytes.len()).map(|i| bytes.slice(i..i + 1)).collect();
     let invocation = DandelionRequest::decode(frames).unwrap();
-    assert!(matches!(invocation.target, InvocationTarget::Name(ref decoded) if decoded == &name));
-    assert_eq!(
-        invocation.context.get_chunk_ref(0, 5).unwrap().as_ptr(),
-        bytes[payload_start..].as_ptr()
-    );
-    let sets = invocation
-        .context
-        .content
-        .iter()
-        .map(|set| {
-            set.as_ref()
-                .unwrap()
-                .items
-                .iter()
-                .map(|item| {
-                    (
-                        item.ident.as_str(),
-                        item.key,
-                        item.data.offset,
-                        item.data.size,
-                    )
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        sets,
-        [
-            vec![("item", 7, 0, 0), ("item", 7, 0, 3), ("item", 7, 3, 2)],
-            vec![],
-            vec![("other", 9, 5, 2)],
-        ]
-    );
-    let mut decoded_payload = [0u8; 7];
-    invocation.context.read(0, &mut decoded_payload).unwrap();
-    assert_eq!(&decoded_payload, payload);
+    match invocation.target {
+        InvocationTarget::Name(target_name) => assert_eq!(name, target_name),
+        InvocationTarget::Composition(_) => panic!("Should not have composition"),
+    }
+    let expected_items = &[
+        vec![
+            ("item", 7, Position { offset: 0, size: 0 }, vec![]),
+            ("item", 7, Position { offset: 0, size: 3 }, vec![1, 2, 3]),
+            ("item", 7, Position { offset: 3, size: 2 }, vec![44, 55]),
+        ],
+        vec![],
+        vec![("other", 9u32, Position { offset: 5, size: 2 }, vec![8, 9])],
+    ];
+    assert_eq!(expected_items.len(), invocation.sets.len());
+    for (set_index, set) in invocation.sets.iter().enumerate() {
+        assert_eq!(expected_items[set_index].len(), set.len());
+        for (item_index, item) in set.items.iter().enumerate() {
+            let local_ref = item.local_ref().unwrap();
+            let item_offset = local_ref.pos.offset;
+            let mut data_vec = vec![0u8; local_ref.pos.size];
+            local_ref.ctx.read(item_offset, &mut data_vec).unwrap();
+            let position = item.local_ref().unwrap().pos;
+            let expexted_item = &expected_items[set_index][item_index];
+            assert_eq!(expexted_item.0, item.ident.as_str());
+            assert_eq!(expexted_item.1, item.key);
+            assert_eq!(expexted_item.2.offset, position.offset);
+            assert_eq!(expexted_item.2.size, position.size);
+            assert_eq!(expexted_item.3, data_vec);
+        }
+    }
 
-    let outputs = DataSet::from_context(invocation.context)
-        .into_iter()
-        .map(|set| set.items)
-        .collect();
-    let recorder = Recorder::new(Arc::new("f".into()), Instant::now());
+    let outputs = invocation.sets.into_iter().map(|set| set.items).collect();
+    let recorder = Recorder::new(Arc::new("f".into()), input_set_number, Instant::now());
     let mut body = DandelionBody::new(outputs, &recorder).unwrap();
     let mut buffer = body.frame().await.unwrap().unwrap().into_data().unwrap();
     let mut slices = [IoSlice::new(&[]); 16];
@@ -135,8 +131,7 @@ async fn test_invocation_by_name_round_trip() {
     }
     assert_eq!(actual, expected);
     assert!(body.frame().await.is_none());
-    let (response, response_payload) =
-        decode_response::<proto::DandelionDeserializeResponse>(&actual);
+    let (response, response_payload) = decode_response::<proto::DandelionResponse>(&actual);
     // Empty sets are kept, so every set stays at its index.
     assert_eq!(response.sets, metadata.sets);
     assert_eq!(response_payload, payload);
@@ -158,9 +153,9 @@ fn test_invocation_by_composition() {
 
 #[test]
 fn test_function_registration_with_binary() {
-    let set = |identifier: &str, static_items| proto::RegistrationInputSet {
+    let set = |identifier: &str, set| proto::RegistrationSet {
         identifier: identifier.into(),
-        static_items,
+        set,
     };
     let metadata = proto::RegisterFunction {
         name: "f".into(),
@@ -169,13 +164,14 @@ fn test_function_registration_with_binary() {
         executable: Some(proto::register_function::Executable::BinaryLength(2)),
         input_sets: vec![
             set("dynamic", None),
-            set("empty", Some(proto::StaticInputItems::default())),
+            set("empty", Some(proto::DataSet::default())),
             set(
                 "static",
-                Some(proto::StaticInputItems {
-                    items: vec![proto::StaticInputItem {
+                Some(proto::DataSet {
+                    items: vec![proto::DataItem {
                         identifier: "config".into(),
                         payload_length: 3,
+                        key: 0,
                     }],
                 }),
             ),
@@ -183,22 +179,46 @@ fn test_function_registration_with_binary() {
         output_sets: vec!["output".into()],
         min_set_bytes: vec![8],
     };
-    let registration = RegisterFunction::decode(frame(&encode(&metadata, b"\0\xffcfg"))).unwrap();
+    let registration =
+        RegisterFunction::decode(frame(&encode(&metadata, &[1, 2, 3, 4, 5]))).unwrap();
     assert_eq!(registration.name, "f");
     assert_eq!(registration.context_size, 4096);
     assert_eq!(registration.engine_type, "Process");
-    assert!(matches!(&registration.executable, Executable::Binary(binary) if *binary == [0, 0xff]));
-    assert_eq!(
-        registration.input_sets,
-        [
-            ("dynamic".into(), None),
-            ("empty".into(), Some(vec![])),
-            (
-                "static".into(),
-                Some(vec![("config".into(), b"cfg".to_vec())])
-            ),
-        ]
-    );
+    match registration.executable {
+        Executable::Binary(binary) => {
+            assert_eq!(1, binary.len());
+            println!("binay lenght: {}", binary[0].len());
+            for value in &binary[0][..] {
+                println!("binary: {:?}", *value);
+            }
+            assert_eq!([1, 2], binary[0][..]);
+        }
+        Executable::LocalPath(_) => panic!("Should not have local path"),
+    };
+    let expexted_sets = [
+        ("dynamic", None),
+        ("empty", Some(vec![])),
+        ("static", Some(vec![("config", vec![3, 4, 5])])),
+    ];
+    for (set_index, (set_name, set_option)) in registration.input_sets.iter().enumerate() {
+        assert_eq!(expexted_sets[set_index].0, set_name);
+        match (&expexted_sets[set_index].1, set_option) {
+            (None, None) => (),
+            (None, _) => panic!("Set option present when None expected"),
+            (Some(_), None) => panic!("Set option absent when None expected"),
+            (Some(expected_items), Some(set)) => {
+                assert_eq!(expected_items.len(), set.items.len());
+                for (expected, actual) in expected_items.iter().zip(set.items.iter()) {
+                    assert_eq!(expected.0, actual.ident);
+                    let local_data = actual.local_ref().unwrap();
+                    let Position { offset, size } = local_data.pos;
+                    let mut data_vec = vec![0u8; size];
+                    local_data.ctx.read(offset, &mut data_vec).unwrap();
+                    assert_eq!(expected.1, data_vec);
+                }
+            }
+        }
+    }
     assert_eq!(registration.output_sets, ["output"]);
     assert_eq!(registration.min_set_bytes, [8]);
 }
@@ -220,10 +240,11 @@ fn test_function_registration_with_local_path() {
 
 #[test]
 fn test_composition_registration() {
-    let metadata = proto::RegisterChain {
+    let metadata = proto::RegisterComposition {
         composition: "source".into(),
+        input_sets: vec![],
     };
-    let registration = RegisterChain::decode(frame(&encode(&metadata, &[]))).unwrap();
+    let registration = RegisterComposition::decode(frame(&encode(&metadata, &[]))).unwrap();
     assert_eq!(registration.composition, "source");
 }
 
@@ -288,14 +309,17 @@ fn test_invalid_invocation() {
 
     let metadata = proto::DandelionRequest {
         target: target("f"),
-        sets: vec![proto::InputSet {
-            items: vec![proto::InputItem {
+        sets: vec![proto::DataSet {
+            items: vec![proto::DataItem {
                 payload_length: 3,
                 ..Default::default()
             }],
         }],
     };
-    assert_eq!(decode(&encode(&metadata, b"ab")), FrontendError::StreamEnd);
+    assert_eq!(
+        decode(&encode(&metadata, b"ab")),
+        FrontendError::ViolatedSpec
+    );
     assert_eq!(
         decode(&encode(&metadata, b"abcd")),
         FrontendError::ViolatedSpec
@@ -332,18 +356,21 @@ fn test_invalid_registration() {
     assert_eq!(decode(&valid, b"a"), FrontendError::StreamEnd);
     assert_eq!(decode(&valid, b"abc"), FrontendError::ViolatedSpec);
 
-    let chain = proto::RegisterChain {
+    let chain = proto::RegisterComposition {
         composition: "source".into(),
+        input_sets: vec![],
     };
     assert_eq!(
-        request_error(RegisterChain::decode(frame(&encode(&chain, b"a")))),
+        request_error(RegisterComposition::decode(frame(&encode(&chain, b"a")))),
         FrontendError::ViolatedSpec
     );
 }
 
 #[test]
 fn test_invalid_output() {
-    let mut context = Context::new(ContextType::Bytes(Box::new(BytesContext::new(vec![]))), 0);
+    use memory::context::{ContextDataItem, ContextDataSet};
+
+    let mut context = ReadOnlyContext::from_boxed::<u8>(vec![].into_boxed_slice()).unwrap();
     context.content = vec![Some(ContextDataSet {
         total_size: 1,
         items: vec![ContextDataItem {
@@ -356,7 +383,7 @@ fn test_invalid_output() {
         .into_iter()
         .map(|set| set.items)
         .collect();
-    let recorder = Recorder::new(Arc::new("f".into()), Instant::now());
+    let recorder = Recorder::new(Arc::new("f".into()), 0, Instant::now());
     let error = DandelionBody::new(outputs, &recorder).err().unwrap();
     assert_eq!(error.error, DandelionError::InvalidRead);
 }

@@ -1,7 +1,10 @@
 use crate::{
     function_driver::load_utils::load_static, machine_config::EngineType, DataRequirementList,
 };
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{
+    trace::{Recorder, Timestamp},
+    DandelionResult,
+};
 use memory::context::{Context, MemoryDomain};
 use std::{
     fmt::Debug,
@@ -106,12 +109,12 @@ impl FunctionAlternative {
                 return Ok(inner.clone());
             }
         }
-        recorder.record(dandelion_commons::records::RecordPoint::ParsingStart);
+        recorder.set_timestamp_now(Timestamp::BinaryParsingStart);
         let function = Arc::new(
             self.engine
                 .parse_function(self.path.clone(), &**self.domain)?,
         );
-        recorder.record(dandelion_commons::records::RecordPoint::ParsingEnd);
+        recorder.set_timestamp_now(Timestamp::BinaryParsingEnd);
         if caching {
             let mut function_lock = self.function.write().unwrap();
             *function_lock = Some(function.clone());

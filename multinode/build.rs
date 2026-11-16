@@ -3,4 +3,5 @@ fn main() {
         Ok(_) => (),
         Err(err) => panic!("Failed to build protobufs: {:?}", err),
     }
+    println!("cargo::rerun-if-changed=proto/multinode.proto");
 }

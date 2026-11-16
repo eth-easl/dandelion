@@ -1,5 +1,5 @@
 use super::{check_matrix, run_composition, setup_dispatcher, zero_id};
-use dandelion_commons::records::Recorder;
+use dandelion_commons::trace::Recorder;
 use log::debug;
 use machine_interface::{
     function_driver::ComputeResource,
@@ -31,7 +31,7 @@ pub fn single_domain_and_engine_basic(
         memory_resource,
     );
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(zero_id(), 0, Instant::now());
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -77,7 +77,7 @@ pub fn single_domain_and_engine_matmul(
 
     let inputs = DataSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(zero_id(), inputs.len(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()

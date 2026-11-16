@@ -23,7 +23,11 @@ jobs:
         include:
         - platform: ubuntu-24.04
           compute_driver: mmu
-          additional_features: "timestamp"
+          additional_features: "trace-timestamps"
+
+        - platform: ubuntu-24.04
+          compute_driver: mmu
+          additional_features: "trace-data"
         
         - platform: ubuntu-24.04
           compute_driver: mmu
