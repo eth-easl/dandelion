@@ -1,0 +1,79 @@
+name: Build prerelease
+
+# Rebuilds on every push to main and republishes all binaries as assets on the single rolling 
+# "latest-main" release.
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # allows manual triggering from UI, CLI, or API
+
+permissions:
+  contents: write
+
+# never run two release builds at once, so assets from an older commit can't overwrite newer ones
+concurrency:
+  group: build-release
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: latest-main
+
+jobs:
+  ensure_release:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+    - name: create latest-main release or move it to the current commit
+      shell: bash
+      run: |
+        NOTES="Automated build of the latest main commit ($GITHUB_SHA). Assets are replaced on every push to main."
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo "Release '$RELEASE_TAG' already exists, moving its tag to $GITHUB_SHA."
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" -F force=true
+          gh release edit "$RELEASE_TAG" --notes "$NOTES"
+        else
+          gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --notes "$NOTES" \
+            --target "$GITHUB_SHA" \
+            --prerelease
+        fi
+      env:
+        GH_REPO: ${{ github.repository }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build_cli:
+    needs: ensure_release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - platform: ubuntu-24.04
+          arch: x86_64
+        - platform: ubuntu-24.04-arm
+          arch: aarch64
+    name: build cli - linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.platform }}
+    env:
+      ASSET: dandelion-linux-${{ matrix.arch }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: setup protobuf
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+    - name: build cli
+      run: cargo build --release --locked -p dandelion_cli --bin dandelion
+    - name: package binary
+      shell: bash
+      run: |
+        mkdir -p dist
+        tar -czf "dist/$ASSET.tar.gz" -C target/release dandelion
+        (cd dist && sha256sum "$ASSET.tar.gz" > "$ASSET.tar.gz.sha256")
+    - name: upload to release
+      shell: bash
+      run: gh release upload "$RELEASE_TAG" "dist/$ASSET.tar.gz" "dist/$ASSET.tar.gz.sha256" --clobber
+      env:
+        GH_REPO: ${{ github.repository }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
