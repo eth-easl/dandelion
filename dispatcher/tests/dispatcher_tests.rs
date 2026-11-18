@@ -4,9 +4,10 @@ mod dispatcher_tests {
     mod registry_tests;
 
     mod combination_tests;
+    mod meta_function_tests;
 
     use composition::AnyShardingMode;
-    use dandelion_commons::{records::Recorder, FunctionId};
+    use dandelion_commons::{records::Recorder, DandelionResult, FunctionId};
     use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
         function_driver::ComputeResource,
@@ -26,6 +27,15 @@ mod dispatcher_tests {
         Arc::new(0.to_string())
     }
 
+    /// Absolute path of the test binary with the given name.
+    fn test_binary_path(name: &str) -> String {
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop();
+        path.push("machine_interface/tests/data");
+        path.push(name);
+        path.to_str().expect("Path should be string").to_string()
+    }
+
     fn setup_dispatcher(
         name: &str,
         in_set_names: Vec<(String, Option<DataSet>)>,
@@ -34,11 +44,28 @@ mod dispatcher_tests {
         engine_resource: Vec<ComputeResource>,
         memory_resource: (DomainType, MemoryResource),
     ) -> (Dispatcher, FunctionId) {
-        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.pop();
-        path.push("machine_interface/tests/data");
-        path.push(name);
-        let path_string = path.to_str().expect("Path should be string").to_string();
+        setup_dispatcher_with_meta_depth(
+            name,
+            in_set_names,
+            out_set_names,
+            engine_type,
+            engine_resource,
+            memory_resource,
+            None,
+        )
+    }
+
+    /// Like `setup_dispatcher`, with the given maximum metafunction nesting depth.
+    fn setup_dispatcher_with_meta_depth(
+        name: &str,
+        in_set_names: Vec<(String, Option<DataSet>)>,
+        out_set_names: Vec<String>,
+        engine_type: EngineType,
+        engine_resource: Vec<ComputeResource>,
+        memory_resource: (DomainType, MemoryResource),
+        max_meta_depth: Option<usize>,
+    ) -> (Dispatcher, FunctionId) {
+        let path_string = test_binary_path(name);
         let metadata = Metadata {
             input_sets: in_set_names,
             output_sets: out_set_names,
@@ -60,7 +87,7 @@ mod dispatcher_tests {
             memory_resources,
             work_queue,
             AnyShardingMode::MaxSharding,
-            None,
+            max_meta_depth,
         )
         .expect("Should have initialized dispatcher");
         let function_id = Arc::new(String::from("test_function"));
@@ -83,8 +110,20 @@ mod dispatcher_tests {
         composition: &str,
         inputs: Vec<DataSet>,
     ) -> Vec<Arc<Vec<DataItem>>> {
+        match try_run_composition(dispatcher, composition, inputs) {
+            Ok(out_sets) => out_sets,
+            Err(err) => panic!("Failed with: {:?}", err),
+        }
+    }
+
+    /// Like `run_composition`, but returns the error instead of panicking.
+    fn try_run_composition(
+        dispatcher: &Dispatcher,
+        composition: &str,
+        inputs: Vec<DataSet>,
+    ) -> DandelionResult<Vec<Arc<Vec<DataItem>>>> {
         let recorder = Recorder::new(zero_id(), Instant::now());
-        let result = tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_unregistered_composition(
@@ -92,11 +131,8 @@ mod dispatcher_tests {
                 inputs,
                 false,
                 recorder,
-            ));
-        match result {
-            Ok((out_sets, _)) => out_sets,
-            Err(err) => panic!("Failed with: {:?}", err),
-        }
+            ))
+            .map(|(out_sets, _)| out_sets)
     }
 
     fn check_matrix(item: &DataItem, rows: u64, expected: Vec<u64>) {
@@ -213,6 +249,77 @@ mod dispatcher_tests {
         };
     }
 
+    /// Metafunction tests, separate from `dispatcherTests` as they need the planner test binary,
+    /// which is not available for every engine (e.g. cheri).
+    macro_rules! metaFunctionTests {
+        ($name: ident; $init : expr; $engine_type : expr; $engine_resource: expr) => {
+            mod meta_function {
+                use super::*;
+                use crate::dispatcher_tests::meta_function_tests::*;
+
+                #[test_log::test]
+                fn test_meta_function_runs_plan() {
+                    meta_function_runs_plan(
+                        $init,
+                        stringify!($name),
+                        $engine_type,
+                        $engine_resource,
+                    )
+                }
+
+                #[test_log::test]
+                fn test_meta_function_disabled_at_depth_zero() {
+                    meta_function_disabled_at_depth_zero(
+                        $init,
+                        stringify!($name),
+                        $engine_type,
+                        $engine_resource,
+                    )
+                }
+
+                #[test_log::test]
+                fn test_nested_meta_function_within_limit_runs() {
+                    nested_meta_function_within_limit_runs(
+                        $init,
+                        stringify!($name),
+                        $engine_type,
+                        $engine_resource,
+                    )
+                }
+
+                #[test_log::test]
+                fn test_nested_meta_function_beyond_limit_fails() {
+                    nested_meta_function_beyond_limit_fails(
+                        $init,
+                        stringify!($name),
+                        $engine_type,
+                        $engine_resource,
+                    )
+                }
+
+                #[test_log::test]
+                fn test_registered_composition_does_not_reset_depth() {
+                    registered_composition_does_not_reset_depth(
+                        $init,
+                        stringify!($name),
+                        $engine_type,
+                        $engine_resource,
+                    )
+                }
+
+                #[test_log::test]
+                fn test_invalid_plan_fails_application() {
+                    invalid_plan_fails_application(
+                        $init,
+                        stringify!($name),
+                        $engine_type,
+                        $engine_resource,
+                    )
+                }
+            }
+        };
+    }
+
     #[cfg(feature = "cheri")]
     mod cheri {
         use machine_interface::{
@@ -232,8 +339,12 @@ mod dispatcher_tests {
         use memory::context::MemoryResource;
         #[cfg(target_arch = "x86_64")]
         dispatcherTests!(elf_mmu_x86_64; (DomainType::Process ,MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
+        #[cfg(target_arch = "x86_64")]
+        metaFunctionTests!(elf_mmu_x86_64; (DomainType::Process ,MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
         dispatcherTests!(elf_mmu_aarch64; (DomainType::Process, MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
+        #[cfg(target_arch = "aarch64")]
+        metaFunctionTests!(elf_mmu_aarch64; (DomainType::Process, MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "kvm")]
@@ -245,7 +356,11 @@ mod dispatcher_tests {
         use memory::context::MemoryResource;
         #[cfg(target_arch = "x86_64")]
         dispatcherTests!(elf_kvm_x86_64; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
+        #[cfg(target_arch = "x86_64")]
+        metaFunctionTests!(elf_kvm_x86_64; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
         dispatcherTests!(elf_kvm_aarch64; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
+        #[cfg(target_arch = "aarch64")]
+        metaFunctionTests!(elf_kvm_aarch64; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
     }
 }
