@@ -282,6 +282,9 @@ pub async fn service_loop(
         tokio::select! {
             connection_pair = listener.accept() => {
                 let (stream,_) = connection_pair.unwrap();
+                if let Err(err) = stream.set_nodelay(true) {
+                    warn!("Failed to set nodelay on frontend connection: {}", err);
+                }
                 let io = hyper_util::rt::TokioIo::new(stream);
                 let request_counter = Arc::downgrade(&running_requests);
                 tokio::task::spawn(async move {
