@@ -1,4 +1,7 @@
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, FunctionRegistryError};
+use composition::{CompositionTemplate, MetaApplication, Registry};
+use dandelion_commons::{
+    err_dandelion, DandelionError, DandelionResult, FunctionId, FunctionRegistryError,
+};
 use memory::{context::ContextTrait, DataItem, DataSet, ItemData};
 use std::sync::Arc;
 
@@ -85,6 +88,50 @@ pub fn read_composition(planner_output: &[Arc<Vec<DataItem>>]) -> DandelionResul
             )),
         )),
     }
+}
+
+/// Parses the composition returned by the planner of a metafunction and checks that it takes
+/// the data inputs and produces the outputs of the application.
+pub fn parse_plan<R: Registry>(
+    registry: &R,
+    function_id: &FunctionId,
+    plan: &str,
+    application: &MetaApplication,
+) -> DandelionResult<(FunctionId, CompositionTemplate)> {
+    let invalid_plan = |reason: String| {
+        err_dandelion!(DandelionError::FunctionRegistry(
+            FunctionRegistryError::InvalidPlan(format!(
+                "Composition returned by the planner of {} {}",
+                function_id, reason
+            )),
+        ))
+    };
+    let mut templates = match CompositionTemplate::parse(plan, registry) {
+        Ok(templates) => templates,
+        Err(err) => return invalid_plan(format!("failed to parse: {}", err.error)),
+    };
+    let num_compositions = templates.len();
+    let (plan_id, template, metadata) = match templates.pop() {
+        Some(parsed) if num_compositions == 1 => parsed,
+        _ => {
+            return invalid_plan(format!(
+                "has to contain exactly one composition, found {}",
+                num_compositions
+            ))
+        }
+    };
+    if metadata.input_sets.len() != application.input_names.len()
+        || metadata.output_sets.len() != application.output_names.len()
+    {
+        return invalid_plan(format!(
+            "takes {} input sets and returns {} output sets instead of {} and {}",
+            metadata.input_sets.len(),
+            metadata.output_sets.len(),
+            application.input_names.len(),
+            application.output_names.len()
+        ));
+    }
+    Ok((plan_id, template))
 }
 
 #[cfg(test)]

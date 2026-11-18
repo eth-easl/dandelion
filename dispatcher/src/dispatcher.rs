@@ -1,6 +1,6 @@
 use crate::{
     function_registry::{FunctionInfo, FunctionRegistry, FunctionType},
-    meta_function::{input_metadata_set, output_metadata_set, read_composition},
+    meta_function::{input_metadata_set, output_metadata_set, parse_plan, read_composition},
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
@@ -591,9 +591,10 @@ impl Dispatcher {
             .await?;
 
         // parse plan is a string of composition DSL
-        // TODO: instead of using string and composition DSL, use own format to make it 
+        // TODO: instead of using string and composition DSL, use own format to make it
         // easier to write in SDK & save the parsing pass here
-        let (plan_id, plan) = self.parse_plan(
+        let (plan_id, plan) = parse_plan(
+            &self.function_registry,
             &function_id,
             &read_composition(&planner_output)?,
             &application,
@@ -622,50 +623,6 @@ impl Dispatcher {
         ]);
         recorder.record(RecordPoint::FutureReturn);
         result
-    }
-
-    /// Parses the composition returned by the planner of a metafunction and checks that it takes
-    /// the data inputs and produces the outputs of the application.
-    fn parse_plan(
-        &self,
-        function_id: &FunctionId,
-        plan: &str,
-        application: &MetaApplication,
-    ) -> DandelionResult<(FunctionId, CompositionTemplate)> {
-        let invalid_plan = |reason: String| {
-            err_dandelion!(DandelionError::FunctionRegistry(
-                FunctionRegistryError::InvalidPlan(format!(
-                    "Composition returned by the planner of {} {}",
-                    function_id, reason
-                )),
-            ))
-        };
-        let mut templates = match CompositionTemplate::parse(plan, &self.function_registry) {
-            Ok(templates) => templates,
-            Err(err) => return invalid_plan(format!("failed to parse: {}", err.error)),
-        };
-        let num_compositions = templates.len();
-        let (plan_id, template, metadata) = match templates.pop() {
-            Some(parsed) if num_compositions == 1 => parsed,
-            _ => {
-                return invalid_plan(format!(
-                    "has to contain exactly one composition, found {}",
-                    num_compositions
-                ))
-            }
-        };
-        if metadata.input_sets.len() != application.input_names.len()
-            || metadata.output_sets.len() != application.output_names.len()
-        {
-            return invalid_plan(format!(
-                "takes {} input sets and returns {} output sets instead of {} and {}",
-                metadata.input_sets.len(),
-                metadata.output_sets.len(),
-                application.input_names.len(),
-                application.output_names.len()
-            ));
-        }
-        Ok((plan_id, template))
     }
 
     /// returns a vector of pairs of a index and a composition set
