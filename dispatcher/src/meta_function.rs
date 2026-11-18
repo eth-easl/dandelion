@@ -137,6 +137,7 @@ pub fn parse_plan<R: Registry>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::function_registry::FunctionRegistry;
     use dandelion_commons::SystemFunction;
     use memory::{
         context::{read_only::ReadOnlyContext, Context},
@@ -168,16 +169,16 @@ mod tests {
         (field(0), field(1), field(2))
     }
 
-    fn assert_invalid_plan<T: std::fmt::Debug>(result: DandelionResult<T>) {
+    /// Asserts the result is an InvalidPlan error whose message contains `reason`, which tells the
+    /// checks apart that all report InvalidPlan.
+    fn assert_invalid_plan<T: std::fmt::Debug>(result: DandelionResult<T>, reason: &str) {
         match result {
-            Err(err) => assert!(
-                matches!(
-                    err.error,
-                    DandelionError::FunctionRegistry(FunctionRegistryError::InvalidPlan(_))
-                ),
-                "expected InvalidPlan, got {:?}",
-                err.error
-            ),
+            Err(err) => match &err.error {
+                DandelionError::FunctionRegistry(FunctionRegistryError::InvalidPlan(msg)) => {
+                    assert!(msg.contains(reason), "expected '{reason}' in '{msg}'")
+                }
+                other => panic!("expected InvalidPlan, got {:?}", other),
+            },
             Ok(value) => panic!("expected InvalidPlan, got Ok({:?})", value),
         }
     }
@@ -279,15 +280,112 @@ mod tests {
     fn read_composition_requires_exactly_one_item() {
         let two_items = bytes_set(&[("first", b"a"), ("second", b"b")]);
 
-        assert_invalid_plan(read_composition(&[]));
-        assert_invalid_plan(read_composition(&[Arc::new(vec![])]));
-        assert_invalid_plan(read_composition(&[two_items.items]));
+        let reason = "exactly one item";
+        assert_invalid_plan(read_composition(&[]), reason);
+        assert_invalid_plan(read_composition(&[Arc::new(vec![])]), reason);
+        assert_invalid_plan(read_composition(&[two_items.items]), reason);
     }
 
     #[test]
     fn read_composition_rejects_invalid_utf8() {
         let output = bytes_set(&[(COMPOSITION_SET, &[0xff, 0xfe])]);
 
-        assert_invalid_plan(read_composition(&[output.items]));
+        assert_invalid_plan(read_composition(&[output.items]), "not valid UTF-8");
+    }
+
+    const HTTP_DECLARATION: &str = "function HTTP (requests) => (headers, bodies);";
+
+    /// Parses the plan for an application with the data inputs (A, B) and the output (Out).
+    fn parse_test_plan(plan: &str) -> DandelionResult<(FunctionId, CompositionTemplate)> {
+        let application = MetaApplication {
+            num_planner_inputs: 0,
+            input_names: vec![String::from("A"), String::from("B")],
+            output_names: vec![String::from("Out")],
+        };
+        let plan = format!("{HTTP_DECLARATION}\n{plan}");
+        parse_plan(
+            &FunctionRegistry::new(),
+            &Arc::new(String::from("Plan")),
+            &plan,
+            &application,
+        )
+    }
+
+    #[test]
+    fn parse_plan_accepts_matching_composition() {
+        let (plan_id, _) = parse_test_plan(
+            "composition Planned (A, B) => (Out) {
+                HTTP (requests = all A) => (Out = bodies);
+            }",
+        )
+        .unwrap();
+
+        assert_eq!(*plan_id, "Planned");
+    }
+
+    #[test]
+    fn parse_plan_rejects_unparsable_source() {
+        let reason = "failed to parse";
+        // syntax error
+        assert_invalid_plan(
+            parse_test_plan("composition Planned (A, B) => (Out) {"),
+            reason,
+        );
+        // function not known to the registry
+        assert_invalid_plan(
+            parse_test_plan(
+                "function Unknown (x) => (y);
+                composition Planned (A, B) => (Out) {
+                    Unknown (x = all A) => (Out = y);
+                }",
+            ),
+            reason,
+        );
+    }
+
+    #[test]
+    fn parse_plan_requires_exactly_one_composition() {
+        let composition = |name: &str| {
+            format!(
+                "composition {name} (A, B) => (Out) {{
+                    HTTP (requests = all A) => (Out = bodies);
+                }}"
+            )
+        };
+
+        // declarations only
+        assert_invalid_plan(parse_test_plan(""), "exactly one composition, found 0");
+        assert_invalid_plan(
+            parse_test_plan(&format!(
+                "{}\n{}",
+                composition("First"),
+                composition("Second")
+            )),
+            "exactly one composition, found 2",
+        );
+    }
+
+    #[test]
+    fn parse_plan_rejects_wrong_input_count() {
+        assert_invalid_plan(
+            parse_test_plan(
+                "composition Planned (A) => (Out) {
+                    HTTP (requests = all A) => (Out = bodies);
+                }",
+            ),
+            "takes 1 input sets and returns 1 output sets instead of 2 and 1",
+        );
+    }
+
+    #[test]
+    fn parse_plan_rejects_wrong_output_count() {
+        assert_invalid_plan(
+            parse_test_plan(
+                "composition Planned (A, B) => (Out, Headers) {
+                    HTTP (requests = all A) => (Out = bodies, Headers = headers);
+                }",
+            ),
+            "takes 2 input sets and returns 2 output sets instead of 2 and 1",
+        );
     }
 }
