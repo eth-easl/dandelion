@@ -147,6 +147,18 @@ pub fn item(ident: &str, key: u32) -> DataItem {
     )
 }
 
+/// Builds an input set out of the given items.
+#[allow(dead_code)] // not used by every test binary
+pub fn data_set(items: Vec<DataItem>) -> DataSet {
+    DataSet::from_items(Arc::new(items))
+}
+
+/// Builds an output set of an invocation out of the given items.
+#[allow(dead_code)] // not used by every test binary
+pub fn items(items: Vec<DataItem>) -> Arc<Vec<DataItem>> {
+    Arc::new(items)
+}
+
 /// An invocation as enqueued by the composition, collected by the tests to inspect it.
 #[derive(Debug)]
 #[allow(dead_code)] // not used by every test binary
