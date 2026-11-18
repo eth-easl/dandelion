@@ -184,10 +184,11 @@ impl fmt::Display for Recorder {
         #[cfg(any(feature = "trace-data", feature = "trace-timestamps"))]
         {
             let node_id = unsafe { *self.inner.node_id.get() };
+            let peak_mem = unsafe { *self.inner.peak_memory.get() };
             write!(
                 _f,
-                "{{\"id\": \"{}\", \"nodeId\": {}",
-                self.inner.function_id, node_id,
+                "{{\"id\": \"{}\", \"nodeId\": {}, \"peakMem\": {}",
+                self.inner.function_id, node_id, peak_mem
             )?;
 
             #[cfg(feature = "trace-timestamps")]
