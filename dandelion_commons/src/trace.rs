@@ -28,6 +28,9 @@ struct Inner {
     /// The outer vector indexes the function, the inner vector indexes the invocation of that function.
     children: OnceCell<Vec<Option<Vec<Recorder>>>>,
 
+    /// The peak observed memory in bytes a function used during it's execution.
+    peak_memory: UnsafeCell<u64>,
+
     /// The timestamp traces (only collected with `trace-timestamps` feature).
     #[cfg(feature = "trace-timestamps")]
     timestamps: TimestampCollection,
@@ -60,6 +63,7 @@ impl Recorder {
                 function_id: _function_id,
                 node_id: UnsafeCell::new(0),
                 children: OnceCell::new(),
+                peak_memory: UnsafeCell::new(0),
                 #[cfg(feature = "trace-timestamps")]
                 timestamps: TimestampCollection::new(_start),
                 #[cfg(feature = "trace-data")]
@@ -75,6 +79,7 @@ impl Recorder {
                 function_id: _function_id,
                 node_id: UnsafeCell::new(0),
                 children: core::cell::OnceCell::new(),
+                peak_memory: UnsafeCell::new(0),
                 #[cfg(feature = "trace-timestamps")]
                 timestamps: TimestampCollection::new(_parent.inner.timestamps.start),
                 #[cfg(feature = "trace-data")]
@@ -93,6 +98,13 @@ impl Recorder {
         #[cfg(any(feature = "trace-data", feature = "trace-timestamps"))]
         unsafe {
             *UnsafeCell::raw_get(&self.inner.node_id) = _node_id;
+        }
+    }
+
+    pub fn set_peak_memory(&mut self, _peak_memory: u64) {
+        #[cfg(any(feature = "trace-data", feature = "trace-timestamps"))]
+        unsafe {
+            *UnsafeCell::raw_get(&self.inner.peak_memory) = _peak_memory;
         }
     }
 
@@ -151,7 +163,8 @@ impl fmt::Debug for Recorder {
             dbg_struct
                 .field("function_id", &self.inner.function_id)
                 .field("node_id", &self.inner.node_id)
-                .field("children", &self.inner.children);
+                .field("children", &self.inner.children)
+                .field("peak_memory", &self.inner.peak_memory);
 
             #[cfg(feature = "trace-timestamps")]
             dbg_struct.field("timestamps", &self.inner.timestamps);

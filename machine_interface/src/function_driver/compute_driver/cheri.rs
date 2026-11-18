@@ -46,6 +46,7 @@ impl EngineLoop for CheriLoop {
         mut context: Context,
         input_sets: &[(String, Option<DataSet>)],
         output_sets: &[String],
+        _recorder: &mut Recorder,
     ) -> DandelionResult<(i32, Vec<Arc<Vec<DataItem>>>)> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,

@@ -6,7 +6,9 @@ use crate::{
 };
 use core::marker::Send;
 use dandelion_commons::{
-    err_dandelion, trace::Timestamp, DandelionError, DandelionResult, FunctionRegistryError,
+    err_dandelion,
+    trace::{Recorder, Timestamp},
+    DandelionError, DandelionResult, FunctionRegistryError,
 };
 use memory::{
     context::{self, Context},
@@ -24,13 +26,12 @@ pub trait EngineLoop {
         context: Context,
         input_sets: &[(String, Option<DataSet>)],
         output_sets: &[String],
+        recorder: &mut Recorder,
     ) -> DandelionResult<(i32, Vec<Arc<Vec<DataItem>>>)>;
     fn get_engine_type(&self) -> EngineType;
 }
 
 // Either use a local atomic bool as a waker or a channel if we want blocking
-
-// TODO: make sencond blocking waker
 // functions for the waker
 #[cfg(not(feature = "blocking_queue"))]
 mod waker {
@@ -257,6 +258,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                     function_context,
                     &metadata.input_sets,
                     &metadata.output_sets,
+                    &mut recorder,
                 );
 
                 recorder.set_timestamp_now(Timestamp::EngineEnd);

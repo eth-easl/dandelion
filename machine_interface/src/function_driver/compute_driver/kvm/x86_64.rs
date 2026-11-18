@@ -3,11 +3,11 @@ use crate::{
          GLOBAL_SYSTEM_MEMORY_SIZE, PER_VM_SYSTEM_MEMORY, SYSTEM_MEMORY_SIZE, SYSTEM_VIRTUAL_BASE,
     }
 };
-use memory::context::{kvm::{KvmContext, Page, PageType}, ContextTrait};
+use memory::context::{kvm::{KvmContext, Page, PageType}};
 use dandelion_commons::DandelionResult;
 use kvm_bindings::{kvm_fpu, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs, Msrs};
 use kvm_ioctls::{VcpuFd, VmFd};
-use log::{debug, trace};
+use log::{ trace};
 use std::{num::NonZeroUsize, os::raw::c_void, slice};
 
 // CR0 bits

@@ -10,7 +10,9 @@ use crate::{
     DataRequirement, DataRequirementList, Position,
 };
 use core_affinity;
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, UserError};
+use dandelion_commons::{
+    err_dandelion, trace::Recorder, DandelionError, DandelionResult, UserError,
+};
 use kvm_bindings::{kvm_clock_data, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
@@ -156,6 +158,7 @@ impl EngineLoop for KvmLoop {
         mut context: Context,
         input_sets: &[(String, Option<DataSet>)],
         output_sets: &[String],
+        recorder: &mut Recorder,
     ) -> DandelionResult<(i32, Vec<Arc<Vec<DataItem>>>)> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
@@ -324,6 +327,9 @@ impl EngineLoop for KvmLoop {
                 }
             }
         }
+
+        // record the total amount of pages the function used
+        recorder.set_peak_memory((kvm_context.overlay.len() * PAGE_SIZE) as u64);
 
         // need to hold on to the page table pages until after we have extracted the pages we still need
         drop(pages);
