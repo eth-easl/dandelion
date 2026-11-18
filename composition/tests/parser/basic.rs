@@ -1,4 +1,4 @@
-use crate::common::TestRegistry;
+use crate::common::{parse_composition, TestRegistry};
 use composition::CompositionTemplate;
 
 #[test]
@@ -146,4 +146,16 @@ fn line_comments_are_ignored() {
         .unwrap_or_else(|e| panic!("expected comments to be skipped:\n{e}"));
     assert_eq!(compositions.len(), 1);
     assert_eq!(compositions[0].0.as_str(), "Commented");
+}
+
+#[test]
+fn multiset_input_parses() {
+    let src = r#"
+        function Foo(A, B) => (C);
+        composition Test(X, Y, Z) => (Out) {
+            Foo(A = optional each {X, Y}, B = all Z) => (Out = C);
+        }
+    "#;
+    let registry = TestRegistry::new().with_function("Foo", &["A", "B"], &["C"]);
+    parse_composition(src, "Test", &registry);
 }

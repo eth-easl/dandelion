@@ -133,6 +133,7 @@ pub struct ResetState {
 
 extern "C" {
     // symbols for first and last
+    #[cfg(feature = "backend_debug")]
     fn asm_start();
     fn fault_handlers_end();
     // interrupt vector handlers
@@ -551,6 +552,8 @@ fn set_interrupt_table(sregs: &mut kvm_sregs) {
     };
 }
 
+
+#[cfg(feature = "backend_debug")]
 pub fn set_debug_asm(kvm_context: &mut Box<KvmContext>, code_start: usize) {
     let code_size = (default_handler as *const ()).addr() - (asm_start as *const ()).addr();
     let source = unsafe { slice::from_raw_parts(asm_start as *const u8, code_size) };

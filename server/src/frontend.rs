@@ -1,25 +1,20 @@
 use dandelion_commons::{
-    err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
+    dandelion_err, err_dandelion,
+    trace::{Recorder, Timestamp},
+    DandelionError, DandelionResult, FrontendError,
 };
-use dandelion_server::DandelionBody;
+use dandelion_server::protocol::{
+    DandelionBody, DandelionRequest, Executable, InvocationTarget, RegisterComposition,
+    RegisterFunction,
+};
 use dispatcher::dispatcher::Dispatcher;
 use http_body_util::BodyExt;
-use hyper::{
-    body::{Body, Incoming},
-    service::service_fn,
-    Request, Response, StatusCode,
-};
+use hyper::{body::Incoming, service::service_fn, Request, Response, StatusCode};
 use log::{debug, error, info, trace, warn};
 use machine_interface::machine_config::EngineType;
-use memory::{
-    context::{bytes::BytesContext, read_only::ReadOnlyContext},
-    data::Metadata,
-    DataItem, DataSet, LocalData, Position,
-};
-use serde::Deserialize;
+use memory::data::Metadata;
 use std::{
-    convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, println, sync::Arc,
-    time::Instant,
+    convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant,
 };
 use tokio::{
     net::TcpListener,
@@ -27,73 +22,40 @@ use tokio::{
     sync::{oneshot, watch},
 };
 
-fn default_path() -> String {
-    String::new()
-}
-
 //----------------------------------------
 // user function/composition registration
-
-/// Struct containing registration information for new function
-#[derive(Debug, Deserialize)]
-struct RegisterFunction {
-    /// String name of the function
-    name: String,
-    /// Default size for context to allocate to execute function
-    context_size: u64,
-    /// Which engine the function should be executed on
-    engine_type: String,
-    /// Optional local path to the binary if it is already on local disc
-    #[serde(default = "default_path")]
-    local_path: String,
-    /// Binary representation of the function, ignored if a local path is given
-    binary: Vec<u8>,
-    /// Metadata for the sets and optionally static items to pass into the function for that set
-    input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
-    /// output set names
-    output_sets: Vec<String>,
-    /// The minimum size the largest set of a group of any sets should have. If given (i.e. has a
-    /// value of > 0) the JoinIterator will combine any sets to achieve this size best-effort.
-    #[serde(default)]
-    min_set_bytes: Vec<usize>,
-}
 
 async fn handle_function_registration(
     req: Request<Incoming>,
     dispatcher: &'static Dispatcher,
     folder_path: &'static str,
 ) -> DandelionResult<DandelionBody> {
-    let bytes = req
-        .collect()
-        .await
-        .expect("Failed to extract body from function registration")
-        .to_bytes();
-
-    // find first line end character
-    let request_map: RegisterFunction =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
-
-    // if local is present ignore the binary
-    let path_string = if !request_map.local_path.is_empty() {
-        // check that file exists
-        if let Err(err) = std::fs::File::open(&request_map.local_path) {
-            return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
-                format!("Tried to register function with local path, but failed to open file with error {}",
-                err),
-            )));
-        };
-        request_map.local_path
-    } else {
-        // write function to file
-        std::fs::create_dir_all(folder_path).unwrap();
-        let mut path_buff = PathBuf::from(folder_path);
-        path_buff.push(request_map.name.clone());
-        let mut function_file = std::fs::File::create(path_buff.clone())
-            .expect("Failed to create file for registering function");
-        function_file
-            .write_all(&request_map.binary)
-            .expect("Failed to write file with content for registering");
-        path_buff.to_str().unwrap().to_string()
+    let request_map = RegisterFunction::decode(read_body(req).await?)?;
+    let path_string = match request_map.executable {
+        Executable::LocalPath(local_path) => {
+            // check that file exists
+            if let Err(err) = std::fs::File::open(&local_path) {
+                return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
+                    format!("Tried to register function with local path, but failed to open file with error {}",
+                    err),
+                )));
+            };
+            local_path
+        }
+        Executable::Binary(binary) => {
+            // write function to file
+            std::fs::create_dir_all(folder_path).unwrap();
+            let mut path_buff = PathBuf::from(folder_path);
+            path_buff.push(request_map.name.clone());
+            let mut function_file = std::fs::File::create(path_buff.clone())
+                .expect("Failed to create file for registering function");
+            for frame in binary {
+                function_file
+                    .write_all(&frame)
+                    .expect("Failed to write file with content for registering");
+            }
+            path_buff.to_str().unwrap().to_string()
+        }
     };
 
     // TODO: move to machine config
@@ -104,16 +66,11 @@ async fn handle_function_registration(
         "Kvm" => EngineType::Kvm,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
-        unkown => panic!("Unkown engine type string {}", unkown),
+        unknown => panic!("Unkown engine type string {}", unknown),
     };
-    let input_sets = request_map
-        .input_sets
-        .into_iter()
-        .map(|(name, data)| (name, data.map(static_data_set)))
-        .collect();
 
     let metadata = Metadata {
-        input_sets,
+        input_sets: request_map.input_sets,
         output_sets: request_map.output_sets,
         min_set_bytes: request_map.min_set_bytes,
     };
@@ -121,60 +78,22 @@ async fn handle_function_registration(
         .insert_function(
             request_map.name,
             engine_type,
-            request_map.context_size as usize,
+            request_map.context_size,
             path_string,
             metadata,
         )
         .expect("Should be able to insert function");
-    Ok(DandelionBody::from_vec(
-        "Function registered".as_bytes().to_vec(),
-    ))
-}
-
-/// Builds a set out of static items given at function registration, each backed by its own context.
-fn static_data_set(items: Vec<(String, Vec<u8>)>) -> DataSet {
-    let items = items
-        .into_iter()
-        .map(|(name, data)| {
-            let size = data.len();
-            let ctx = ReadOnlyContext::from_boxed(data.into_boxed_slice())
-                .expect("Should be able to create read only context for static data");
-            DataItem::new_local(
-                name,
-                0,
-                LocalData {
-                    ctx: Arc::new(ctx),
-                    pos: Position { offset: 0, size },
-                },
-            )
-        })
-        .collect();
-    DataSet::from_items(Arc::new(items))
-}
-
-#[derive(Debug, Deserialize)]
-struct RegisterChain {
-    composition: String,
+    Ok(DandelionBody::status("Function registered"))
 }
 
 async fn handle_composition_registration(
     req: Request<Incoming>,
     dispatcher: &'static Dispatcher,
 ) -> DandelionResult<DandelionBody> {
-    let bytes = req
-        .collect()
-        .await
-        .expect("Failed to extract body from function registration")
-        .to_bytes();
-
-    // find first line end character
-    let request_map: RegisterChain =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
-
+    let request_map = RegisterComposition::decode(read_body(req).await?)?;
+    // TODO: use static sets for composition
     match dispatcher.insert_compositions(request_map.composition) {
-        Ok(()) => Ok(DandelionBody::from_vec(
-            "Function registered".as_bytes().to_vec(),
-        )),
+        Ok(()) => Ok(DandelionBody::status("Function registered")),
         Err(insertion_err) => err_dandelion!(DandelionError::RequestError(
             FrontendError::InternalError(format!(
                 "Failed to insert composition into dispatcher: {:?}",
@@ -195,71 +114,85 @@ async fn handle_request(
     debug!("Starting to serve request");
 
     let start_time = Instant::now();
+    let DandelionRequest {
+        target,
+        sets: inputs,
+    } = DandelionRequest::decode(read_body(req).await?)?;
+    let deserialization_end = Instant::now();
 
-    // pull all frames from the network
-    let mut incomming = req.into_body();
-    let mut body_pin = std::pin::Pin::new(&mut incomming);
-    let mut frame_data = Vec::new();
-    let mut total_size = 0usize;
-    loop {
-        if let Some(frame_result) =
-            futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
-        {
-            let data_frame = frame_result.unwrap().into_data().unwrap();
-            total_size += data_frame.len();
-            frame_data.push(data_frame);
-        } else {
-            if body_pin.is_end_stream() {
-                break;
-            } else {
-                continue;
-            }
-        }
-    }
-
-    // from context from frame bytes
-    let request_context_result = BytesContext::from_bytes_vec(frame_data, total_size).await;
-    if request_context_result.is_err() {
-        warn!("request parsing failed with: {:?}", request_context_result);
-    }
-
-    // TODO make single enum, so we cannot have the None None or Some Some case
-    let (function_name, composition, request_context) = request_context_result.unwrap();
-    let had_function_name = function_name.is_some();
-    let function_id = Arc::new(function_name.unwrap_or_else(|| String::from("Composition")));
-    let mut recorder = Recorder::new(function_id.clone(), start_time);
-    recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
-    debug!("finished creating request context");
-
-    // TODO match set names to assign sets to composition sets
-    // map sets in the order they are in the request
-    let request_number = request_context.content.len();
-    debug!("Request number of request_context: {}", request_number);
-    let inputs = DataSet::from_context(request_context);
+    let input_set_number = inputs.len();
+    let new_recorder = |function_id| {
+        let recorder = Recorder::new(function_id, input_set_number, start_time);
+        recorder.set_timestamp(Timestamp::DeserializationEnd, deserialization_end);
+        recorder
+    };
+    debug!("Input set number: {}", input_set_number);
 
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
-    let (function_output, recorder) = if had_function_name {
-        dispatcher
-            .queue_function_by_name(function_id, inputs, is_cold, recorder)
-            .await
-    } else {
-        dispatcher
-            .queue_unregistered_composition(
-                composition
-                    .expect("Did not get a service name nor a composition description in request"),
-                inputs,
-                !is_cold,
-                recorder,
-            )
-            .await
+    let (function_output, recorder) = match target {
+        InvocationTarget::Name(name) => {
+            let function_id = Arc::new(name);
+            dispatcher
+                .queue_function_by_name(
+                    function_id.clone(),
+                    inputs,
+                    is_cold,
+                    new_recorder(function_id),
+                )
+                .await
+        }
+        InvocationTarget::Composition(composition) => {
+            dispatcher
+                .queue_unregistered_composition(
+                    composition,
+                    inputs,
+                    !is_cold,
+                    new_recorder(Arc::new(String::from("Composition"))),
+                )
+                .await
+        }
     }?;
 
     debug!("finished creating response body");
     #[cfg(feature = "archive")]
     TRACING_ARCHIVE.get().unwrap().insert_recorder(recorder);
 
-    dandelion_server::DandelionBody::new(function_output, &recorder)
+    DandelionBody::new(function_output, &recorder)
+}
+
+async fn read_body(req: Request<Incoming>) -> DandelionResult<Vec<bytes::Bytes>> {
+    let mut body = req.into_body();
+    let mut frames = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| {
+            dandelion_err!(DandelionError::RequestError(
+                FrontendError::FailledToGetFrames
+            ))
+        })?;
+        if let Ok(data) = frame.into_data() {
+            frames.push(data);
+        }
+    }
+    Ok(frames)
+}
+
+fn http_response(body: DandelionBody, status: StatusCode) -> Response<DandelionBody> {
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    response
+}
+
+//----------------
+// trace metadata
+
+fn handle_trace_timestamps() -> DandelionResult<DandelionBody> {
+    let names: Vec<String> = Timestamp::ALL
+        .iter()
+        .map(|ts| format!("{:?}", ts))
+        .collect();
+    let json = serde_json::to_string(&names).expect("Serializing timestamp names should not fail");
+    Ok(DandelionBody::status(json))
 }
 
 //-----------------------
@@ -274,11 +207,10 @@ async fn service(
     let _running_guard = match request_counter.upgrade() {
         Some(guard) => guard,
         None => {
-            let mut response = Response::new(DandelionBody::from_vec(
-                "Server is shutting down".to_string().into_bytes(),
+            return Ok(http_response(
+                DandelionBody::status("Server is shutting down"),
+                StatusCode::SERVICE_UNAVAILABLE,
             ));
-            *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
-            return Ok::<_, Infallible>(response);
         }
     };
 
@@ -286,6 +218,7 @@ async fn service(
     let res = match req.uri().path() {
         "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
         "/register/composition" => handle_composition_registration(req, dispatcher).await,
+        "/trace/timestamps" => handle_trace_timestamps(),
         // TODO: rename to cold func and hot func, remove matmul, compute, io
         "/cold/matmul"
         | "/cold/matmulstore"
@@ -305,28 +238,25 @@ async fn service(
         | "/hot/python_app" => handle_request(false, req, dispatcher).await,
         other_uri => {
             debug!("Received request on {}", other_uri);
-            Ok(DandelionBody::from_vec(
-                "Hello, World\n".to_string().into_bytes(),
-            ))
+            Ok(DandelionBody::status("Hello, World\n"))
         }
     };
 
-    // create response
     match res {
-        Ok(body) => Ok::<_, Infallible>(Response::new(body)),
+        Ok(body) => Ok(http_response(body, StatusCode::OK)),
         Err(err) => {
             warn!("Failed to serve request: {}", err);
-            // for all other requests set response status to something not ok and write the error in the response body
-            let mut response = Response::new(DandelionBody::from_vec(
-                format!("Failed to serve request: {}", err.message()).into_bytes(),
-            ));
-            *response.status_mut() = match err.error {
-                DandelionError::RequestError(FrontendError::InvalidRequest(_)) => {
-                    StatusCode::BAD_REQUEST
+            let status = match err.error {
+                DandelionError::RequestError(FrontendError::InternalError(_)) => {
+                    StatusCode::INTERNAL_SERVER_ERROR
                 }
+                DandelionError::RequestError(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
-            Ok::<_, Infallible>(response)
+            Ok(http_response(
+                DandelionBody::status(format!("Failed to serve request: {}", err.message())),
+                status,
+            ))
         }
     }
 }

@@ -6,7 +6,7 @@ mod dispatcher_tests {
     mod combination_tests;
 
     use composition::AnyShardingMode;
-    use dandelion_commons::{records::Recorder, FunctionId};
+    use dandelion_commons::{trace::Recorder, FunctionId};
     use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
         function_driver::ComputeResource,
@@ -82,7 +82,7 @@ mod dispatcher_tests {
         composition: &str,
         inputs: Vec<DataSet>,
     ) -> Vec<Arc<Vec<DataItem>>> {
-        let recorder = Recorder::new(zero_id(), Instant::now());
+        let recorder = Recorder::new(zero_id(), inputs.len(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

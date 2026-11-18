@@ -9,7 +9,8 @@ std = []
 cheri = ["std"]
 mmu = ["std"]
 kvm = ["std"]
-timestamp = ["dandelion_commons/timestamp"]
+trace-timestamps = ["dandelion_commons/trace-timestamps"]
+trace-data = ["dandelion_commons/trace-data"]
 
 [dev-dependencies]
 test-log = "0.2.16"

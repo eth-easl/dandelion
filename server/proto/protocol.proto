@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package dandelion_frontend;
+
+message RegisterFunction {
+    string name = 1;
+    uint64 context_size = 2;
+    string engine_type = 3;
+    oneof executable {
+        string local_path = 4;
+        uint64 binary_length = 5;
+    }
+    repeated RegistrationSet input_sets = 6;
+    repeated string output_sets = 7;
+    repeated uint64 min_set_bytes = 8;
+}
+
+message RegisterComposition {
+    string composition = 1;
+    repeated RegistrationSet input_sets = 2;
+}
+
+message StatusResponse {
+    string message = 1;
+}
+
+message DandelionRequest {
+    oneof target {
+        string name = 1;
+        string composition = 2;
+    }
+    repeated DataSet sets = 3;
+}
+
+message DandelionResponse {
+    repeated DataSet sets = 1;
+    optional string trace = 2;
+}
+
+// Need to distinguish InputSets used for registration from DataSets used for requests,
+// as for registration we also require an identifier.
+message RegistrationSet {
+    string identifier = 1;
+    optional DataSet set = 2;
+}
+
+message DataSet {
+    repeated DataItem items = 1;
+}
+
+message DataItem {
+    string identifier = 1;
+    uint32 key = 2;
+    uint64 payload_length = 3;
+}

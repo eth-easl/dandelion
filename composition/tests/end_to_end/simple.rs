@@ -194,3 +194,90 @@ fn single_optional_each_input_does_not_run_for_empty_final_push() {
     );
     assert_eq!(outputs[0].items.len(), 1);
 }
+
+fn multiset_composition(sharding: &str) -> (String, TestRegistry) {
+    let src = format!(
+        r#"
+        function Merge(In) => (Out);
+
+        composition Test(A, B) => (CompOut) {{
+            Merge(In = {sharding} {{A, B}}) => (CompOut = Out);
+        }}
+    "#
+    );
+    (
+        src,
+        TestRegistry::new().with_function("Merge", &["In"], &["Out"]),
+    )
+}
+
+fn idents_sorted(set: &DataSet) -> Vec<String> {
+    let mut idents: Vec<_> = set.items.iter().map(|i| i.ident.clone()).collect();
+    idents.sort();
+    idents
+}
+
+#[test]
+fn multiset_all_input_merges_items_of_all_sets_into_one_invocation() {
+    let (src, registry) = multiset_composition("all");
+    let template = parse_composition(&src, "Test", &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+
+    let a = DataSet::from_items(Arc::new(vec![item("a0", 0), item("a1", 2)]));
+    let b = DataSet::from_items(Arc::new(vec![item("b0", 1)]));
+    let mut invocation_count = 0;
+    let outputs = run_to_completion(composition, vec![a, b], |invocation| {
+        invocation_count += 1;
+        assert_eq!(
+            idents_sorted(&invocation.input[0]),
+            vec!["a0".to_string(), "a1".to_string(), "b0".to_string()]
+        );
+        vec![Arc::new(vec![item("out", 0)])]
+    });
+
+    assert_eq!(invocation_count, 1);
+    assert_eq!(outputs[0].items.len(), 1);
+}
+
+#[test]
+fn multiset_each_input_runs_one_invocation_per_item_of_all_sets() {
+    let (src, registry) = multiset_composition("each");
+    let template = parse_composition(&src, "Test", &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+
+    let a = DataSet::from_items(Arc::new(vec![item("a0", 0), item("a1", 1)]));
+    let b = DataSet::from_items(Arc::new(vec![item("b0", 2)]));
+    let mut seen = vec![];
+    let outputs = run_to_completion(composition, vec![a, b], |invocation| {
+        assert_eq!(invocation.input[0].items.len(), 1);
+        seen.push(invocation.input[0].items[0].ident.clone());
+        vec![Arc::new(vec![item("out", 0)])]
+    });
+
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec!["a0".to_string(), "a1".to_string(), "b0".to_string()]
+    );
+    assert_eq!(outputs[0].items.len(), 3);
+}
+
+#[test]
+fn multiset_input_with_one_empty_set_still_runs() {
+    let (src, registry) = multiset_composition("all");
+    let template = parse_composition(&src, "Test", &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+
+    let a = DataSet::from_items(Arc::new(vec![item("a0", 0)]));
+    let b = DataSet::default();
+    let mut invocation_count = 0;
+    run_to_completion(composition, vec![a, b], |invocation| {
+        invocation_count += 1;
+        assert_eq!(invocation.input[0].items.len(), 1);
+        vec![Arc::new(vec![item("out", 0)])]
+    });
+    assert_eq!(invocation_count, 1);
+}

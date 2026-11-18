@@ -57,15 +57,20 @@ impl ContextTrait for ReadOnlyContext {
 impl ReadOnlyContext {
     pub fn from_boxed<T>(reference: Box<[T]>) -> DandelionResult<Context> {
         let ref_len = core::mem::size_of_val(reference.as_ref());
-        let layout = core::alloc::Layout::from_size_align(ref_len, core::mem::align_of::<T>())
-            .or(err_dandelion!(DandelionError::ContextReadOnlyLayout))?;
+        let layout = if ref_len != 0 {
+            let layout = core::alloc::Layout::from_size_align(ref_len, core::mem::align_of::<T>())
+                .or(err_dandelion!(DandelionError::ContextReadOnlyLayout))?;
+            Some(layout)
+        } else {
+            None
+        };
         let new_ref = unsafe {
             core::slice::from_raw_parts_mut(Box::leak(reference).as_mut_ptr() as *mut u8, ref_len)
         };
         Ok(Context::new(
             super::ContextType::ReadOnly(Box::new(ReadOnlyContext {
                 storage: new_ref,
-                layout: Some(layout),
+                layout,
             })),
             ref_len,
         ))

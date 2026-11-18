@@ -80,7 +80,7 @@ fn check_memory_leak_oom() {
         });
 
         let recorder =
-            dandelion_commons::records::Recorder::new(zero_id(), std::time::Instant::now());
+            dandelion_commons::trace::Recorder::new(zero_id(), 1, std::time::Instant::now());
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -172,7 +172,7 @@ fn check_memory_leak_success() {
         min_set_bytes: vec![],
     });
 
-    let recorder = dandelion_commons::records::Recorder::new(zero_id(), std::time::Instant::now());
+    let recorder = dandelion_commons::trace::Recorder::new(zero_id(), 1, std::time::Instant::now());
     let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
         engine_type,
         DEFAULT_CONTEXT_SIZE,

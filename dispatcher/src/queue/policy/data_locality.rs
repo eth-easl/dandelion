@@ -1,4 +1,4 @@
-use dandelion_commons::records::RecordPoint;
+use dandelion_commons::trace::Timestamp;
 use machine_interface::{function_driver::WorkToDo, promise::Debt};
 use memory::data::ItemData;
 use std::collections::{btree_map::Entry, BTreeMap, LinkedList};
@@ -59,7 +59,7 @@ pub fn prepare_io_element(
                         Ok(()) => return None,
                         Err(mpsc::error::SendError((work, debt, _))) => {
                             // since the sender does not work, remove it.
-                            remote_nodes.lock().unwrap().remove(&node_id);
+                            remote_nodes.lock().unwrap().remove(node_id);
                             return Some((
                                 work,
                                 debt,
@@ -122,11 +122,7 @@ pub fn get_work_for_remote(
                         .max_by_key(|(_, v)| **v)
                         .map(|(max_id, _)| node_id == *max_id)
                         .unwrap_or(false);
-                    if queue_element.flags & engine_flags != 0 && node_has_most_data {
-                        true
-                    } else {
-                        false
-                    }
+                    queue_element.flags & engine_flags != 0 && node_has_most_data
                 } else {
                     false
                 }
@@ -136,7 +132,7 @@ pub fn get_work_for_remote(
                     return None;
                 }
                 if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
-                    recorder.record(RecordPoint::IOQueueEnd);
+                    recorder.set_timestamp_now(Timestamp::IOQueueEnd);
                 }
                 Some((
                     queue_element.work,
@@ -161,7 +157,7 @@ pub fn get_work_for_remote(
                         return None;
                     }
                     if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
-                        recorder.record(RecordPoint::IOQueueEnd);
+                        recorder.set_timestamp_now(Timestamp::IOQueueEnd);
                     }
                     Some((
                         queue_element.work,
@@ -187,7 +183,7 @@ pub fn get_work_for_remote(
                         return None;
                     }
                     if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
-                        recorder.record(RecordPoint::ComputeQueueEnd);
+                        recorder.set_timestamp_now(Timestamp::ComputeQueueEnd);
                     }
                     Some((
                         queue_element.work,
