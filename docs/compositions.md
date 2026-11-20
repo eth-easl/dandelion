@@ -156,10 +156,11 @@ composition image_process (images) => (status) {
 
 # Checking Compositions
 
-The `dparser` binary checks whether a composition parses. It reads the composition from the file 
-given as argument, or from stdin if no file is given:
+The `dandelion` [command-line client](../cli/README.md) checks whether a composition parses, without
+contacting a server. It reads the composition from the file given as argument, or from stdin if no
+file is given:
 ```
-cargo run -p composition --bin dparser -- composition/example_input.txt
+cargo run -p dandelion_cli -- composition check composition/example_input.txt
 ```
 
 > NOTE:
