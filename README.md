@@ -16,9 +16,10 @@ The main code for dandelion is organized in the following rust modules:
 - **machine_interface** has the isolation backend specific code, also has the code to detect and set machine specific options
   - **memory_domain** the code for interacting with the memory structures for setting up functions
   - **function_driver** the code for the engine, i.e. for running a function using a specific isolation technique
-- **composition** composition language parser and execution of compositions (includes the `dparser` binary to check whether a composition parses)
+- **composition** composition language parser and execution of compositions
 - **dispatcher** registry and scheduler for the compositions, uses the domain and engine interferaces as well as the parser 
 - **server** wrapper code arround the dispatcher for the http frontend
+- **cli** the `dcli` command-line client for registering and invoking functions and compositions, and for checking whether a composition parses (see [cli/README.md](cli/README.md))
 
 # Cargo 
 

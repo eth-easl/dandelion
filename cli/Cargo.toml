@@ -1,0 +1,41 @@
+[package]
+name = "dandelion_cli"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line client for the Dandelion runtime API"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "dcli"
+path = "src/main.rs"
+
+[dependencies]
+composition = { path = "../composition" }
+dandelion_commons = { path = "../dandelion_commons" }
+anyhow = "1.0.100"
+base64 = "0.22"
+bytesize = "2.0"
+clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
+directories = "6.0"
+humantime = "2.1"
+prost = "0.14.1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "http2"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.115"
+toml = "0.9"
+
+[build-dependencies]
+prost-build = "0.14.1"
+
+[dev-dependencies]
+# The server's own protocol code, to check that both sides agree on the wire format.
+dandelion_server = { path = "../server" }
+memory = { path = "../memory" }
+bytes = "1.11"
+http-body-util = "0.1"
+tokio = { version = "1.38.2", features = ["macros", "rt"] }
+httpmock = "0.9"
+tempfile = "3.10"
