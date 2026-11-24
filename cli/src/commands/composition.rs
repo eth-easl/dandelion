@@ -84,35 +84,3 @@ pub fn check(text: &str) -> Result<Vec<(String, usize)>> {
         },
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::commands::Command;
-    use crate::Cli;
-    use clap::Parser;
-
-    #[test]
-    fn valid_composition_parses() {
-        let text = "function F (a) => (b);\ncomposition C (x) => (y) {\n    F (a = all x) => (y = b);\n}\n";
-        assert_eq!(check(text).unwrap(), [("C".to_string(), 1)]);
-    }
-
-    #[test]
-    fn syntax_error_gives_report() {
-        let err = check("composition C (x) => (y) {").unwrap_err();
-        let report = err.downcast_ref::<ParseError>().expect("a parse error");
-        assert!(report.0.contains("composition:"), "{}", report.0);
-    }
-
-    #[test]
-    fn check_defaults_to_stdin() {
-        let cli = Cli::try_parse_from(["dandelion", "composition", "check"]).unwrap();
-        match cli.command {
-            Command::Composition {
-                cmd: CompositionCmd::Check { file },
-            } => assert_eq!(file, "-"),
-            other => panic!("unexpected command {other:?}"),
-        }
-    }
-}

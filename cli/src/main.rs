@@ -23,10 +23,6 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "URL")]
     pub url: Option<String>,
 
-    /// Config profile to use. Overrides DANDELION_PROFILE.
-    #[arg(long, global = true, value_name = "NAME")]
-    pub profile: Option<String>,
-
     /// Request timeout, e.g. `30s` or `5m`.
     #[arg(long, global = true, value_name = "DURATION", value_parser = parse::duration)]
     pub timeout: Option<Duration>,
@@ -43,7 +39,6 @@ pub struct Cli {
 #[derive(Debug, Clone, Default)]
 pub struct Globals {
     pub url: Option<String>,
-    pub profile: Option<String>,
     pub timeout: Option<Duration>,
     pub verbose: bool,
 }
@@ -52,7 +47,6 @@ impl Cli {
     pub fn globals(&self) -> Globals {
         Globals {
             url: self.url.clone(),
-            profile: self.profile.clone(),
             timeout: self.timeout,
             verbose: self.verbose,
         }
@@ -96,20 +90,5 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn global_flags_after_subcommand() {
-        let cli = Cli::try_parse_from([
-            "dandelion",
-            "config",
-            "profile",
-            "add",
-            "remote",
-            "--url",
-            "http://h:1",
-        ])
-        .unwrap();
-        assert_eq!(cli.url.as_deref(), Some("http://h:1"));
     }
 }

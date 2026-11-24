@@ -54,7 +54,7 @@ clear its cache with `rm -f ~/.zcompdump*` and open a new shell again.
 
 ```sh
 # Point the CLI at a server and set defaults for function registration
-dandelion config profile add local --url http://localhost:8080
+dandelion config set url http://localhost:8080
 dandelion config set engine Kvm
 dandelion config set context_size 64MiB
 
@@ -175,17 +175,10 @@ if that variable is set. You can set `DANDELION_CONFIG` to use a different file,
 `dandelion config path` prints the location in use.
 
 ```toml
-active_profile = "local"
-
-[profiles.local]
 url = "http://localhost:8080"
 engine = "Process"
 context_size = "64M"
 timeout = "2m"
-
-[profiles.remote]
-url = "http://dandelion-host:8080"
-engine = "Kvm"
 ```
 
 | Key | Meaning | Default |
@@ -198,25 +191,21 @@ engine = "Kvm"
 | `cold_path` | Invoke path for `--no-cache` | `/cold/matmul` |
 
 ```sh
-dandelion config get [KEY]          # one key, or all keys of the active profile
+dandelion config get [KEY]          # one key, or all keys that are set
 dandelion config set KEY VALUE
 dandelion config unset KEY
-dandelion config list               # all profiles
-dandelion config profile list | add NAME [--url URL] | use NAME | remove NAME
 ```
-
-`get`, `set` and `unset` act on the active profile, or on the profile named by `--profile`.
 
 Settings are taken from the first place that has them:
 
-1. command-line flag (`--url`, `--profile`, `--timeout`)
-2. environment variable (`DANDELION_URL`, `DANDELION_PROFILE`)
-3. the active profile
+1. command-line flag (`--url`, `--timeout`)
+2. environment variable (`DANDELION_URL`)
+3. the config file
 4. the built-in default
 
 ## Global options
 
-`--url`, `--profile`, `--timeout <DURATION>`, and `-v/--verbose`, which prints the request, the
+`--url`, `--timeout <DURATION>`, and `-v/--verbose`, which prints the request, the
 status, the sizes and the timing to stderr.
 
 ## Exit codes

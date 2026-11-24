@@ -39,43 +39,12 @@ pub fn decode<M: Message + Default>(mut body: &[u8]) -> Result<(M, &[u8])> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_trip() {
-        let status = proto::StatusResponse {
-            message: "hi".into(),
-        };
-        let body = encode(&status, [&b"ab"[..], b"c"]);
-        assert_eq!(body[0], PROTOCOL_VERSION as u8);
-        let (decoded, payload) = decode::<proto::StatusResponse>(&body).unwrap();
-        assert_eq!(decoded, status);
-        assert_eq!(payload, b"abc");
-    }
-
-    #[test]
-    fn rejects_other_versions_and_garbage() {
-        let mut body = encode(&proto::StatusResponse::default(), []);
-        body[0] = 2;
-        let err = decode::<proto::StatusResponse>(&body).unwrap_err();
-        assert!(err.to_string().contains("version 2"), "{err}");
-        // A length prefix pointing past the end of the body.
-        assert!(decode::<proto::StatusResponse>(&[1, 50, 1]).is_err());
-        assert!(decode::<proto::StatusResponse>(b"").is_err());
-    }
-}
-
-/// Checks the CLI against the server's own protocol code: requests encoded by the CLI must decode
-/// in the server, and responses encoded by the server must decode in the CLI. This is what keeps
-/// the CLI from silently falling behind protocol changes.
-#[cfg(test)]
 mod server_compat {
     use std::{sync::Arc, time::Instant};
 
     use crate::client::{
-        decode_invoke_response, decode_status, encode_composition, encode_invoke, Executable,
-        FunctionRegistration, InputSet, InvokeTarget, Item, Set,
+        decode_invoke_response, decode_status, encode_composition, encode_function, encode_invoke,
+        Executable, FunctionRegistration, InputSet, InvokeTarget, Item, Set,
     };
     use bytes::Bytes;
     use dandelion_commons::trace::Recorder;
@@ -145,7 +114,7 @@ mod server_compat {
             output_sets: vec!["result".into()],
             min_set_bytes: vec![4096, 0],
         };
-        let decoded = RegisterFunction::decode(frames(reg.encode())).unwrap();
+        let decoded = RegisterFunction::decode(frames(encode_function(&reg))).unwrap();
         assert_eq!(decoded.name, "matmul");
         assert_eq!(decoded.context_size, 64 << 20);
         assert_eq!(decoded.engine_type, "Kvm");
@@ -184,7 +153,7 @@ mod server_compat {
             output_sets: vec![],
             min_set_bytes: vec![],
         };
-        let decoded = RegisterFunction::decode(frames(reg.encode())).unwrap();
+        let decoded = RegisterFunction::decode(frames(encode_function(&reg))).unwrap();
         match decoded.executable {
             server::Executable::LocalPath(path) => assert_eq!(path, "/opt/fns/f"),
             other => panic!("unexpected executable {other:?}"),

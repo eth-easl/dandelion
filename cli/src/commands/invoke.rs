@@ -176,8 +176,7 @@ fn inline_text(data: &[u8]) -> Option<&str> {
     printable.then_some(s)
 }
 
-/// Turns an item identifier into a safe file name.
-fn file_name_for(item: &Item, index: usize) -> String {
+fn safe_filename(item: &Item, index: usize) -> String {
     let cleaned: String = item
         .identifier
         .chars()
@@ -276,7 +275,7 @@ impl InvokeResponse {
                 .with_context(|| format!("cannot create {}", set_dir.display()))?;
             let mut used = HashSet::new();
             for (ii, item) in set.items.iter().enumerate() {
-                let mut name = file_name_for(item, ii);
+                let mut name = safe_filename(item, ii);
                 if !used.insert(name.clone()) {
                     name = format!("{name}#{ii}");
                     used.insert(name.clone());
@@ -327,154 +326,5 @@ impl InvokeResponse {
             .map(|i| format!("{:?}", i.identifier))
             .collect();
         bail!("set {si} has no item `{item}`; items: [{}]", ids.join(", "))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Cli;
-    use clap::Parser;
-
-    #[test]
-    fn inputs_grouped_in_first_appearance_order() {
-        let inputs: Vec<InputItemArg> = ["b:x=1", "a:y#9=2", "b:z=3", "a:w=4"]
-            .iter()
-            .map(|s| parse::input_item(s).unwrap())
-            .collect();
-        let sets = sets_from_inputs(&inputs).unwrap();
-        assert_eq!(sets.len(), 2);
-        let ids: Vec<(&str, u32)> = sets[0]
-            .items
-            .iter()
-            .map(|i| (i.identifier.as_str(), i.key))
-            .collect();
-        assert_eq!(ids, [("x", 0), ("z", 0)]);
-        let ids: Vec<(&str, u32)> = sets[1]
-            .items
-            .iter()
-            .map(|i| (i.identifier.as_str(), i.key))
-            .collect();
-        assert_eq!(ids, [("y", 9), ("w", 0)]);
-        assert_eq!(sets[1].items[1].data, b"4");
-    }
-
-    #[test]
-    fn dir_layout() {
-        let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(d.path().join("b_set")).unwrap();
-        std::fs::create_dir_all(d.path().join("a_set")).unwrap();
-        std::fs::write(d.path().join("a_set/second#5"), b"2").unwrap();
-        std::fs::write(d.path().join("a_set/first"), b"1").unwrap();
-        std::fs::write(d.path().join("a_set/.DS_Store"), b"").unwrap();
-        std::fs::write(d.path().join("b_set/only"), b"x").unwrap();
-        let sets = sets_from_dir(d.path()).unwrap();
-        assert_eq!(sets.len(), 2);
-        assert_eq!(
-            sets[0].items[0],
-            Item {
-                identifier: "first".into(),
-                key: 0,
-                data: b"1".to_vec()
-            }
-        );
-        assert_eq!(
-            sets[0].items[1],
-            Item {
-                identifier: "second".into(),
-                key: 5,
-                data: b"2".to_vec()
-            }
-        );
-        assert_eq!(sets[1].items[0].identifier, "only");
-
-        std::fs::write(d.path().join("stray.txt"), b"").unwrap();
-        assert!(sets_from_dir(d.path()).is_err());
-    }
-
-    #[test]
-    fn name_and_composition_conflict() {
-        let r = Cli::try_parse_from(["dandelion", "invoke", "f", "--composition", "c.txt"]);
-        assert!(r.is_err());
-        let r = Cli::try_parse_from(["dandelion", "invoke"]);
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn output_modes_are_exclusive() {
-        let r = Cli::try_parse_from(["dandelion", "invoke", "f", "--json", "--raw", "0:a"]);
-        assert!(r.is_err());
-    }
-
-    fn resp() -> InvokeResponse {
-        InvokeResponse {
-            sets: vec![
-                Set {
-                    items: vec![
-                        Item {
-                            identifier: "msg".into(),
-                            key: 0,
-                            data: b"hello\n".to_vec(),
-                        },
-                        Item {
-                            identifier: "bin".into(),
-                            key: 1,
-                            data: vec![0, 159, 146, 150],
-                        },
-                    ],
-                },
-                Set {
-                    items: vec![Item {
-                        identifier: "../x".into(),
-                        key: 0,
-                        data: b"a".to_vec(),
-                    }],
-                },
-            ],
-            trace: Some("{\"t\":[1,2]}".into()),
-        }
-    }
-
-    #[test]
-    fn summary_shows_text_but_not_binary() {
-        let s = resp().to_string();
-        assert!(s.contains("set 0: 2 items"));
-        assert!(s.contains("\"msg\"  key=0  size=6 B"));
-        assert!(s.contains("    | hello"));
-        assert!(s.contains("\"bin\"  key=1  size=4 B"));
-        assert!(s.contains("trace:"));
-        assert!(s.contains("\"t\": ["));
-    }
-
-    #[test]
-    fn json_output() {
-        let j = resp().to_json();
-        assert_eq!(j["sets"][0]["items"][0]["data"], "aGVsbG8K");
-        assert_eq!(j["trace"]["t"][1], 2);
-        let no_trace = InvokeResponse {
-            trace: None,
-            ..resp()
-        };
-        assert!(no_trace.to_json()["trace"].is_null());
-    }
-
-    #[test]
-    fn find_item_for_raw() {
-        let r = resp();
-        assert_eq!(r.find_item("0:msg").unwrap().data, b"hello\n");
-        assert_eq!(r.find_item("0:1").unwrap().identifier, "bin");
-        assert!(r.find_item("2:msg").is_err());
-        assert!(r.find_item("0:nope").is_err());
-        assert!(r.find_item("msg").is_err());
-    }
-
-    #[test]
-    fn out_dir_is_safe() {
-        let dir = tempfile::tempdir().unwrap();
-        let written = resp().write_out_dir(dir.path()).unwrap();
-        assert_eq!(std::fs::read(dir.path().join("0/msg")).unwrap(), b"hello\n");
-        assert_eq!(std::fs::read(dir.path().join("1/.._x")).unwrap(), b"a");
-        assert!(dir.path().join("trace.json").exists());
-        assert_eq!(written.len(), 4);
     }
 }

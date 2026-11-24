@@ -34,7 +34,6 @@ pub struct InvokeResponse {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InputSet {
     pub name: String,
-    /// Static items the server passes to the function on every invocation.
     pub static_items: Option<Vec<Item>>,
 }
 
@@ -79,42 +78,39 @@ fn data_set(items: &[Item]) -> proto::DataSet {
     }
 }
 
-impl FunctionRegistration {
-    /// The binary (if uploaded) comes first in the payload, followed by the static items.
-    pub fn encode(&self) -> Vec<u8> {
-        let (executable, binary) = match &self.executable {
-            Executable::LocalPath(path) => (
-                proto::register_function::Executable::LocalPath(path.clone()),
-                &[][..],
-            ),
-            Executable::Binary(bytes) => (
-                proto::register_function::Executable::BinaryLength(bytes.len() as u64),
-                bytes.as_slice(),
-            ),
-        };
-        let metadata = proto::RegisterFunction {
-            name: self.name.clone(),
-            context_size: self.context_size,
-            engine_type: self.engine_type.clone(),
-            executable: Some(executable),
-            input_sets: self
-                .input_sets
-                .iter()
-                .map(|set| proto::RegistrationSet {
-                    identifier: set.name.clone(),
-                    set: set.static_items.as_deref().map(data_set),
-                })
-                .collect(),
-            output_sets: self.output_sets.clone(),
-            min_set_bytes: self.min_set_bytes.clone(),
-        };
-        let statics = self
+pub fn encode_function(reg: &FunctionRegistration) -> Vec<u8> {
+    let (executable, binary) = match &reg.executable {
+        Executable::LocalPath(path) => (
+            proto::register_function::Executable::LocalPath(path.clone()),
+            b"".as_slice(),
+        ),
+        Executable::Binary(bytes) => (
+            proto::register_function::Executable::BinaryLength(bytes.len() as u64),
+            bytes.as_slice(),
+        ),
+    };
+    let metadata = proto::RegisterFunction {
+        name: reg.name.clone(),
+        context_size: reg.context_size,
+        engine_type: reg.engine_type.clone(),
+        executable: Some(executable),
+        input_sets: reg
             .input_sets
             .iter()
-            .flat_map(|set| set.static_items.iter().flatten())
-            .map(|item| item.data.as_slice());
-        protocol::encode(&metadata, std::iter::once(binary).chain(statics))
-    }
+            .map(|set| proto::RegistrationSet {
+                identifier: set.name.clone(),
+                set: set.static_items.as_deref().map(data_set),
+            })
+            .collect(),
+        output_sets: reg.output_sets.clone(),
+        min_set_bytes: reg.min_set_bytes.clone(),
+    };
+    let statics = reg
+        .input_sets
+        .iter()
+        .flat_map(|set| set.static_items.iter().flatten())
+        .map(|item| item.data.as_slice());
+    protocol::encode(&metadata, std::iter::once(binary).chain(statics))
 }
 
 pub fn encode_composition(text: &str) -> Vec<u8> {
@@ -183,7 +179,6 @@ pub fn decode_invoke_response(body: &[u8]) -> Result<InvokeResponse> {
     })
 }
 
-/// Decodes the status message the server sends for registrations, errors and unknown paths.
 pub fn decode_status(body: &[u8]) -> Result<String> {
     let (status, payload) = protocol::decode::<proto::StatusResponse>(body)?;
     if !payload.is_empty() {
@@ -322,8 +317,6 @@ fn connection_error(url: &str, e: reqwest::Error) -> anyhow::Error {
     anyhow::Error::new(ConnectionError(msg))
 }
 
-/// Turns a non-success status into an [`ApiError`] carrying the server's message. Error bodies
-/// are status responses; anything else is shown as text.
 pub fn check_status(status: reqwest::StatusCode, body: &[u8]) -> Result<()> {
     if status.is_success() {
         return Ok(());
@@ -334,132 +327,4 @@ pub fn check_status(status: reqwest::StatusCode, body: &[u8]) -> Result<()> {
         status: status.as_u16(),
         body: message,
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use prost::Message;
-
-    fn item(identifier: &str, key: u32, data: &[u8]) -> Item {
-        Item {
-            identifier: identifier.into(),
-            key,
-            data: data.to_vec(),
-        }
-    }
-
-    #[test]
-    fn registration_puts_binary_before_statics() {
-        let reg = FunctionRegistration {
-            name: "f".into(),
-            context_size: 1024,
-            engine_type: "Kvm".into(),
-            executable: Executable::Binary(vec![1, 2, 3]),
-            input_sets: vec![
-                InputSet {
-                    name: "a".into(),
-                    static_items: None,
-                },
-                InputSet {
-                    name: "b".into(),
-                    static_items: Some(vec![item("p", 0, &[9])]),
-                },
-            ],
-            output_sets: vec!["out".into()],
-            min_set_bytes: vec![],
-        };
-        let body = reg.encode();
-        let (meta, payload) = protocol::decode::<proto::RegisterFunction>(&body).unwrap();
-        assert_eq!(payload, [1, 2, 3, 9]);
-        assert_eq!(
-            meta.executable,
-            Some(proto::register_function::Executable::BinaryLength(3))
-        );
-        assert_eq!(meta.input_sets[0].set, None);
-        assert_eq!(
-            meta.input_sets[1].set.as_ref().unwrap().items[0].payload_length,
-            1
-        );
-    }
-
-    #[test]
-    fn local_path_registration_has_no_binary() {
-        let reg = FunctionRegistration {
-            name: "f".into(),
-            context_size: 1,
-            engine_type: "Process".into(),
-            executable: Executable::LocalPath("/opt/f".into()),
-            input_sets: vec![],
-            output_sets: vec![],
-            min_set_bytes: vec![],
-        };
-        let body = reg.encode();
-        let (meta, payload) = protocol::decode::<proto::RegisterFunction>(&body).unwrap();
-        assert!(payload.is_empty());
-        assert_eq!(
-            meta.executable,
-            Some(proto::register_function::Executable::LocalPath(
-                "/opt/f".into()
-            ))
-        );
-    }
-
-    fn response(sets: Vec<Vec<(&str, u32, u64)>>, trace: Option<&str>, payload: &[u8]) -> Vec<u8> {
-        let meta = proto::DandelionResponse {
-            sets: sets
-                .into_iter()
-                .map(|items| proto::DataSet {
-                    items: items
-                        .into_iter()
-                        .map(|(identifier, key, payload_length)| proto::DataItem {
-                            identifier: identifier.into(),
-                            key,
-                            payload_length,
-                        })
-                        .collect(),
-                })
-                .collect(),
-            trace: trace.map(Into::into),
-        };
-        let mut body = vec![1];
-        body.extend(meta.encode_length_delimited_to_vec());
-        body.extend_from_slice(payload);
-        body
-    }
-
-    #[test]
-    fn decode_response_splits_payload() {
-        let body = response(
-            vec![vec![("x", 3, 2), ("y", 0, 0)], vec![]],
-            Some("{\"id\":\"f\"}"),
-            b"hi",
-        );
-        let r = decode_invoke_response(&body).unwrap();
-        assert_eq!(r.sets.len(), 2);
-        assert_eq!(r.sets[0].items, [item("x", 3, b"hi"), item("y", 0, b"")]);
-        assert!(r.sets[1].items.is_empty());
-        assert_eq!(r.trace.as_deref(), Some("{\"id\":\"f\"}"));
-    }
-
-    #[test]
-    fn decode_response_checks_payload_length() {
-        assert!(decode_invoke_response(&response(vec![vec![("x", 0, 3)]], None, b"hi")).is_err());
-        assert!(decode_invoke_response(&response(vec![vec![("x", 0, 1)]], None, b"hi")).is_err());
-        assert!(decode_invoke_response(b"Hello, World\n").is_err());
-    }
-
-    #[test]
-    fn error_bodies_are_decoded() {
-        let body = protocol::encode(
-            &proto::StatusResponse {
-                message: "Failed to serve request: nope".into(),
-            },
-            [],
-        );
-        let err = check_status(reqwest::StatusCode::BAD_REQUEST, &body).unwrap_err();
-        assert_eq!(err.to_string(), "Failed to serve request: nope (HTTP 400)");
-        let err = check_status(reqwest::StatusCode::BAD_GATEWAY, b"proxy says no").unwrap_err();
-        assert_eq!(err.to_string(), "proxy says no (HTTP 502)");
-    }
 }

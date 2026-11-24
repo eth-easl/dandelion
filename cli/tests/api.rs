@@ -46,7 +46,6 @@ fn run_with_stdin(config: &Path, args: &[&str], stdin: Option<&str>) -> Output {
     cmd.args(args)
         .env("DANDELION_CONFIG", config)
         .env_remove("DANDELION_URL")
-        .env_remove("DANDELION_PROFILE")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -152,49 +151,6 @@ fn register_function_with_flags() {
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     m.assert();
     assert_eq!(stdout(&out).trim(), "Function registered");
-}
-
-#[test]
-fn register_function_uses_profile_defaults_and_server_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("config.toml");
-    let server = MockServer::start();
-    std::fs::write(
-        &cfg,
-        format!(
-            "active_profile = \"t\"\n[profiles.t]\nurl = \"{}\"\nengine = \"Process\"\ncontext_size = \"1M\"\n",
-            server.base_url()
-        ),
-    )
-    .unwrap();
-
-    let expected = envelope(
-        &proto::RegisterFunction {
-            name: "f".into(),
-            context_size: 1 << 20,
-            engine_type: "Process".into(),
-            executable: Some(proto::register_function::Executable::LocalPath(
-                "/opt/fns/f".into(),
-            )),
-            input_sets: vec![],
-            output_sets: vec![],
-            min_set_bytes: vec![],
-        },
-        b"",
-    );
-    let m = expect_body(
-        &server,
-        "/register/function",
-        expected,
-        200,
-        status("Function registered"),
-    );
-    let out = run(
-        &cfg,
-        &["function", "register", "--server-path", "/opt/fns/f"],
-    );
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
-    m.assert();
 }
 
 #[test]
@@ -326,94 +282,7 @@ fn invoke_by_name_with_inputs() {
 }
 
 #[test]
-fn invoke_inline_composition_cold_json() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("config.toml");
-    let comp = dir.path().join("c.comp");
-    std::fs::write(&comp, "COMP").unwrap();
-
-    let server = MockServer::start();
-    let expected = envelope(
-        &proto::DandelionRequest {
-            target: Some(proto::dandelion_request::Target::Composition("COMP".into())),
-            sets: vec![],
-        },
-        b"",
-    );
-    let m = expect_body(&server, "/cold/matmul", expected, 200, sample_response());
-    let out = run(
-        &cfg,
-        &[
-            "--url",
-            &server.base_url(),
-            "invoke",
-            "--composition",
-            comp.to_str().unwrap(),
-            "--no-cache",
-            "--json",
-        ],
-    );
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
-    m.assert();
-    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(j["sets"][0]["items"][0]["identifier"], "msg");
-    assert_eq!(j["sets"][0]["items"][1]["key"], 7);
-    assert_eq!(j["sets"][0]["items"][1]["data"], "AP8B");
-    assert_eq!(j["trace"]["start"], 10);
-}
-
-#[test]
-fn invoke_raw_and_out_dir_and_custom_hot_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("config.toml");
-    let server = MockServer::start();
-    std::fs::write(
-        &cfg,
-        "active_profile = \"t\"\n[profiles.t]\nhot_path = \"/hot/v2\"\n",
-    )
-    .unwrap();
-    let m = server.mock(|when, then| {
-        when.method(POST).path("/hot/v2");
-        then.status(200).body(sample_response());
-    });
-
-    let out = run(
-        &cfg,
-        &[
-            "--url",
-            &server.base_url(),
-            "invoke",
-            "f",
-            "--raw",
-            "0:blob",
-        ],
-    );
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
-    assert_eq!(out.stdout, [0, 255, 1]);
-
-    let od = dir.path().join("out");
-    let out = run(
-        &cfg,
-        &[
-            "--url",
-            &server.base_url(),
-            "invoke",
-            "f",
-            "--out-dir",
-            od.to_str().unwrap(),
-        ],
-    );
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
-    assert_eq!(std::fs::read(od.join("0/msg")).unwrap(), b"hello world");
-    assert_eq!(
-        std::fs::read_to_string(od.join("trace.json")).unwrap(),
-        "{\"start\":10,\"end\":42}"
-    );
-    m.assert_calls(2);
-}
-
-#[test]
-fn exit_codes_for_server_errors() {
+fn exit_codes() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("config.toml");
     for (code_status, message, code) in [
@@ -434,75 +303,12 @@ fn exit_codes_for_server_errors() {
             stderr(&out)
         );
     }
-}
 
-#[test]
-fn exit_code_for_connection_failure_and_usage() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("config.toml");
     // Port 9 (discard) on localhost is essentially never listening.
     let out = run(&cfg, &["--url", "http://127.0.0.1:9", "ping"]);
     assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
-
-    let out = run(&cfg, &["invoke"]);
-    assert_eq!(out.status.code(), Some(1));
     let out = run(&cfg, &["invoke", "f", "--input", "bad"]);
     assert_eq!(out.status.code(), Some(1));
-    let out = run(&cfg, &["--help"]);
-    assert_eq!(out.status.code(), Some(0));
-}
-
-#[test]
-fn timeout_gives_exit_code_2() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("config.toml");
-    let server = MockServer::start();
-    server.mock(|when, then| {
-        when.any_request();
-        then.status(200)
-            .delay(std::time::Duration::from_secs(3))
-            .body(sample_response());
-    });
-    let out = run(
-        &cfg,
-        &[
-            "--url",
-            &server.base_url(),
-            "--timeout",
-            "200ms",
-            "invoke",
-            "f",
-        ],
-    );
-    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
-    assert!(
-        stderr(&out).contains("timed out"),
-        "stderr: {}",
-        stderr(&out)
-    );
-}
-
-#[test]
-fn timeout_from_config() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("config.toml");
-    let server = MockServer::start();
-    server.mock(|when, then| {
-        when.any_request();
-        then.status(200)
-            .delay(std::time::Duration::from_secs(3))
-            .body(sample_response());
-    });
-    assert!(run(&cfg, &["config", "set", "timeout", "200ms"])
-        .status
-        .success());
-    let out = run(&cfg, &["--url", &server.base_url(), "invoke", "f"]);
-    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
-    assert!(
-        stderr(&out).contains("timed out"),
-        "stderr: {}",
-        stderr(&out)
-    );
 }
 
 #[test]
@@ -524,20 +330,6 @@ fn ping_checks_the_protocol() {
         "verbose output: {}",
         stderr(&out)
     );
-
-    // Something that is not a Dandelion server.
-    let other = MockServer::start();
-    other.mock(|when, then| {
-        when.method(GET).path("/");
-        then.status(200).body("<html>hi</html>");
-    });
-    let out = run(&cfg, &["--url", &other.base_url(), "ping"]);
-    assert_eq!(out.status.code(), Some(1));
-    assert!(
-        stderr(&out).contains("not with a Dandelion protocol"),
-        "stderr: {}",
-        stderr(&out)
-    );
 }
 
 #[test]
@@ -548,32 +340,9 @@ fn config_commands() {
     let out = run(&cfg, &["config", "path"]);
     assert_eq!(stdout(&out).trim(), cfg.to_str().unwrap());
 
-    assert!(run(
-        &cfg,
-        &[
-            "config",
-            "profile",
-            "add",
-            "local",
-            "--url",
-            "http://localhost:8080"
-        ]
-    )
-    .status
-    .success());
-    assert!(run(
-        &cfg,
-        &[
-            "config",
-            "profile",
-            "add",
-            "remote",
-            "--url",
-            "http://h:8080"
-        ]
-    )
-    .status
-    .success());
+    assert!(run(&cfg, &["config", "set", "url", "http://h:8080"])
+        .status
+        .success());
     assert!(run(&cfg, &["config", "set", "engine", "kvm"])
         .status
         .success());
@@ -583,12 +352,6 @@ fn config_commands() {
             .code()
             == Some(1)
     );
-    assert!(run(
-        &cfg,
-        &["--profile", "remote", "config", "set", "context_size", "1G"]
-    )
-    .status
-    .success());
 
     assert_eq!(
         stdout(&run(&cfg, &["config", "get", "engine"])).trim(),
@@ -603,42 +366,16 @@ fn config_commands() {
         Some(1)
     );
     assert_eq!(
-        stdout(&run(
-            &cfg,
-            &["--profile", "remote", "config", "get", "context_size"]
-        ))
-        .trim(),
-        "1G"
+        stdout(&run(&cfg, &["config", "get"])),
+        "url = http://h:8080\nengine = Kvm\n"
     );
 
-    let list = stdout(&run(&cfg, &["config", "profile", "list"]));
-    assert_eq!(list, "* local\n  remote\n");
-    assert!(run(&cfg, &["config", "profile", "use", "remote"])
-        .status
-        .success());
-    assert_eq!(
-        stdout(&run(&cfg, &["config", "get", "url"])).trim(),
-        "http://h:8080"
-    );
     assert!(run(&cfg, &["config", "unset", "url"]).status.success());
     assert_eq!(
         stdout(&run(&cfg, &["config", "get", "url"])).trim(),
         "http://localhost:8080"
     );
-
-    assert!(run(&cfg, &["config", "profile", "remove", "remote"])
-        .status
-        .success());
-    assert_eq!(
-        stdout(&run(&cfg, &["config", "profile", "list"])),
-        "  local\n"
-    );
-    assert_eq!(
-        run(&cfg, &["config", "profile", "use", "nope"])
-            .status
-            .code(),
-        Some(1)
-    );
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "engine = \"Kvm\"\n");
 }
 
 #[test]

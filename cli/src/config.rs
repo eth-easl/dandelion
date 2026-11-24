@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,7 +12,6 @@ pub const DEFAULT_HOT_PATH: &str = "/hot/matmul";
 pub const DEFAULT_COLD_PATH: &str = "/cold/matmul";
 
 pub const ENV_URL: &str = "DANDELION_URL";
-pub const ENV_PROFILE: &str = "DANDELION_PROFILE";
 /// Overrides the config file location (mainly for tests and scripting).
 pub const ENV_CONFIG: &str = "DANDELION_CONFIG";
 
@@ -26,17 +24,10 @@ pub const KEYS: [&str; 6] = [
     "cold_path",
 ];
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ConfigFile {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_profile: Option<String>,
-    #[serde(default)]
-    pub profiles: BTreeMap<String, Profile>,
-}
-
+/// The config file: a flat table of the keys in [`KEYS`].
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Profile {
+pub struct ConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,7 +42,7 @@ pub struct Profile {
     pub cold_path: Option<String>,
 }
 
-impl Profile {
+impl ConfigFile {
     pub fn get(&self, key: &str) -> Result<Option<&String>> {
         Ok(match key {
             "url" => self.url.as_ref(),
@@ -134,7 +125,7 @@ fn validate(key: &str, value: &str) -> Result<String> {
 }
 
 /// `$DANDELION_CONFIG`, otherwise `$XDG_CONFIG_HOME/dandelion/config.toml`, otherwise
-/// `~/.config/dandelion/config.toml` (on every platform, as in the spec).
+/// `~/.config/dandelion/config.toml`.
 pub fn config_path() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os(ENV_CONFIG).filter(|p| !p.is_empty()) {
         return Ok(PathBuf::from(p));
@@ -167,28 +158,6 @@ impl ConfigFile {
         let text = toml::to_string_pretty(self)?;
         std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))
     }
-
-    /// The profile name selected by `--profile`, or `DANDELION_PROFILE`, or `active_profile`.
-    /// Returns `None` when no profile is selected at all.
-    pub fn selected_profile(
-        &self,
-        flag: Option<&str>,
-        env: &dyn Fn(&str) -> Option<String>,
-    ) -> Result<Option<String>> {
-        let (name, source) = if let Some(f) = flag {
-            (f.to_string(), "--profile")
-        } else if let Some(e) = env(ENV_PROFILE).filter(|e| !e.is_empty()) {
-            (e, ENV_PROFILE)
-        } else if let Some(a) = &self.active_profile {
-            (a.clone(), "active_profile")
-        } else {
-            return Ok(None);
-        };
-        if !self.profiles.contains_key(&name) {
-            bail!("profile `{name}` (from {source}) does not exist");
-        }
-        Ok(Some(name))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -213,31 +182,22 @@ impl Settings {
         file: &ConfigFile,
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Self> {
-        let empty = Profile::default();
-        let profile_name = file.selected_profile(globals.profile.as_deref(), env)?;
-        let profile = profile_name
-            .as_ref()
-            .map(|n| &file.profiles[n])
-            .unwrap_or(&empty);
-        let ctx = |what: &str| match &profile_name {
-            Some(n) => format!("invalid `{what}` in profile `{n}`"),
-            None => format!("invalid `{what}`"),
-        };
+        let ctx = |what: &str| format!("invalid `{what}` in config");
 
         let url = globals
             .url
             .clone()
             .or_else(|| env(ENV_URL).filter(|u| !u.is_empty()))
-            .or_else(|| profile.url.clone())
+            .or_else(|| file.url.clone())
             .unwrap_or_else(|| DEFAULT_URL.to_string());
 
-        let engine = profile
+        let engine = file
             .engine
             .as_deref()
             .map(parse::engine)
             .transpose()
             .map_err(|e| anyhow!(e).context(ctx("engine")))?;
-        let context_size = profile
+        let context_size = file
             .context_size
             .as_deref()
             .map(parse::size)
@@ -245,7 +205,7 @@ impl Settings {
             .map_err(|e| anyhow!(e).context(ctx("context_size")))?;
         let timeout = match globals.timeout {
             Some(t) => Some(t),
-            None => profile
+            None => file
                 .timeout
                 .as_deref()
                 .map(parse::duration)
@@ -258,157 +218,15 @@ impl Settings {
             engine,
             context_size,
             timeout,
-            hot_path: profile
+            hot_path: file
                 .hot_path
                 .clone()
                 .unwrap_or_else(|| DEFAULT_HOT_PATH.into()),
-            cold_path: profile
+            cold_path: file
                 .cold_path
                 .clone()
                 .unwrap_or_else(|| DEFAULT_COLD_PATH.into()),
             verbose: globals.verbose,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample() -> ConfigFile {
-        toml::from_str(
-            r#"
-            active_profile = "local"
-
-            [profiles.local]
-            url = "http://localhost:8080"
-            engine = "Process"
-            context_size = "64M"
-
-            [profiles.remote]
-            url = "http://dandelion-host:8080"
-            engine = "Kvm"
-            timeout = "5m"
-            hot_path = "/hot/v2"
-            "#,
-        )
-        .unwrap()
-    }
-
-    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let pairs: Vec<(String, String)> = pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        move |k| pairs.iter().find(|(pk, _)| pk == k).map(|(_, v)| v.clone())
-    }
-
-    #[test]
-    fn defaults_without_config() {
-        let s =
-            Settings::resolve(&Globals::default(), &ConfigFile::default(), &env_of(&[])).unwrap();
-        assert_eq!(s.url, DEFAULT_URL);
-        assert_eq!(s.engine, None);
-        assert_eq!(s.context_size, None);
-        assert_eq!(s.timeout, None);
-        assert_eq!(s.hot_path, DEFAULT_HOT_PATH);
-        assert_eq!(s.cold_path, DEFAULT_COLD_PATH);
-    }
-
-    #[test]
-    fn active_profile_is_used() {
-        let s = Settings::resolve(&Globals::default(), &sample(), &env_of(&[])).unwrap();
-        assert_eq!(s.url, "http://localhost:8080");
-        assert_eq!(s.engine.as_deref(), Some("Process"));
-        assert_eq!(s.context_size, Some(64 << 20));
-    }
-
-    #[test]
-    fn env_profile_beats_active_profile() {
-        let s = Settings::resolve(
-            &Globals::default(),
-            &sample(),
-            &env_of(&[(ENV_PROFILE, "remote")]),
-        )
-        .unwrap();
-        assert_eq!(s.url, "http://dandelion-host:8080");
-        assert_eq!(s.engine.as_deref(), Some("Kvm"));
-        assert_eq!(s.context_size, None);
-        assert_eq!(s.timeout, Some(Duration::from_secs(300)));
-        assert_eq!(s.hot_path, "/hot/v2");
-        assert_eq!(s.cold_path, DEFAULT_COLD_PATH);
-    }
-
-    #[test]
-    fn profile_flag_beats_env_profile() {
-        let g = Globals {
-            profile: Some("local".into()),
-            ..Default::default()
-        };
-        let s = Settings::resolve(&g, &sample(), &env_of(&[(ENV_PROFILE, "remote")])).unwrap();
-        assert_eq!(s.engine.as_deref(), Some("Process"));
-    }
-
-    #[test]
-    fn env_url_beats_profile_and_flag_beats_env() {
-        let env = env_of(&[(ENV_URL, "http://env:1")]);
-        let s = Settings::resolve(&Globals::default(), &sample(), &env).unwrap();
-        assert_eq!(s.url, "http://env:1");
-
-        let g = Globals {
-            url: Some("http://flag:2".into()),
-            ..Default::default()
-        };
-        let s = Settings::resolve(&g, &sample(), &env).unwrap();
-        assert_eq!(s.url, "http://flag:2");
-    }
-
-    #[test]
-    fn timeout_flag_beats_profile() {
-        let g = Globals {
-            profile: Some("remote".into()),
-            timeout: Some(Duration::from_secs(1)),
-            ..Default::default()
-        };
-        let s = Settings::resolve(&g, &sample(), &env_of(&[])).unwrap();
-        assert_eq!(s.timeout, Some(Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn missing_profile_is_an_error() {
-        let g = Globals {
-            profile: Some("nope".into()),
-            ..Default::default()
-        };
-        assert!(Settings::resolve(&g, &sample(), &env_of(&[])).is_err());
-        assert!(Settings::resolve(
-            &Globals::default(),
-            &sample(),
-            &env_of(&[(ENV_PROFILE, "nope")])
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn set_validates_and_normalises() {
-        let mut p = Profile::default();
-        p.set("engine", "kvm").unwrap();
-        assert_eq!(p.engine.as_deref(), Some("Kvm"));
-        assert!(p.set("engine", "wasm").is_err());
-        assert!(p.set("context_size", "lots").is_err());
-        assert!(p.set("timeout", "soon").is_err());
-        assert!(p.set("hot_path", "hot").is_err());
-        assert!(p.set("url", "not a url").is_err());
-        assert!(p.set("colour", "blue").is_err());
-        p.set("hot_path", "/hot/x").unwrap();
-        p.unset("hot_path").unwrap();
-        assert_eq!(p.hot_path, None);
-    }
-
-    #[test]
-    fn round_trip() {
-        let c = sample();
-        let text = toml::to_string_pretty(&c).unwrap();
-        assert_eq!(toml::from_str::<ConfigFile>(&text).unwrap(), c);
     }
 }

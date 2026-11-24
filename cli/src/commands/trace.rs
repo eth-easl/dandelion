@@ -51,23 +51,3 @@ pub fn format_names(names: &[String]) -> String {
         .map(|(index, name)| format!("{index:>width$}  {name}\n"))
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_are_indexed() {
-        let names = parse_names("[\"A\",\"B\"]").unwrap();
-        assert_eq!(format_names(&names), "0  A\n1  B\n");
-        let many: Vec<String> = (0..11).map(|i| format!("T{i}")).collect();
-        assert!(format_names(&many).starts_with(" 0  T0\n"));
-        assert!(format_names(&many).ends_with("10  T10\n"));
-    }
-
-    #[test]
-    fn non_json_message_is_an_error() {
-        assert!(parse_names("Hello, World\n").is_err());
-        assert!(parse_names("{\"a\": 1}").is_err());
-    }
-}

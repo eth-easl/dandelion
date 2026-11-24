@@ -52,7 +52,7 @@ pub fn run(globals: &Globals, command: Command) -> Result<()> {
         Command::Function { cmd } => function::run(globals, cmd),
         Command::Composition { cmd } => composition::run(globals, cmd),
         Command::Invoke(args) => invoke::run(globals, args),
-        Command::Config { cmd } => config::run(globals, cmd),
+        Command::Config { cmd } => config::run(cmd),
         Command::Ping => ping::run(globals),
         Command::Trace { cmd } => trace::run(globals, cmd),
         Command::Completions { shell } => {

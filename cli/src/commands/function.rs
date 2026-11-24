@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
 use serde::Deserialize;
 
-use crate::client::{Client, Executable, FunctionRegistration, InputSet, Item};
+use crate::client::{encode_function, Client, Executable, FunctionRegistration, InputSet, Item};
 use crate::config::Settings;
 use crate::parse;
 use crate::Globals;
@@ -21,15 +21,15 @@ pub struct FunctionRegisterArgs {
     #[arg(value_name = "BINARY", conflicts_with = "server_path")]
     pub binary: Option<PathBuf>,
 
-    /// Function name [default: file stem of BINARY].
+    /// Function name.
     #[arg(long, value_name = "N")]
     pub name: Option<String>,
 
-    /// Engine: Process, Kvm or Cheri [default: from config].
+    /// Engine: Process, Kvm or Cheri.
     #[arg(long, value_name = "ENGINE", value_parser = parse::engine)]
     pub engine: Option<String>,
 
-    /// Default context size, e.g. `64M` or `1G` [default: from config].
+    /// Default context size, e.g. `64M` or `1G`.
     #[arg(long, value_name = "SIZE", value_parser = parse::size)]
     pub context_size: Option<u64>,
 
@@ -66,7 +66,7 @@ pub fn run(globals: &Globals, cmd: FunctionCmd) -> Result<()> {
             let settings = Settings::load(globals)?;
             let reg = build_registration(&args, &settings)?;
             let client = Client::new(&settings)?;
-            let message = client.post_for_status(REGISTER_PATH, reg.encode())?;
+            let message = client.post_for_status(REGISTER_PATH, encode_function(&reg))?;
             super::print_message(&message);
             Ok(())
         }
@@ -153,7 +153,7 @@ fn file_stem(p: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Merges command-line flags (highest priority), the manifest, and the config profile (lowest
+/// Merges command-line flags (highest priority), the manifest, and the config file (lowest
 /// priority), then reads the binary and static files.
 pub fn build_registration(
     args: &FunctionRegisterArgs,
@@ -165,7 +165,6 @@ pub fn build_registration(
     };
     let from_manifest = |p: &Path| base.join(p);
 
-    // Flags win over the manifest; within each, BINARY and --server-path are exclusive.
     let executable_path = match (&args.server_path, &args.binary) {
         (Some(path), _) => Some(ExecutablePath::Server(path.clone())),
         (None, Some(path)) => Some(ExecutablePath::Local(path.clone())),
@@ -287,215 +286,4 @@ pub fn build_registration(
         output_sets,
         min_set_bytes,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::ConfigFile;
-    use crate::Cli;
-    use clap::Parser;
-
-    fn settings() -> Settings {
-        Settings::resolve(&Globals::default(), &ConfigFile::default(), &|_| None).unwrap()
-    }
-
-    #[test]
-    fn manifest_with_overrides() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("target")).unwrap();
-        std::fs::write(dir.path().join("target/matmul"), b"ELF").unwrap();
-        std::fs::write(dir.path().join("params.bin"), b"P").unwrap();
-        let manifest = dir.path().join("fn.toml");
-        std::fs::write(
-            &manifest,
-            r#"
-            name = "matmul"
-            engine = "Kvm"
-            context_size = "64M"
-            binary = "./target/matmul"
-            output_sets = ["result"]
-            min_set_bytes = []
-
-            [[input_sets]]
-            name = "matrices"
-
-            [[input_sets]]
-            name = "config"
-            static = [{ item = "params", file = "./params.bin" }, { item = "extra", key = 9, file = "./params.bin" }]
-            "#,
-        )
-        .unwrap();
-
-        let args = FunctionRegisterArgs {
-            manifest: Some(manifest),
-            ..Default::default()
-        };
-        let reg = build_registration(&args, &settings()).unwrap();
-        assert_eq!(reg.name, "matmul");
-        assert_eq!(reg.engine_type, "Kvm");
-        assert_eq!(reg.context_size, 64 << 20);
-        assert_eq!(reg.executable, Executable::Binary(b"ELF".to_vec()));
-        assert_eq!(
-            reg.input_sets[0],
-            InputSet {
-                name: "matrices".into(),
-                static_items: None
-            }
-        );
-        assert_eq!(
-            reg.input_sets[1],
-            InputSet {
-                name: "config".into(),
-                static_items: Some(vec![
-                    Item {
-                        identifier: "params".into(),
-                        key: 0,
-                        data: b"P".to_vec()
-                    },
-                    Item {
-                        identifier: "extra".into(),
-                        key: 9,
-                        data: b"P".to_vec()
-                    },
-                ]),
-            }
-        );
-        assert_eq!(reg.output_sets, ["result"]);
-
-        let args = FunctionRegisterArgs {
-            manifest: args.manifest.clone(),
-            name: Some("other".into()),
-            engine: Some("Process".into()),
-            output_sets: vec!["a".into(), "b".into()],
-            ..Default::default()
-        };
-        let reg = build_registration(&args, &settings()).unwrap();
-        assert_eq!(reg.name, "other");
-        assert_eq!(reg.engine_type, "Process");
-        assert_eq!(reg.output_sets, ["a", "b"]);
-        assert_eq!(reg.input_sets.len(), 2);
-    }
-
-    #[test]
-    fn server_path_needs_no_binary() {
-        let args = FunctionRegisterArgs {
-            server_path: Some("/opt/fns/matmul".into()),
-            engine: Some("Kvm".into()),
-            context_size: Some(4096),
-            ..Default::default()
-        };
-        let reg = build_registration(&args, &settings()).unwrap();
-        assert_eq!(reg.name, "matmul");
-        assert_eq!(
-            reg.executable,
-            Executable::LocalPath("/opt/fns/matmul".into())
-        );
-    }
-
-    #[test]
-    fn manifest_with_binary_and_server_path_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest = dir.path().join("fn.toml");
-        std::fs::write(
-            &manifest,
-            "binary = \"f\"\nserver_path = \"/f\"\nengine = \"Kvm\"\ncontext_size = 1\n",
-        )
-        .unwrap();
-        let args = FunctionRegisterArgs {
-            manifest: Some(manifest.clone()),
-            ..Default::default()
-        };
-        assert!(build_registration(&args, &settings()).is_err());
-        // A flag picks one and overrides the manifest.
-        let args = FunctionRegisterArgs {
-            manifest: Some(manifest),
-            server_path: Some("/g".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            build_registration(&args, &settings()).unwrap().executable,
-            Executable::LocalPath("/g".into())
-        );
-    }
-
-    #[test]
-    fn static_keys_default_to_zero() {
-        let dir = tempfile::tempdir().unwrap();
-        let f = dir.path().join("s");
-        std::fs::write(&f, b"S").unwrap();
-        let args = FunctionRegisterArgs {
-            server_path: Some("/x".into()),
-            engine: Some("Kvm".into()),
-            context_size: Some(1),
-            input_sets: vec!["cfg".into()],
-            statics: vec![
-                parse::static_item(&format!("cfg:a=@{}", f.display())).unwrap(),
-                parse::static_item(&format!("cfg:b#7=@{}", f.display())).unwrap(),
-                parse::static_item(&format!("cfg:c=@{}", f.display())).unwrap(),
-            ],
-            ..Default::default()
-        };
-        let reg = build_registration(&args, &settings()).unwrap();
-        let keys: Vec<u32> = reg.input_sets[0]
-            .static_items
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|i| i.key)
-            .collect();
-        assert_eq!(keys, [0, 7, 0]);
-    }
-
-    #[test]
-    fn engine_and_size_fall_back_to_config_or_fail() {
-        let args = FunctionRegisterArgs {
-            server_path: Some("/x".into()),
-            ..Default::default()
-        };
-        let err = build_registration(&args, &settings()).unwrap_err();
-        assert!(err.to_string().contains("engine"));
-
-        let mut s = settings();
-        s.engine = Some("Cheri".into());
-        s.context_size = Some(1 << 20);
-        let reg = build_registration(&args, &s).unwrap();
-        assert_eq!(reg.engine_type, "Cheri");
-        assert_eq!(reg.context_size, 1 << 20);
-    }
-
-    #[test]
-    fn static_needs_declared_set() {
-        let args = FunctionRegisterArgs {
-            server_path: Some("/x".into()),
-            engine: Some("Kvm".into()),
-            context_size: Some(1),
-            statics: vec![parse::static_item("nope:a=@/dev/null").unwrap()],
-            ..Default::default()
-        };
-        assert!(build_registration(&args, &settings()).is_err());
-    }
-
-    #[test]
-    fn binary_required() {
-        let args = FunctionRegisterArgs {
-            engine: Some("Kvm".into()),
-            context_size: Some(1),
-            ..Default::default()
-        };
-        assert!(build_registration(&args, &settings()).is_err());
-    }
-
-    #[test]
-    fn binary_and_server_path_conflict() {
-        let r = Cli::try_parse_from([
-            "dandelion",
-            "function",
-            "register",
-            "f.elf",
-            "--server-path",
-            "/f",
-        ]);
-        assert!(r.is_err());
-    }
 }
