@@ -197,7 +197,7 @@ pub fn build_registration(
         (Some(e), _) => e.clone(),
         (None, Some(e)) => parse::engine(e).map_err(|e| anyhow!(e).context("in manifest"))?,
         (None, None) => settings.engine.clone().ok_or_else(|| {
-            anyhow!("no engine given; pass --engine or set one with `dandelion config set engine <Process|Kvm|Cheri>`")
+            anyhow!("no engine given; pass --engine or set one with `dcli config set engine <Process|Kvm|Cheri>`")
         })?,
     };
 
@@ -205,7 +205,7 @@ pub fn build_registration(
         (Some(c), _) => c,
         (None, Some(c)) => c.bytes().context("invalid `context_size` in manifest")?,
         (None, None) => settings.context_size.ok_or_else(|| {
-            anyhow!("no context size given; pass --context-size or set one with `dandelion config set context_size 64M`")
+            anyhow!("no context size given; pass --context-size or set one with `dcli config set context_size 64M`")
         })?,
     };
 

@@ -56,7 +56,7 @@ jobs:
     name: build cli - linux-${{ matrix.arch }}
     runs-on: ${{ matrix.platform }}
     env:
-      ASSET: dandelion-linux-${{ matrix.arch }}
+      ASSET: dcli-linux-${{ matrix.arch }}
     steps:
     - uses: actions/checkout@v4
     - name: setup protobuf
@@ -64,12 +64,12 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y protobuf-compiler
     - name: build cli
-      run: cargo build --release --locked -p dandelion_cli --bin dandelion
+      run: cargo build --release --locked -p dandelion_cli --bin dcli
     - name: package binary
       shell: bash
       run: |
         mkdir -p dist
-        tar -czf "dist/$ASSET.tar.gz" -C target/release dandelion
+        tar -czf "dist/$ASSET.tar.gz" -C target/release dcli
         (cd dist && sha256sum "$ASSET.tar.gz" > "$ASSET.tar.gz.sha256")
     - name: upload to release
       shell: bash

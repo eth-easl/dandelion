@@ -1,4 +1,4 @@
-# dandelion CLI
+# dcli
 
 A command-line client for the Dandelion runtime API. It registers functions and compositions,
 invokes them and shows the results. It can also check whether a composition parses, using the same
@@ -17,11 +17,11 @@ From the repository root:
 cargo install --path cli
 ```
 
-This installs the `dandelion` binary. Building needs `protoc`, like the rest of the workspace.
+This installs the `dcli` binary. Building needs `protoc`, like the rest of the workspace.
 
 ### Shell completions
 
-`dandelion completions <SHELL>` prints a completion script. The steps are the same on Linux and
+`dcli completions <SHELL>` prints a completion script. The steps are the same on Linux and
 macOS.
 
 **bash** needs the `bash-completion` package (version 2). Most Linux distros include it; on macOS,
@@ -30,14 +30,14 @@ ships. Scripts in this folder are then loaded automatically:
 
 ```sh
 mkdir -p ~/.local/share/bash-completion/completions
-dandelion completions bash > ~/.local/share/bash-completion/completions/dandelion
+dcli completions bash > ~/.local/share/bash-completion/completions/dcli
 ```
 
 **zsh**: save the script to a folder in your `fpath`:
 
 ```sh
 mkdir -p ~/.zfunc
-dandelion completions zsh > ~/.zfunc/_dandelion
+dcli completions zsh > ~/.zfunc/_dcli
 ```
 
 Then add this to `~/.zshrc`, before any existing `compinit` line:
@@ -47,23 +47,23 @@ fpath=(~/.zfunc $fpath)
 autoload -Uz compinit && compinit
 ```
 
-Open a new shell for the completions to take effect. If zsh still doesn't complete `dandelion`,
+Open a new shell for the completions to take effect. If zsh still doesn't complete `dcli`,
 clear its cache with `rm -f ~/.zcompdump*` and open a new shell again.
 
 ## Quick start
 
 ```sh
 # Point the CLI at a server and set defaults for function registration
-dandelion config set url http://localhost:8080
-dandelion config set engine Kvm
-dandelion config set context_size 64MiB
+dcli config set url http://localhost:8080
+dcli config set engine Kvm
+dcli config set context_size 64MiB
 
 # Check that the server is reachable
-dandelion ping
+dcli ping
 
 # Register a function and invoke it
-dandelion function register ./target/matmul --input-set matrices --output-set result
-dandelion invoke matmul --input matrices:a=@a.bin --input matrices:b=@b.bin
+dcli function register ./target/matmul --input-set matrices --output-set result
+dcli invoke matmul --input matrices:a=@a.bin --input matrices:b=@b.bin
 ```
 
 ## Commands
@@ -71,7 +71,7 @@ dandelion invoke matmul --input matrices:a=@a.bin --input matrices:b=@b.bin
 ### Register a function
 
 ```sh
-dandelion function register <BINARY> [--name N] [--engine Process|Kvm|Cheri] [--context-size 64M] \
+dcli function register <BINARY> [--name N] [--engine Process|Kvm|Cheri] [--context-size 64M] \
     [--input-set NAME]... [--static SET:ITEM[#KEY]=@FILE]... [--output-set NAME]... [--min-set-bytes N]...
 ```
 
@@ -104,21 +104,21 @@ A manifest sets either `binary` or `server_path`. A `<BINARY>` or `--server-path
 whichever the manifest sets.
 
 ```sh
-dandelion function register --manifest matmul.toml
+dcli function register --manifest matmul.toml
 ```
 
 ### Register a composition
 
 ```sh
-dandelion composition register compositions.txt
-cat compositions.txt | dandelion composition register -
+dcli composition register compositions.txt
+cat compositions.txt | dcli composition register -
 ```
 
 ### Check a composition
 
 ```sh
-dandelion composition check compositions.txt
-cat compositions.txt | dandelion composition check
+dcli composition check compositions.txt
+cat compositions.txt | dcli composition check
 ```
 
 This parses the compositions locally with the server's parser and prints each composition with its
@@ -130,8 +130,8 @@ needs no server and ignores the config. (This replaces the former `dparser` bina
 ### Invoke
 
 ```sh
-dandelion invoke <NAME> [--input SET:ITEM[#KEY]=@FILE | --input SET:ITEM[#KEY]=TEXT]...
-dandelion invoke --composition <FILE | -> ...
+dcli invoke <NAME> [--input SET:ITEM[#KEY]=@FILE | --input SET:ITEM[#KEY]=TEXT]...
+dcli invoke --composition <FILE | -> ...
 ```
 
 - **Inputs:** sets are sent in the order they first appear, and items in the order given. `KEY`
@@ -155,7 +155,7 @@ The trace is only sent by servers built with the `trace-timestamps` or `trace-da
 ### Trace timestamps
 
 ```sh
-dandelion trace timestamps [--json]
+dcli trace timestamps [--json]
 ```
 
 Lists the names of the timestamps the server records in a trace, from `GET /trace/timestamps`. The
@@ -164,7 +164,7 @@ so each name is printed with its index. `--json` prints the names as a JSON arra
 
 ### Ping
 
-`dandelion ping` sends `GET /` and prints the status and how long the request took. It also checks
+`dcli ping` sends `GET /` and prints the status and how long the request took. It also checks
 that the answer is a status message in this client's protocol version, so it fails if something
 other than a compatible Dandelion server is listening.
 
@@ -172,7 +172,7 @@ other than a compatible Dandelion server is listening.
 
 The config file is `~/.config/dandelion/config.toml`, or `$XDG_CONFIG_HOME/dandelion/config.toml`
 if that variable is set. You can set `DANDELION_CONFIG` to use a different file, and
-`dandelion config path` prints the location in use.
+`dcli config path` prints the location in use.
 
 ```toml
 url = "http://localhost:8080"
@@ -191,9 +191,9 @@ timeout = "2m"
 | `cold_path` | Invoke path for `--no-cache` | `/cold/matmul` |
 
 ```sh
-dandelion config get [KEY]          # one key, or all keys that are set
-dandelion config set KEY VALUE
-dandelion config unset KEY
+dcli config get [KEY]     # one key, or all keys that are set
+dcli config set KEY VALUE
+dcli config unset KEY
 ```
 
 Settings are taken from the first place that has them:

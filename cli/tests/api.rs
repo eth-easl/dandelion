@@ -35,14 +35,14 @@ fn data_item(identifier: &str, key: u32, payload_length: u64) -> proto::DataItem
     }
 }
 
-/// Runs `dandelion` with an isolated config file and no DANDELION_* environment.
+/// Runs `dcli` with an isolated config file and no DANDELION_* environment.
 fn run(config: &Path, args: &[&str]) -> Output {
     run_with_stdin(config, args, None)
 }
 
 fn run_with_stdin(config: &Path, args: &[&str], stdin: Option<&str>) -> Output {
     use std::io::Write;
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dandelion"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dcli"));
     cmd.args(args)
         .env("DANDELION_CONFIG", config)
         .env_remove("DANDELION_URL")
@@ -383,7 +383,7 @@ fn completions_generate() {
     let dir = tempfile::tempdir().unwrap();
     let out = run(&dir.path().join("c.toml"), &["completions", "zsh"]);
     assert!(out.status.success());
-    assert!(stdout(&out).contains("dandelion"));
+    assert!(stdout(&out).contains("dcli"));
 }
 
 #[test]

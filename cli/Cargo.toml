@@ -8,7 +8,7 @@ description = "Command-line client for the Dandelion runtime API"
 workspace = true
 
 [[bin]]
-name = "dandelion"
+name = "dcli"
 path = "src/main.rs"
 
 [dependencies]

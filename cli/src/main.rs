@@ -14,7 +14,7 @@ use crate::error::{exit_code, ParseError};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "dandelion",
+    name = "dcli",
     version,
     about = "Command-line client for the Dandelion runtime API"
 )]

@@ -19,7 +19,7 @@ The main code for dandelion is organized in the following rust modules:
 - **composition** composition language parser and execution of compositions
 - **dispatcher** registry and scheduler for the compositions, uses the domain and engine interferaces as well as the parser 
 - **server** wrapper code arround the dispatcher for the http frontend
-- **cli** the `dandelion` command-line client for registering and invoking functions and compositions, and for checking whether a composition parses (see [cli/README.md](cli/README.md))
+- **cli** the `dcli` command-line client for registering and invoking functions and compositions, and for checking whether a composition parses (see [cli/README.md](cli/README.md))
 
 # Cargo 
 
