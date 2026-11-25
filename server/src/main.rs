@@ -307,6 +307,7 @@ fn main() {
                             },
                         ctx_size,
                         bin_path,
+                        meta_function,
                     } = pf;
                     debug!("Inserting preload function: {}", name);
                     let engine_type = match engine_type_id.to_lowercase().as_str() {
@@ -332,13 +333,24 @@ fn main() {
                         output_sets,
                         min_set_bytes,
                     };
-                    match dispatcher.insert_function(
-                        name.clone(),
-                        engine_type,
-                        ctx_size,
-                        bin_path.clone(),
-                        metadata,
-                    ) {
+                    let insertion = if meta_function {
+                        dispatcher.insert_meta_function(
+                            name.clone(),
+                            engine_type,
+                            ctx_size,
+                            bin_path,
+                            metadata,
+                        )
+                    } else {
+                        dispatcher.insert_function(
+                            name.clone(),
+                            engine_type,
+                            ctx_size,
+                            bin_path,
+                            metadata,
+                        )
+                    };
+                    match insertion {
                         Err(err) => warn!("Failed to preload function {}: {}", name, err),
                         Ok(_) => info!("Inserted preload function {}", name),
                     }

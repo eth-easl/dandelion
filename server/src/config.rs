@@ -42,6 +42,10 @@ pub struct PreloadFunc {
     pub bin_path: String,
     #[serde(rename = "metadata")]
     pub metadata: FuncMetadata,
+    /// Whether the binary is the planner of a metafunction. Its input sets are the planner
+    /// params and it must not declare output sets.
+    #[serde(rename = "metaFunction", default)]
+    pub meta_function: bool,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -54,7 +58,7 @@ struct PreloadFile {
 pub struct FuncMetadata {
     #[serde(rename = "inputSets")]
     pub input_sets: Vec<String>,
-    #[serde(rename = "outputSets")]
+    #[serde(rename = "outputSets", default)]
     pub output_sets: Vec<String>,
     #[serde(rename = "minSetBytes", default)]
     pub min_set_bytes: Vec<usize>,
