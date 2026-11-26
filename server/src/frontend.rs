@@ -117,6 +117,25 @@ async fn handle_function_registration(
     let request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
 
+    run_blocking(move || register_function(request_map, dispatcher, folder_path)).await?;
+    Ok(DandelionBody::from_vec(
+        "Function registered".as_bytes().to_vec(),
+    ))
+}
+
+/// Runs registration work that writes and flushes files on the blocking thread pool.
+async fn run_blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(error) => std::panic::resume_unwind(error.into_panic()),
+    }
+}
+
+fn register_function(
+    request_map: RegisterFunction,
+    dispatcher: &'static Dispatcher,
+    folder_path: &'static str,
+) -> DandelionResult<()> {
     // if local is present ignore the binary
     let path_string = if !request_map.local_path.is_empty() {
         // check that file exists
@@ -167,10 +186,7 @@ async fn handle_function_registration(
         request_map.context_size as usize,
         path_string,
         metadata,
-    )?;
-    Ok(DandelionBody::from_vec(
-        "Function registered".as_bytes().to_vec(),
-    ))
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,7 +208,7 @@ async fn handle_composition_registration(
     let request_map: RegisterChain =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
 
-    match dispatcher.insert_compositions(request_map.composition) {
+    match run_blocking(move || dispatcher.insert_compositions(request_map.composition)).await {
         Ok(()) => Ok(DandelionBody::from_vec(
             "Function registered".as_bytes().to_vec(),
         )),
