@@ -1311,19 +1311,6 @@ impl ExportRegistry {
                         RecoveredIoOutput::Remote { data, size } => {
                             Ok(IoRemoteRef::from_remote(&data, size))
                         }
-                        RecoveredIoOutput::Inline(context) => {
-                            let item = DataItem {
-                                ident: key.identifier.clone(),
-                                key: u32::try_from(key.item_key)
-                                    .expect("I/O item keys originate as u32"),
-                                data: Position {
-                                    offset: 0,
-                                    size: context.size,
-                                },
-                            };
-                            let data = self.insert_function(&item, context, None);
-                            Ok(IoRemoteRef::from_remote(&data, item.data.size))
-                        }
                     })
                     .collect::<DandelionResult<Vec<_>>>()
             })
@@ -1783,9 +1770,6 @@ impl ExportRegistry {
                         data_id,
                         size,
                     }),
-                    IoCompletionData::Inline(_) => Err(export_registry_error(
-                        "Remote I/O delivery unexpectedly contained inline data".to_string(),
-                    )),
                 }
             })
             .collect::<DandelionResult<Vec<_>>>()?;
@@ -2332,9 +2316,8 @@ impl ExportRegistry {
             if let Some(record) = record {
                 for output in record.outputs {
                     for item in output.items {
-                        if let IoCompletionData::Remote { data_id, .. } = item.location {
-                            self.delete_durable_exported_data(data_id).await?;
-                        }
+                        let IoCompletionData::Remote { data_id, .. } = item.location;
+                        self.delete_durable_exported_data(data_id).await?;
                     }
                 }
             }
@@ -4974,7 +4957,6 @@ mod tests {
                     data_id: *data_id,
                     size: *size,
                 },
-                IoCompletionData::Inline(_) => panic!("worker outputs are stored remotely"),
             })
             .collect()
     }

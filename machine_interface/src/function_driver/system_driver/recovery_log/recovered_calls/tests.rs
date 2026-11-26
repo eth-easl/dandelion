@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory_domain::ContextTrait;
+use crate::memory_domain::read_only::ReadOnlyContext;
 
 fn path() -> IoPath {
     vec![2, 3].into()
@@ -7,6 +7,14 @@ fn path() -> IoPath {
 
 fn sizes(n: usize) -> HashMap<IoPath, (SystemFunction, usize)> {
     HashMap::from([(path(), (SystemFunction::HTTP, n))])
+}
+
+fn data_id(set_index: usize, index: usize) -> u64 {
+    if set_index == 0 {
+        200 + index as u64
+    } else {
+        100 + index as u64
+    }
 }
 
 fn record(run_id: RunId, index: usize) -> IoCompletionRecord {
@@ -27,14 +35,10 @@ fn record(run_id: RunId, index: usize) -> IoCompletionRecord {
                 items: vec![IoCompletionItem {
                     identifier: "duplicate".into(),
                     key: 7,
-                    location: if set_index == 0 {
-                        IoCompletionData::Inline(vec![index as u8, 42])
-                    } else {
-                        IoCompletionData::Remote {
-                            node_id: 9,
-                            data_id: 100 + index as u64,
-                            size: index + 1,
-                        }
+                    location: IoCompletionData::Remote {
+                        node_id: 9,
+                        data_id: data_id(set_index, index),
+                        size: index + 1,
                     },
                 }],
             })
@@ -43,7 +47,7 @@ fn record(run_id: RunId, index: usize) -> IoCompletionRecord {
 }
 
 #[test]
-fn complete_call_rebuilds_inline_and_remote_outputs_in_request_order() {
+fn complete_call_rebuilds_outputs_in_request_order() {
     let run_id = RunId::now_v7();
     let calls = rebuild_calls(
         run_id,
@@ -89,17 +93,9 @@ fn complete_call_rebuilds_inline_and_remote_outputs_in_request_order() {
             assert_eq!(item.key, 7);
             assert_eq!(item.data.offset, 0);
             match data {
-                ItemData::LocalData(context) => {
-                    assert_eq!(set_index, 0);
-                    assert_eq!(item.data.size, 2);
-                    let mut bytes = [0; 2];
-                    context.context.read(0, &mut bytes).unwrap();
-                    assert_eq!(bytes, [index as u8, 42]);
-                }
                 ItemData::RemoteData(data) => {
-                    assert_eq!(set_index, 1);
                     assert_eq!(data.node_id, 9);
-                    assert_eq!(data.data_id, 100 + index as u64);
+                    assert_eq!(data.data_id, data_id(set_index, index));
                     assert_eq!(data.incarnation, 0);
                     assert_eq!(item.data.size, index + 1);
                 }
@@ -219,7 +215,11 @@ fn identical_redelivery_counts_once_but_conflicting_results_prevent_restoration(
             .unwrap()
             .is_empty()
     );
-    duplicate.outputs[0].items[0].location = IoCompletionData::Inline(vec![99]);
+    duplicate.outputs[0].items[0].location = IoCompletionData::Remote {
+        node_id: 9,
+        data_id: 999,
+        size: 1,
+    };
     assert!(rebuild_calls(run_id, &sizes(1), &[first, duplicate])
         .unwrap()
         .is_empty());

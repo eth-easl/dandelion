@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     composition::{CompositionSet, ItemData},
     function_driver::system_driver::{convert_to_references, IoData, IoReferencePolicy},
+    memory_domain::read_only::ReadOnlyContext,
     DataItem, Position,
 };
 

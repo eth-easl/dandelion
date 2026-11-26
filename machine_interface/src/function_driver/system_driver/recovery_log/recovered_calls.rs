@@ -89,12 +89,6 @@ fn rebuild_calls(
             for output in &record.outputs {
                 let item = &output.items[0];
                 let (size, data) = match &item.location {
-                    IoCompletionData::Inline(bytes) => (
-                        bytes.len(),
-                        ItemData::LocalData(Arc::new(ReadOnlyContext::from_boxed(
-                            bytes.clone().into_boxed_slice(),
-                        )?)),
-                    ),
                     IoCompletionData::Remote {
                         node_id,
                         data_id,

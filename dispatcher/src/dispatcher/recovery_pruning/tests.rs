@@ -91,13 +91,14 @@ fn set(values: &[u8]) -> CompositionSet {
 
 fn bytes(set: &CompositionSet) -> Vec<u8> {
     set.into_iter()
-        .map(|(item, data)| {
-            let ItemData::LocalData(context) = data else {
-                panic!("expected restored bytes")
-            };
-            let mut byte = [0];
-            context.context.read(item.data.offset, &mut byte).unwrap();
-            byte[0]
+        .map(|(item, data)| match data {
+            ItemData::LocalData(context) => {
+                let mut byte = [0];
+                context.context.read(item.data.offset, &mut byte).unwrap();
+                byte[0]
+            }
+            ItemData::RemoteData(data) => data.data_id as u8,
+            _ => panic!("expected restored or computed bytes"),
         })
         .collect()
 }
@@ -140,9 +141,12 @@ async fn recovery(path: &[usize], n: usize, indices: &[usize]) -> RunId {
                     items: vec![IoCompletionItem {
                         identifier: "duplicate".into(),
                         key: 7,
-                        location: IoCompletionData::Inline(vec![
-                            10 * (set_index as u8 + 1) + index as u8,
-                        ]),
+                        // The fake engine never resolves references, so the id carries the value.
+                        location: IoCompletionData::Remote {
+                            node_id: 9,
+                            data_id: 10 * (set_index as u64 + 1) + index as u64,
+                            size: 1,
+                        },
                     }],
                 })
                 .collect(),
@@ -288,7 +292,7 @@ async fn partial_call_runs_upstream_and_preserves_per_item_reuse() {
             let items = inputs[0].as_ref().unwrap().into_iter().collect::<Vec<_>>();
             assert_eq!(items.len(), 2);
             #[cfg(not(feature = "exactly-once"))]
-            assert!(matches!(&items[0].1, ItemData::LocalData(_)));
+            assert!(matches!(&items[0].1, ItemData::RemoteData(_)));
             #[cfg(feature = "exactly-once")]
             assert!(matches!(&items[0].1, ItemData::CoordinatedIoData(_)));
             assert!(matches!(&items[1].1, ItemData::CoordinatedIoData(_)));

@@ -21,7 +21,6 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     composition::RemoteData,
     function_driver::{functions::SystemFunction, system_driver::IoPath},
-    memory_domain::read_only::ReadOnlyContext,
 };
 
 const IO_LOG_DIR_NAME: &str = "io_logs";
@@ -120,7 +119,6 @@ pub struct IoCompletionItem {
 #[cfg(feature = "at-least-once")]
 #[derive(Debug, Clone)]
 pub enum IoCompletionData {
-    Inline(Vec<u8>),
     Remote {
         node_id: u64,
         data_id: u64,
@@ -131,7 +129,6 @@ pub enum IoCompletionData {
 #[cfg(feature = "at-least-once")]
 #[derive(Debug, Clone)]
 pub enum RecoveredIoOutput {
-    Inline(Arc<crate::memory_domain::Context>),
     Remote { data: RemoteData, size: usize },
 }
 
@@ -711,7 +708,6 @@ fn parse_io_record_line(line: &str, event: &str) -> DandelionResult<Option<IoCom
     }
     let run_id = fields
         .get("run_id")
-        .or_else(|| fields.get("invocation_id"))
         .copied()
         .ok_or(internal_error(
             "Missing run_id field in IO completion record",
@@ -812,7 +808,7 @@ pub async fn invalidate_io_completion_record(record: &IoCompletionRecord) -> Dan
 
 #[cfg(feature = "at-least-once")]
 /// Lists the unique worker-owned durable exports referenced by one invocation's IO completion
-/// records. Inline/local completion data is deliberately excluded.
+/// records.
 pub async fn remote_io_exports(run_id: RunId) -> DandelionResult<Vec<RemoteData>> {
     Ok(remote_io_exports_from_records(
         load_io_completion_records(run_id).await?,
@@ -827,13 +823,11 @@ fn remote_io_exports_from_records(records: Vec<IoCompletionRecord>) -> Vec<Remot
     for record in records {
         for output in record.outputs {
             for item in output.items {
-                if let IoCompletionData::Remote {
+                let IoCompletionData::Remote {
                     node_id, data_id, ..
-                } = item.location
-                {
-                    if seen.insert((node_id, data_id)) {
-                        exports.push(RemoteData::durable(node_id, data_id));
-                    }
+                } = item.location;
+                if seen.insert((node_id, data_id)) {
+                    exports.push(RemoteData::durable(node_id, data_id));
                 }
             }
         }
@@ -941,8 +935,7 @@ mod cleanup_tests {
             DataItem, Position,
         };
         let run_id = RunId::now_v7();
-        let mut first = completion(run_id, 101);
-        first.outputs[0].items[0].location = IoCompletionData::Inline(b"first".to_vec());
+        let first = completion(run_id, 101);
         let mut second = completion(run_id, 202);
         second.id.request_item_index = 1;
         install_recovered_io_records(run_id, vec![first, second]).unwrap();
@@ -957,7 +950,10 @@ mod cleanup_tests {
                             data: Position { offset: 0, size: 1 },
                         },
                         ItemData::LocalData(Arc::new(
-                            ReadOnlyContext::from_boxed(vec![0].into_boxed_slice()).unwrap(),
+                            crate::memory_domain::read_only::ReadOnlyContext::from_boxed(
+                                vec![0].into_boxed_slice(),
+                            )
+                            .unwrap(),
                         )),
                     )
                 })
@@ -976,13 +972,12 @@ mod cleanup_tests {
         )
         .unwrap();
         let headers = outputs[0].take().unwrap();
-        assert_eq!(headers.size(), 9);
+        assert_eq!(headers.size(), 8);
         let mut items = headers.into_iter();
-        let (_, ItemData::LocalData(first)) = items.next().unwrap() else {
-            panic!("expected first inline checkpoint")
+        let (_, ItemData::RemoteData(first)) = items.next().unwrap() else {
+            panic!("expected first remote checkpoint")
         };
-        use crate::memory_domain::ContextTrait;
-        assert_eq!(first.get_chunk_ref(0, 5).unwrap(), b"first");
+        assert_eq!(first.data_id, 101);
         let (_, ItemData::RemoteData(second)) = items.next().unwrap() else {
             panic!("expected second remote checkpoint")
         };
@@ -1043,14 +1038,7 @@ mod cleanup_tests {
                 IoCompletionOutputSet {
                     set_index: 1,
                     set_name: "bodies".to_string(),
-                    items: vec![
-                        remote_item,
-                        IoCompletionItem {
-                            identifier: "inline".to_string(),
-                            key: 8,
-                            location: IoCompletionData::Inline(vec![1, 2, 3]),
-                        },
-                    ],
+                    items: vec![remote_item],
                 },
             ],
             claim_id: None,
@@ -1071,23 +1059,6 @@ mod cleanup_tests {
             "event=invocation_completed run_id=abc\n\
              event=recovery_exports_released run_id=abc\n"
         ));
-    }
-
-    #[test]
-    fn legacy_io_completion_run_id_field_is_accepted() {
-        let record = completion(RunId::from_u128(7), 100);
-        let legacy_line = format_io_completion_line(&record)
-            .unwrap()
-            .replace("run_id=", "invocation_id=");
-
-        assert_eq!(
-            parse_io_completion_line(&legacy_line)
-                .unwrap()
-                .unwrap()
-                .id
-                .run_id,
-            record.id.run_id
-        );
     }
 
     #[tokio::test]
@@ -1289,9 +1260,6 @@ pub fn install_recovered_io_records(
         for output in record.outputs {
             for item in output.items {
                 let location = match item.location {
-                    IoCompletionData::Inline(data) => RecoveredIoOutput::Inline(Arc::new(
-                        ReadOnlyContext::from_boxed(data.into_boxed_slice())?,
-                    )),
                     IoCompletionData::Remote {
                         node_id,
                         data_id,
@@ -1444,11 +1412,6 @@ pub fn encode_io_completion_payload(outputs: &[IoCompletionOutputSet]) -> Dandel
             push_string(&mut buffer, &item.identifier)?;
             buffer.extend_from_slice(&item.key.to_le_bytes());
             match &item.location {
-                IoCompletionData::Inline(data) => {
-                    buffer.push(0);
-                    push_u32(&mut buffer, data.len())?;
-                    buffer.extend_from_slice(data);
-                }
                 IoCompletionData::Remote {
                     node_id,
                     data_id,
@@ -1486,10 +1449,6 @@ pub fn decode_io_completion_payload(
             let identifier = read_string(&payload, &mut offset)?;
             let key = read_u64(&payload, &mut offset)?;
             let location = match read_u8(&payload, &mut offset)? {
-                0 => {
-                    let data_length = read_u32(&payload, &mut offset)? as usize;
-                    IoCompletionData::Inline(read_bytes(&payload, &mut offset, data_length)?)
-                }
                 1 => {
                     let node_id = read_u64(&payload, &mut offset)?;
                     let data_id = read_u64(&payload, &mut offset)?;
@@ -1794,11 +1753,3 @@ fn delivered_io_completion_disposition(
     ))
 }
 
-/// Compatibility wrapper for exactly-once call sites that already elected a single winner.
-#[cfg(all(feature = "at-least-once", feature = "exactly-once"))]
-pub async fn append_delivered_io_completion_record(
-    record: &IoCompletionRecord,
-) -> DandelionResult<()> {
-    let _ = accept_delivered_io_completion_record(record).await?;
-    Ok(())
-}

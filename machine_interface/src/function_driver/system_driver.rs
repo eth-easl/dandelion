@@ -257,10 +257,6 @@ impl IoReferencePolicy for RecoverableIo {
         #[cfg(not(feature = "exactly-once"))]
         if let Some(output) = recovery_log::recovered_io_item_location(&id, request.set_index) {
             return match output {
-                RecoveredIoOutput::Inline(context) => {
-                    let size = context.size;
-                    (ItemData::LocalData(context), Some(size))
-                }
                 RecoveredIoOutput::Remote { data, size } => {
                     (ItemData::RemoteData(data), Some(size))
                 }

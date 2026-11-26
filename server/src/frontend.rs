@@ -709,10 +709,7 @@ async fn drop_lost_checkpoints(
                 node_id,
                 data_id,
                 size,
-            } = item.location
-            else {
-                continue;
-            };
+            } = item.location;
             if unreachable_nodes.contains(&node_id) {
                 lost = true;
                 break;
