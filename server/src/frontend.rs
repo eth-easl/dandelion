@@ -45,12 +45,31 @@ use tokio::{
 
 #[cfg(feature = "at-least-once")]
 const IO_EXPORT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[cfg(feature = "at-least-once")]
-const RETRY_BACKOFF_START: Duration = Duration::from_secs(1);
+#[derive(Clone, Copy, Debug)]
+pub struct RestartPolicy {
+    pub max_restart_attempts: u32,
+    pub backoff_start: Duration,
+    pub backoff_max: Duration,
+}
+
 #[cfg(feature = "at-least-once")]
-const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(60);
+static RESTART_POLICY: std::sync::OnceLock<RestartPolicy> = std::sync::OnceLock::new();
+
 #[cfg(feature = "at-least-once")]
-const MAX_RESTART_ATTEMPTS: u32 = 10;
+pub fn set_restart_policy(policy: RestartPolicy) {
+    RESTART_POLICY
+        .set(policy)
+        .expect("Restart policy should only be set once");
+}
+
+#[cfg(feature = "at-least-once")]
+fn restart_policy() -> &'static RestartPolicy {
+    RESTART_POLICY
+        .get()
+        .expect("Restart policy should be set before async invocations run")
+}
 
 fn default_path() -> String {
     String::new()
@@ -499,9 +518,11 @@ fn spawn_async_invocation(
 
 #[cfg(feature = "at-least-once")]
 fn retry_backoff(attempt: u32) -> Duration {
-    RETRY_BACKOFF_START
-        .saturating_mul(1 << attempt.min(6))
-        .min(RETRY_BACKOFF_MAX)
+    let policy = restart_policy();
+    policy
+        .backoff_start
+        .saturating_mul(2u32.checked_pow(attempt).unwrap_or(u32::MAX))
+        .min(policy.backoff_max)
 }
 
 #[cfg(feature = "at-least-once")]
@@ -552,7 +573,7 @@ fn spawn_async_invocation_attempt(
             }
             Err(err)
                 if dandelion_commons::is_system_error(&err.error)
-                    && attempt < MAX_RESTART_ATTEMPTS =>
+                    && attempt < restart_policy().max_restart_attempts =>
             {
                 let delay = retry_backoff(attempt);
                 warn!(

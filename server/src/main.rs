@@ -164,6 +164,12 @@ fn main() {
     // check if there is a configuration file
     let config = dandelion_server::config::DandelionConfig::get_config();
     info!("Loaded configuration:\n{:?}", config);
+    #[cfg(feature = "at-least-once")]
+    frontend::set_restart_policy(frontend::RestartPolicy {
+        max_restart_attempts: config.async_max_restart_attempts,
+        backoff_start: std::time::Duration::from_millis(config.async_retry_backoff_start_ms),
+        backoff_max: std::time::Duration::from_millis(config.async_retry_backoff_max_ms),
+    });
 
     // create globally available path to folder for data
     let folder_path: &'static str = Box::leak(config.folder_path.clone().into_boxed_str());

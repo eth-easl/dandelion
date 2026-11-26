@@ -15,8 +15,23 @@ const DEFAULT_MIN_SYS_CORES: usize = 1;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_RECONNECT_INTERVAL: u64 = 1000;
 const DEFAULT_MULTINODE_IO_DISCONNECT_TIMEOUT: u64 = 10000;
+const DEFAULT_ASYNC_MAX_RESTART_ATTEMPTS: u32 = 10;
+const DEFAULT_ASYNC_RETRY_BACKOFF_START: u64 = 1000;
+const DEFAULT_ASYNC_RETRY_BACKOFF_MAX: u64 = 60000;
 use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
 use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
+
+fn default_async_max_restart_attempts() -> u32 {
+    DEFAULT_ASYNC_MAX_RESTART_ATTEMPTS
+}
+
+fn default_async_retry_backoff_start_ms() -> u64 {
+    DEFAULT_ASYNC_RETRY_BACKOFF_START
+}
+
+fn default_async_retry_backoff_max_ms() -> u64 {
+    DEFAULT_ASYNC_RETRY_BACKOFF_MAX
+}
 
 /// Expand a leading `~` (or `~/...`) in a path to the current user's home directory,
 /// same as a shell would. Paths that don't start with `~` are returned unchanged.
@@ -207,6 +222,21 @@ pub struct DandelionConfig {
     #[serde(default)]
     pub multinode_io_disconnect_timeout_ms: u64,
 
+    /// Async invocations: how often a run is restarted after a system error before it is recorded as failed.
+    #[arg(long, env, default_value_t = DEFAULT_ASYNC_MAX_RESTART_ATTEMPTS)]
+    #[serde(default = "default_async_max_restart_attempts")]
+    pub async_max_restart_attempts: u32,
+
+    /// Async invocations: initial delay before a restart or persist retry, doubled on every attempt.
+    #[arg(long, env, default_value_t = DEFAULT_ASYNC_RETRY_BACKOFF_START)]
+    #[serde(default = "default_async_retry_backoff_start_ms")]
+    pub async_retry_backoff_start_ms: u64,
+
+    /// Async invocations: upper bound for the restart and persist retry delay.
+    #[arg(long, env, default_value_t = DEFAULT_ASYNC_RETRY_BACKOFF_MAX)]
+    #[serde(default = "default_async_retry_backoff_max_ms")]
+    pub async_retry_backoff_max_ms: u64,
+
     /// Special modes for testing
     #[arg(long, env, value_enum)]
     #[serde(default)]
@@ -274,6 +304,15 @@ impl DandelionConfig {
             multinode_io_disconnect_timeout_ms,
             DEFAULT_MULTINODE_IO_DISCONNECT_TIMEOUT
         );
+        merge!(
+            async_max_restart_attempts,
+            DEFAULT_ASYNC_MAX_RESTART_ATTEMPTS
+        );
+        merge!(
+            async_retry_backoff_start_ms,
+            DEFAULT_ASYNC_RETRY_BACKOFF_START
+        );
+        merge!(async_retry_backoff_max_ms, DEFAULT_ASYNC_RETRY_BACKOFF_MAX);
     }
 
     /// Get the config from the arguments, environment and possibly config file
