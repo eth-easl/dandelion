@@ -531,6 +531,11 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = DandelionResult<()>>,
 {
+    // The outcome is decided, so the owner no longer elects winners for this run.
+    machine_interface::function_driver::system_driver::recovery_log::deactivate_async_run_logging(
+        run_id,
+    )
+    .await;
     let mut attempt = 0u32;
     while let Err(err) = persist().await {
         error!(

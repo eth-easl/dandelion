@@ -548,8 +548,9 @@ pub async fn deactivate_async_run_logging(run_id: RunId) {
         .remove(&run_id);
 }
 
+/// Whether this node is running the async invocation and has not yet decided its outcome.
 #[cfg(feature = "at-least-once")]
-fn async_run_logging_active(run_id: RunId) -> bool {
+pub fn async_run_logging_active(run_id: RunId) -> bool {
     active_async_runs()
         .lock()
         .expect("Async invocation logging set poisoned")

@@ -28,7 +28,8 @@ use machine_interface::{
 use machine_interface::{
     composition::{IoResolveInput, IoResolveOutcome, IoResolveRequest},
     function_driver::system_driver::{
-        recovery_log::recovered_io_item_locations, RecoveredIoOutput,
+        recovery_log::{async_run_logging_active, recovered_io_item_locations},
+        RecoveredIoOutput,
     },
 };
 use machine_interface::{
@@ -1321,6 +1322,11 @@ impl ExportRegistry {
             .transpose()?;
         let mut guard = self.inner.lock().unwrap();
         let inner = &mut *guard;
+        if !async_run_logging_active(key.id.run_id) {
+            return Ok(RegistryIoResolution::Failed(
+                "The run is finished or unknown to its owner".to_string(),
+            ));
+        }
         if inner.cancelled_io_runs.contains(&key.id.run_id) {
             return Ok(RegistryIoResolution::Failed(
                 "I/O invocation was cancelled".to_string(),
@@ -4204,9 +4210,13 @@ mod tests {
     }
 
     fn coordination_key() -> IoRequest {
+        let run_id = RunId::now_v7();
+        machine_interface::function_driver::system_driver::recovery_log::activate_async_run_logging(
+            run_id,
+        );
         IoRequest {
             id: machine_interface::composition::IoRequestId {
-                run_id: RunId::now_v7(),
+                run_id,
                 io_path: vec![17].into(),
                 request_item_index: 0,
             },
@@ -4716,6 +4726,36 @@ mod tests {
         assert!(matches!(
             registry.begin_io_resolution(key, 1, None).unwrap(),
             RegistryIoResolution::Completed(data) if data.data_id == 2
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_for_finished_or_unknown_run_is_rejected() {
+        use machine_interface::function_driver::system_driver::recovery_log::deactivate_async_run_logging;
+
+        let registry = ExportRegistry::new(1);
+        let key = coordination_key();
+        assert!(matches!(
+            registry.begin_io_resolution(key.clone(), 0, None).unwrap(),
+            RegistryIoResolution::Execute(_, _)
+        ));
+
+        deactivate_async_run_logging(key.id.run_id).await;
+        let mut late = key.clone();
+        late.id.io_path = vec![18].into();
+        assert!(matches!(
+            registry.begin_io_resolution(late, 0, None).unwrap(),
+            RegistryIoResolution::Failed(_)
+        ));
+
+        // A restarted owner has not resumed the run, or never knew it.
+        let mut unknown = key;
+        unknown.id.run_id = RunId::now_v7();
+        assert!(matches!(
+            ExportRegistry::new(1)
+                .begin_io_resolution(unknown, 0, None)
+                .unwrap(),
+            RegistryIoResolution::Failed(_)
         ));
     }
 
