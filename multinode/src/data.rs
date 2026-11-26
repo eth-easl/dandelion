@@ -720,6 +720,14 @@ const DURABLE_DATA_ID_START: u64 = 1 << 63;
 const DURABLE_FETCH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 #[cfg(feature = "at-least-once")]
 const DURABLE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// A data request that stalls is treated like an unreachable node, so that a fetch is retried.
+const DATA_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const DATA_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether a failed fetch of a stored output may succeed once its node has recovered.
+fn durable_fetch_retryable(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+}
 #[cfg(feature = "at-least-once")]
 const DURABLE_SIZE_HEADER: &str = "x-dandelion-durable-size";
 #[cfg(feature = "at-least-once")]
@@ -2545,6 +2553,8 @@ pub struct HttpRemoteDataClient {
     node_map: BTreeMap<u64, String>,
     local_registry: ExportRegistry,
     client: reqwest::Client,
+    /// Separate from `client`, whose /resolve requests wait for the winner without a timeout.
+    data_client: reqwest::Client,
 }
 
 impl HttpRemoteDataClient {
@@ -2553,6 +2563,11 @@ impl HttpRemoteDataClient {
             node_map,
             local_registry,
             client: reqwest::Client::new(),
+            data_client: reqwest::Client::builder()
+                .connect_timeout(DATA_CONNECT_TIMEOUT)
+                .read_timeout(DATA_READ_TIMEOUT)
+                .build()
+                .expect("Failed to build the remote data client"),
         }
     }
 
@@ -2626,7 +2641,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             ));
             let durable = is_durable_data_id(data.data_id);
             let (size, body) = 'retry: loop {
-                let mut response = match self.client.get(&url).send().await {
+                let mut response = match self.data_client.get(&url).send().await {
                     Ok(response) => response,
                     Err(err) if durable => {
                         debug!(
@@ -2642,6 +2657,16 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         ));
                     }
                 };
+                if durable && durable_fetch_retryable(response.status()) {
+                    debug!(
+                        "Node {} could not serve durable data {} yet, retrying: {}",
+                        data.node_id,
+                        data.data_id,
+                        response.status()
+                    );
+                    tokio::time::sleep(DURABLE_FETCH_RETRY_INTERVAL).await;
+                    continue;
+                }
                 if !response.status().is_success() {
                     let lost = !durable || response.status() == reqwest::StatusCode::NOT_FOUND;
                     let status = response.status().to_string();
@@ -2710,7 +2735,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 .iter()
                 .all(|item| is_durable_data_id(item.data_id));
             let (size, body) = 'retry: loop {
-                let mut response = match self.client.get(&url).body(body_data.clone()).send().await
+                let mut response = match self.data_client.get(&url).body(body_data.clone()).send().await
                 {
                     Ok(response) => response,
                     Err(err) if durable => {
@@ -2727,6 +2752,15 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         ));
                     }
                 };
+                if durable && durable_fetch_retryable(response.status()) {
+                    debug!(
+                        "Node {} could not serve durable data yet, retrying: {}",
+                        node_id,
+                        response.status()
+                    );
+                    tokio::time::sleep(DURABLE_FETCH_RETRY_INTERVAL).await;
+                    continue;
+                }
                 if !response.status().is_success() {
                     let lost = !durable || response.status() == reqwest::StatusCode::NOT_FOUND;
                     let status = response.status().to_string();
@@ -2812,7 +2846,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
 
             let durable = is_durable_data_id(data.data_id);
             loop {
-                let response = match self.client.delete(&url).send().await {
+                let response = match self.data_client.delete(&url).send().await {
                     Ok(response) => response,
                     Err(err) if durable => {
                         debug!(
@@ -4089,6 +4123,49 @@ mod incarnation_tests {
             ),
             Ok(_) => panic!("stale reference should not resolve"),
         }
+    }
+
+    #[tokio::test]
+    async fn durable_fetch_retries_server_errors_and_fails_on_bad_requests() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for response in [
+                "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\ncontent-length: 3\r\nconnection: close\r\n\r\nabc",
+                "HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).await.unwrap();
+                socket.write_all(response.as_bytes()).await.unwrap();
+                socket.shutdown().await.unwrap();
+            }
+        });
+        let remote_client = HttpRemoteDataClient::new(
+            BTreeMap::from([(2, address.to_string())]),
+            ExportRegistry::new(1),
+        );
+        let data = RemoteData::durable(2, DURABLE_DATA_ID_START);
+
+        let (context, position) = remote_client
+            .resolve_remote_data(data.clone())
+            .await
+            .unwrap();
+        let mut bytes = vec![0; position.size];
+        context.read(position.offset, &mut bytes).unwrap();
+        assert_eq!(b"abc".to_vec(), bytes);
+
+        let error = remote_client.resolve_remote_data(data).await.unwrap_err();
+        assert!(matches!(
+            error.error,
+            DandelionError::Multinode(MultinodeError::RequestFailed(_))
+        ));
+        server.await.unwrap();
     }
 
     #[tokio::test]
