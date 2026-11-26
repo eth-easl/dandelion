@@ -186,7 +186,11 @@ enum IoResolutionState {
         result: watch::Sender<Option<SharedIoResult>>,
     },
     Completed(Vec<IoRemoteRef>),
-    Failed(String),
+    Failed {
+        error: String,
+        /// Claim whose delivered outcome could not be logged. The worker keeps it journaled.
+        unpersisted_claim: Option<u64>,
+    },
 }
 
 /// How the owner treats a result that a worker submits for a claim. A result is committed for
@@ -198,6 +202,15 @@ enum IoCommitDecision {
     Commit(u64),
     AlreadyCommitted,
     Rejected,
+    /// The result of this claim could not be logged. The worker keeps it journaled.
+    Unpersisted,
+}
+
+#[cfg(feature = "exactly-once")]
+fn io_completion_unpersisted_error() -> dandelion_commons::DError {
+    export_registry_error(
+        "Owner could not log the I/O completion, the worker keeps it in its journal",
+    )
 }
 
 /// Either a decision, or the result channel of a commit of the same claim that is in progress.
@@ -231,7 +244,17 @@ impl IoCommitGuard {
             .key
             .take()
             .expect("I/O commit guard holds its key until finished");
-        self.registry.finish_io_commit(key, self.claim_id, outcome)
+        self.registry
+            .finish_io_commit(key, self.claim_id, outcome, false)
+    }
+
+    fn finish_unpersisted(mut self, error: String) -> DandelionResult<()> {
+        let key = self
+            .key
+            .take()
+            .expect("I/O commit guard holds its key until finished");
+        self.registry
+            .finish_io_commit(key, self.claim_id, Err(error), true)
     }
 }
 
@@ -1350,7 +1373,9 @@ impl ExportRegistry {
                             set_index
                         ))
                     }),
-                IoResolutionState::Failed(error) => Ok(RegistryIoResolution::Failed(error.clone())),
+                IoResolutionState::Failed { error, .. } => {
+                    Ok(RegistryIoResolution::Failed(error.clone()))
+                }
             },
         }
     }
@@ -1431,8 +1456,13 @@ impl ExportRegistry {
                 Ok(submitted) if submitted == outputs => IoCommitDecision::AlreadyCommitted,
                 _ => IoCommitDecision::Rejected,
             },
-            Some(IoResolutionState::Failed(_)) => match outcome {
+            Some(IoResolutionState::Failed {
+                unpersisted_claim, ..
+            }) => match outcome {
                 Err(_) => IoCommitDecision::AlreadyCommitted,
+                Ok(_) if unpersisted_claim.is_some() && *unpersisted_claim == claim_id => {
+                    IoCommitDecision::Unpersisted
+                }
                 Ok(_) => IoCommitDecision::Rejected,
             },
         };
@@ -1446,6 +1476,7 @@ impl ExportRegistry {
         key: IoRequest,
         claim_id: u64,
         outcome: Result<Vec<IoRemoteRef>, String>,
+        unpersisted: bool,
     ) -> DandelionResult<()> {
         let mut inner = self.inner.lock().unwrap();
         if inner.cancelled_io_runs.contains(&key.id.run_id) {
@@ -1466,7 +1497,10 @@ impl ExportRegistry {
                 SharedIoResult::Completed(outputs),
             ),
             Err(error) => (
-                IoResolutionState::Failed(error.clone()),
+                IoResolutionState::Failed {
+                    error: error.clone(),
+                    unpersisted_claim: unpersisted.then_some(claim_id),
+                },
                 SharedIoResult::Failed(error),
             ),
         };
@@ -1478,7 +1512,7 @@ impl ExportRegistry {
         Ok(())
     }
 
-    /// Gives up a commit that could not be made durable, so waiters elect a new winner.
+    /// Gives up a commit whose outcome was not accepted, so that waiters elect a new winner.
     #[cfg(feature = "exactly-once")]
     fn abort_io_commit(&self, key: &IoRequest, claim_id: u64) {
         let mut inner = self.inner.lock().unwrap();
@@ -1510,7 +1544,7 @@ impl ExportRegistry {
             ));
         };
         if let IoCommitDecision::Commit(claim_id) = decision {
-            self.finish_io_commit(key, claim_id, outcome)?;
+            self.finish_io_commit(key, claim_id, outcome, false)?;
         }
         Ok(decision)
     }
@@ -1547,15 +1581,19 @@ impl ExportRegistry {
         let commit = IoCommitGuard::new(self.clone(), key.clone(), claim_id);
         // Durable log first so a restart can recover Completed instead of re-electing.
         if let Ok(outputs) = &outcome {
-            match accept_delivered_io_completion_record(&completion_record(
-                &key,
-                outputs,
-                Some(claim_id),
-            ))
-            .await?
-            {
-                IoCompletionDisposition::Retain => (),
-                IoCompletionDisposition::Delete => return Ok(IoCommitDecision::Rejected),
+            let record = completion_record(&key, outputs, Some(claim_id));
+            match accept_delivered_io_completion_record(&record).await {
+                Ok(IoCompletionDisposition::Retain) => (),
+                Ok(IoCompletionDisposition::Delete) => return Ok(IoCommitDecision::Rejected),
+                Err(error) => {
+                    // A new winner could repeat the external request, so fail the invocation.
+                    warn!(
+                        "Failed to log the delivered completion of I/O request {:?}, failing the invocation: {:?}",
+                        key.id, error
+                    );
+                    commit.finish_unpersisted(error.to_string())?;
+                    return Ok(IoCommitDecision::Unpersisted);
+                }
             }
         }
         commit.finish(outcome)?;
@@ -1590,7 +1628,7 @@ impl ExportRegistry {
         let claim_id = match self.begin_io_commit(&key, claim_id, &outcome).await? {
             IoCommitDecision::Commit(claim_id) => claim_id,
             IoCommitDecision::AlreadyCommitted => return Ok(None),
-            IoCommitDecision::Rejected => {
+            IoCommitDecision::Rejected | IoCommitDecision::Unpersisted => {
                 warn!("Coordinated I/O result was rejected, its claim was taken over");
                 return Err(io_claim_lost_error());
             }
@@ -1746,6 +1784,7 @@ impl ExportRegistry {
                     IoCompletionDisposition::Retain
                 }
                 IoCommitDecision::Rejected => IoCompletionDisposition::Delete,
+                IoCommitDecision::Unpersisted => return Err(io_completion_unpersisted_error()),
             },
         )
     }
@@ -3203,11 +3242,16 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     ))
                 }
             };
-            let rejected = loop {
+            let (rejected, unpersisted) = loop {
                 match self.client.post(&url).body(body.clone()).send().await {
-                    Ok(response) if response.status().is_success() => break false,
+                    Ok(response) if response.status().is_success() => break (false, false),
                     Ok(response) if response.status() == reqwest::StatusCode::CONFLICT => {
-                        break true
+                        break (true, false)
+                    }
+                    Ok(response)
+                        if response.status() == reqwest::StatusCode::INSUFFICIENT_STORAGE =>
+                    {
+                        break (false, true)
                     }
                     Ok(response) => warn!(
                         "Owner rejected coordinated I/O completion with {}, retrying",
@@ -3234,6 +3278,10 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         .await?;
                 }
                 return Err(io_claim_lost_error());
+            }
+            if unpersisted {
+                warn!("Owner could not log the coordinated I/O result, keeping it journaled");
+                return Err(io_completion_unpersisted_error());
             }
             if let Some(record) = delivery_record {
                 if let Some(recorder) = recorder.as_mut() {
@@ -3388,6 +3436,13 @@ async fn handle_io_resolved(
                 "I/O claim was taken over by another worker".to_string(),
             ));
             *response.status_mut() = StatusCode::CONFLICT;
+            Ok(response)
+        }
+        Ok(IoCommitDecision::Unpersisted) => {
+            let mut response = Response::new(ExportedBody::new_error(
+                io_completion_unpersisted_error().to_string(),
+            ));
+            *response.status_mut() = StatusCode::INSUFFICIENT_STORAGE;
             Ok(response)
         }
         Err(error) => bad_request(format!("Failed to commit I/O completion: {}", error)),
@@ -4662,6 +4717,149 @@ mod tests {
             registry.begin_io_resolution(key, 1, None).unwrap(),
             RegistryIoResolution::Completed(data) if data.data_id == 2
         ));
+    }
+
+    #[tokio::test]
+    async fn unlogged_worker_completion_fails_invocation_and_stays_journaled() {
+        configure_test_recovery_log();
+        let owner_node_id = 1;
+        let worker_node_id = 2;
+        let test_root = std::env::temp_dir().join(format!(
+            "dandelion-unlogged-completion-test-{}",
+            RunId::now_v7()
+        ));
+        let owner_registry = ExportRegistry::new(owner_node_id);
+        let worker_registry = ExportRegistry::with_durable_storage(worker_node_id, &test_root)
+            .await
+            .unwrap();
+        let (owner_url, owner_server) = spawn_test_data_server(owner_registry.clone()).await;
+        let (worker_url, worker_server) = spawn_test_data_server(worker_registry.clone()).await;
+        let node_map = BTreeMap::from([(owner_node_id, owner_url), (worker_node_id, worker_url)]);
+        let worker_client = HttpRemoteDataClient::new(node_map, worker_registry.clone());
+        let key = submitted_coordination_key().await;
+        let claim_id = match worker_client
+            .resolve_io(IoResolveRequest {
+                owner_node_id,
+                key: key.clone(),
+                set_index: 0,
+                original_data: None,
+            })
+            .await
+            .unwrap()
+        {
+            IoResolveOutcome::Execute { claim_id, .. } => claim_id,
+            _ => panic!("first worker should execute"),
+        };
+
+        // Make every append to the run's recovery log fail.
+        let log_path =
+            machine_interface::function_driver::system_driver::recovery_log::run_log_path(
+                key.id.run_id,
+            )
+            .unwrap();
+        let log_content = fs::read(&log_path).await.unwrap();
+        fs::remove_file(&log_path).await.unwrap();
+        fs::create_dir(&log_path).await.unwrap();
+
+        let output_bytes = b"result of the external request".to_vec();
+        let publish = worker_client
+            .publish_io_resolution(IoCoordinationCompletion {
+                owner_node_id,
+                key: key.clone(),
+                outcome: IoCompletionOutcome::Completed(vec![IoCompletedOutput {
+                    item: DataItem {
+                        ident: key.identifier.clone(),
+                        key: u32::try_from(key.item_key).unwrap(),
+                        data: Position {
+                            offset: 0,
+                            size: output_bytes.len(),
+                        },
+                    },
+                    context: Arc::new(
+                        ReadOnlyContext::from_boxed(output_bytes.into_boxed_slice()).unwrap(),
+                    ),
+                }]),
+                recorder: None,
+                claim_id: Some(claim_id),
+            })
+            .await;
+        assert!(publish.is_err(), "the worker should learn that its outcome was not logged");
+
+        assert!(matches!(
+            owner_registry
+                .begin_io_resolution_from_node(key.clone(), 0, 3, 1, None)
+                .unwrap(),
+            RegistryIoResolution::Failed(_)
+        ));
+
+        let records = worker_registry.pending_io_completion_records();
+        assert_eq!(1, records.len());
+        let record = records[0].clone();
+        assert!(owner_registry
+            .accept_io_completion_delivery(&record)
+            .await
+            .is_err());
+        assert_eq!(1, worker_registry.pending_io_completion_records().len());
+
+        let references = match owner_registry.inner.lock().unwrap().io_resolutions.get(&key.id) {
+            Some(IoResolutionState::Failed {
+                unpersisted_claim, ..
+            }) => {
+                assert_eq!(Some(claim_id), *unpersisted_claim);
+                record_references(&record)
+            }
+            _ => panic!("the invocation should have failed without a logged outcome"),
+        };
+        assert_eq!(
+            IoCommitDecision::Rejected,
+            owner_registry
+                .commit_delivered_io_resolution(key.clone(), Some(claim_id + 1), Ok(references))
+                .await
+                .unwrap()
+        );
+
+        // Owner restart.
+        fs::remove_dir(&log_path).await.unwrap();
+        fs::write(&log_path, log_content).await.unwrap();
+        let restarted_owner = ExportRegistry::new(owner_node_id);
+        assert_eq!(
+            IoCompletionDisposition::Retain,
+            restarted_owner
+                .accept_io_completion_delivery(&record)
+                .await
+                .unwrap()
+        );
+        assert!(matches!(
+            restarted_owner
+                .begin_io_resolution_from_node(key, 0, 3, 1, None)
+                .unwrap(),
+            RegistryIoResolution::Completed(data) if data.node_id == worker_node_id
+        ));
+
+        owner_server.abort();
+        worker_server.abort();
+        fs::remove_dir_all(test_root).await.unwrap();
+    }
+
+    fn record_references(record: &IoCompletionRecord) -> Vec<IoRemoteRef> {
+        let mut outputs = record.outputs.clone();
+        outputs.sort_by_key(|output| output.set_index);
+        outputs
+            .into_iter()
+            .map(|output| match &output.items[0].location {
+                IoCompletionData::Remote {
+                    node_id,
+                    data_id,
+                    size,
+                } => IoRemoteRef {
+                    node_id: *node_id,
+                    incarnation: 0,
+                    data_id: *data_id,
+                    size: *size,
+                },
+                IoCompletionData::Inline(_) => panic!("worker outputs are stored remotely"),
+            })
+            .collect()
     }
 
     #[tokio::test]
