@@ -50,7 +50,7 @@ async fn remote_queue_server(
     queue: WorkQueue,
     export_registry: ExportRegistry,
     remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
-    io_disconnect_timeout: std::time::Duration,
+    io_disconnect_timeout: Option<std::time::Duration>,
 ) {
     // socket to listen to
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], queue_port));
@@ -453,7 +453,9 @@ fn main() {
                 work_queue,
                 export_registry.clone(),
                 remote_data_deletion_sender.clone(),
-                std::time::Duration::from_millis(config.multinode_io_disconnect_timeout_ms),
+                (config.multinode_io_disconnect_timeout_ms > 0).then(|| {
+                    std::time::Duration::from_millis(config.multinode_io_disconnect_timeout_ms)
+                }),
             ));
             None
         } else {

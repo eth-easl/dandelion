@@ -218,6 +218,7 @@ pub struct DandelionConfig {
     pub multinode_reconnect_interval_ms: u64,
 
     /// Multinode: how long the master waits after a worker disconnects before its running I/O is handed to another worker.
+    /// 0 waits until the worker reconnects.
     #[arg(long, env, default_value_t = DEFAULT_MULTINODE_IO_DISCONNECT_TIMEOUT)]
     #[serde(default)]
     pub multinode_io_disconnect_timeout_ms: u64,
