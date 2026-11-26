@@ -651,7 +651,8 @@ async fn restart_invocation(
 ) -> DandelionResult<bool> {
     match crate::async_invocation::load_recoverable_invocation(run_id).await? {
         Some(recoverable) => {
-            start_recovered_invocation(dispatcher, recoverable, attempt).await?;
+            crate::async_invocation::persist_restart(run_id, attempt).await?;
+            start_recovered_invocation(dispatcher, recoverable, attempt, true).await?;
             Ok(true)
         }
         None => Ok(false),
@@ -663,6 +664,11 @@ async fn start_recovered_invocation(
     dispatcher: &'static Dispatcher,
     recoverable: crate::async_invocation::RecoverableInvocation,
     attempt: u32,
+    #[cfg_attr(
+        not(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once"))),
+        allow(unused_variables)
+    )]
+    after_error: bool,
 ) -> DandelionResult<()> {
     use machine_interface::function_driver::system_driver::recovery_log;
 
@@ -671,7 +677,7 @@ async fn start_recovered_invocation(
         parse_persisted_async_invocation_request_bytes(recoverable.request_bytes, run_id).await?;
     let recovered_io = recovery_log::load_recoverable_io_completion_records(run_id).await?;
     #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
-    let recovered_io = if attempt > 0 {
+    let recovered_io = if after_error {
         drop_lost_checkpoints(run_id, recovered_io).await?
     } else {
         recovered_io
@@ -822,15 +828,37 @@ pub async fn resume_recoverable_invocations(
 ) -> DandelionResult<()> {
     for recoverable in crate::async_invocation::list_recoverable_invocations().await? {
         let run_id = recoverable.run_id;
-        info!("Async invocation {} recovery started", run_id);
-        if let Err(err) = start_recovered_invocation(dispatcher, recoverable, 0).await {
-            error!("Failed to resume async invocation {}: {}", run_id, err);
+        // The owner crash interrupted the run, so it counts as a restart.
+        let attempt = recoverable.restarts.saturating_add(1);
+        let resumed = if attempt > restart_policy().max_restart_attempts {
+            Err(format!(
+                "Async invocation {} was interrupted {} times, giving up",
+                run_id, attempt
+            ))
+        } else {
+            info!(
+                "Async invocation {} recovery started (attempt {})",
+                run_id, attempt
+            );
+            match crate::async_invocation::persist_restart(run_id, attempt).await {
+                Ok(()) => start_recovered_invocation(dispatcher, recoverable, attempt, false).await,
+                Err(err) => Err(err),
+            }
+            .map_err(|err| format!("{}", err))
+        };
+        if let Err(message) = resumed {
+            error!("Failed to resume async invocation {}: {}", run_id, message);
             if let Err(persist_err) =
-                crate::async_invocation::persist_failed(run_id, format!("{}", err)).await
+                crate::async_invocation::persist_failed(run_id, message).await
             {
                 error!(
                     "Failed to mark async invocation {} as failed: {}",
                     run_id, persist_err
+                );
+            } else if let Err(err) = release_invocation_io_exports(run_id).await {
+                warn!(
+                    "Failed to release durable IO exports for terminal invocation {}: {}",
+                    run_id, err
                 );
             }
         }

@@ -5,7 +5,8 @@ use dandelion_commons::{
 use dandelion_server::{AsyncInvocationState, AsyncInvocationStatusResponse};
 use log::info;
 use machine_interface::function_driver::system_driver::recovery_log::{
-    append_run_log_line, append_submission_line, complete_log_lines, list_run_log_ids, read_run_log,
+    append_flushed_run_log_line, append_run_log_line, append_submission_line, complete_log_lines,
+    list_run_log_ids, read_run_log,
 };
 use std::{
     collections::HashMap,
@@ -115,6 +116,8 @@ struct ParsedInvocationLog<'a> {
     submission: Option<SubmissionRecord<'a>>,
     result_b64: Option<&'a str>,
     error_b64: Option<&'a str>,
+    /// Highest restart attempt recorded since the submission.
+    restarts: u32,
 }
 
 fn parse_run_log(content: &str) -> ParsedInvocationLog<'_> {
@@ -141,6 +144,15 @@ fn parse_run_log(content: &str) -> ParsedInvocationLog<'_> {
                 });
                 parsed.result_b64 = None;
                 parsed.error_b64 = None;
+                parsed.restarts = 0;
+            }
+            Some("invocation_restarted") => {
+                if let Some(attempt) = fields
+                    .get("attempt")
+                    .and_then(|value| value.parse::<u32>().ok())
+                {
+                    parsed.restarts = parsed.restarts.max(attempt);
+                }
             }
             Some("invocation_completed") => {
                 let Some(result_b64) = validated_payload(&fields, "result_b64", "result_len")
@@ -186,6 +198,7 @@ pub struct RecoverableInvocation {
     pub run_id: RunId,
     pub request_bytes: Vec<u8>,
     pub is_cold: bool,
+    pub restarts: u32,
 }
 
 pub async fn persist_submitted(
@@ -201,6 +214,19 @@ pub async fn persist_submitted(
             request_bytes.len(),
             encode_base64(request_bytes),
             is_cold,
+        ),
+    )
+    .await
+}
+
+/// Records a restart before it starts, so that the limit also holds across owner restarts.
+#[cfg(feature = "at-least-once")]
+pub async fn persist_restart(run_id: RunId, attempt: u32) -> DandelionResult<()> {
+    append_flushed_run_log_line(
+        run_id,
+        &format!(
+            "event=invocation_restarted run_id={} attempt={}\n",
+            run_id, attempt
         ),
     )
     .await
@@ -368,6 +394,7 @@ pub async fn load_recoverable_invocation(
         run_id,
         request_bytes,
         is_cold,
+        restarts: parsed.restarts,
     }))
 }
 
@@ -379,6 +406,21 @@ mod tests {
 
     const SUBMISSION: &str =
         "event=invocation_submitted run_id=1 request_len=3 request_b64=cmVx is_cold=false\n";
+
+    #[test]
+    fn restart_records_survive_in_the_log() {
+        let content = format!(
+            "{}event=invocation_restarted run_id=1 attempt=2\n\
+             event=invocation_restarted run_id=1 attempt=1\n\
+             event=invocation_restarted run_id=1 attempt=x\n\
+             event=invocation_restarted run_id=1 attempt=7",
+            SUBMISSION
+        );
+        let parsed = parse_run_log(&content);
+        assert_eq!(parsed.state, Some(AsyncInvocationState::Running));
+        assert_eq!(parsed.restarts, 2);
+        assert_eq!(parse_run_log(SUBMISSION).restarts, 0);
+    }
 
     #[test]
     fn complete_terminal_record_is_recognized() {

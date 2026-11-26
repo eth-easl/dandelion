@@ -655,6 +655,11 @@ pub async fn append_submission_line(run_id: RunId, line: &str) -> DandelionResul
     append_run_log_line_with(run_id, line, true).await
 }
 
+/// Appends a record and flushes it, independent of the guarantee level.
+pub async fn append_flushed_run_log_line(run_id: RunId, line: &str) -> DandelionResult<()> {
+    append_run_log_line_with(run_id, line, true).await
+}
+
 async fn append_run_log_line_with(run_id: RunId, line: &str, sync: bool) -> DandelionResult<()> {
     let log_path = run_log_path(run_id)?;
     let run_lock = run_log_lock(run_id);
