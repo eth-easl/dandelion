@@ -131,9 +131,9 @@ impl DError {
 pub fn is_system_error(error: &DandelionError) -> bool {
     match error {
         DandelionError::Multinode(error) => match error {
-            MultinodeError::DataLost(_) => true,
+            // A connection between nodes can come back, so a later attempt may succeed.
+            MultinodeError::DataLost(_) | MultinodeError::ConnectionFailed(_) => true,
             MultinodeError::DeserializationError(_)
-            | MultinodeError::ConnectionFailed(_)
             | MultinodeError::RequestFailed(_)
             | MultinodeError::ConfigError(_)
             | MultinodeError::ProtocolError(_)
@@ -407,9 +407,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lost_data_and_full_queue_are_system_errors() {
+    fn lost_data_failed_connections_and_full_queue_are_system_errors() {
         assert!(is_system_error(&DandelionError::Multinode(
             MultinodeError::DataLost("gone".to_string())
+        )));
+        assert!(is_system_error(&DandelionError::Multinode(
+            MultinodeError::ConnectionFailed("owner".to_string())
         )));
         assert!(is_system_error(&DandelionError::WorkQueueFull));
     }
@@ -418,9 +421,6 @@ mod tests {
     fn application_and_internal_errors_are_not_system_errors() {
         assert!(!is_system_error(&DandelionError::Multinode(
             MultinodeError::RequestFailed("function failed".to_string())
-        )));
-        assert!(!is_system_error(&DandelionError::Multinode(
-            MultinodeError::ConnectionFailed("owner".to_string())
         )));
         assert!(!is_system_error(&DandelionError::SegmentationFault));
         assert!(!is_system_error(&DandelionError::OutOfMemory));

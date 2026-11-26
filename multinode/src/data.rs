@@ -3071,7 +3071,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                             .await
                             .map_err(|error| {
                                 dandelion_err!(DandelionError::Multinode(
-                                    MultinodeError::ConnectionFailed(error.to_string())
+                                    MultinodeError::RequestFailed(error.to_string())
                                 ))
                             })?;
                     if !response.status().is_success() {

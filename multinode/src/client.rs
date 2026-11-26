@@ -1244,6 +1244,8 @@ fn parse_engine_type(engine_type: &str) -> DandelionResult<EngineType> {
 fn remote_worker_error(message: String) -> MultinodeError {
     if message.starts_with("Multinode(DataLost(") {
         MultinodeError::DataLost(message)
+    } else if message.starts_with("Multinode(ConnectionFailed(") {
+        MultinodeError::ConnectionFailed(message)
     } else {
         MultinodeError::RequestFailed(message)
     }
