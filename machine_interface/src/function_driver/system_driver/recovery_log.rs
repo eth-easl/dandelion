@@ -432,7 +432,7 @@ fn append_run_log_blocking(log_path: &Path, content: &str, sync: bool) -> Dandel
             }
         }
     }
-    #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+    #[cfg(not(feature = "exactly-once"))]
     if !sync {
         // Sync the exact file written above, not a potentially replaced path.
         let log_path = log_path.to_path_buf();
